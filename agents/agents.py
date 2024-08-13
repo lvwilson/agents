@@ -1,82 +1,18 @@
 #!/usr/bin/env python3
 import sys
-#sys.path.insert(2, '/home/loki/dev/llmide')
+sys.path.insert(2, '/home/loki/dev/llmide')
 from llmide.llmide import process_content
 
-import os
 import anthropic
 import argparse
+import os
 from rich.console import Console
+import yaml
+import pickle
 
 console = Console()
-
-system_prompt = """
-You are an AI software engineer. Respond to requests with detailed thoughts and plans, followed by the appropriate command and code if needed. Use the following format:
-
-Response Format:
-Task: What you are working on as given by the user
-End conditions: When you know you are finished, explcitly when the user has asked you to finish
-Worklog: What you have done
-Detailed thoughts and Plans:
-Provide a detailed explanation of your thought process and plans for addressing the request.
-
-Command: command_name arg1 arg2 ... argn
-```Python
- #Code goes here when the command requires code.
-```
-
-The system automatically parses your response for the above structure, when no command is given it is assumed that you have finished.
-
-Address Definition:
-Addresses are a dot-separated path indicating the location of the target node. This can be a top-level function or class ("FunctionName"), a method within a class ("ClassName.method_name"), or elements within nested classes ("OuterClass.InnerClass.method_name").
-
-Commands:
-read_code_signatures_and_docstrings file_path
-write_code_to_file file_path ```code```
-read_code_from_file file_path
-insert_code_before_matching_line file_path line ```code```
-insert_code_after_matching_line file_path line ```code```
-replace_code_before_matching_line file_path line ```code```
-replace_code_after_matching_line file_path line ```code```
-replace_code_between_matching_lines file_path line1 line2 ```code```
-
-Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
-run_console_command "arguments"
-
-Example output: 
-Detailed thoughts and Plans: This is how to read a file
-Command: read_code_from_file file.py
-
-Example output:
-Detailed thoughts and Plans: This is how to write code to a file
-Command: write_code_to_file file.py
-```Python
-print("Hello World!")
-```
-
-Example output:
-Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
-Command: run_console_command "ls -l"
-
-Example output:
-Detailed thoughts and Plans: This is how to manipulate code using insert_code_after_matching_line.
-Command: insert_code_after_matching_line "import foo" 
-```Python
-import bar
-```
-
-Only one command at a time can be extracted so only issue one command per step.
-Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
-When writing code using write_code_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
-"""
-
-
-def form_message(role, content):
-    message = {
-        "role":role,
-        "content":convert_string_to_dict(content)
-    }
-    return message
+script_dir = os.path.dirname(os.path.realpath(__file__))
+pickle_path = os.path.join(script_dir, 'context.pkl')
 
 def convert_string_to_dict(string):
     result = []
@@ -99,14 +35,27 @@ class ClaudeClient():
         self.model = model
         self.cost = 0.0
 
-    def generate_response(self, system_prompt, context):
+    def _get_response(self, system_prompt, context):
         response = self.client.messages.create(
-            model=self.model,
-            max_tokens=4095,
-            temperature=0.5,
-            system=system_prompt,
-            messages=context
-        )
+                model=self.model,
+                max_tokens=4095,
+                temperature=0.5,
+                system=system_prompt,
+                messages=context
+            )
+        return response
+
+    def generate_response(self, system_prompt, context):
+        try:
+            response = self._get_response(system_prompt, context)
+        except anthropic.RateLimitError as e:
+            # Check if the response attribute is present in the exception
+            if hasattr(e, 'response') and e.response is not None:
+                headers = e.response.headers
+                console.print("Rate Limit Headers:", headers, style="red")
+            else:
+                console.print("Rate limit error occurred, but no response headers are available.", style="red")
+        
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
         self.cost += self.calculate_cost(input_tokens, output_tokens)
@@ -116,37 +65,98 @@ class ClaudeClient():
         pricing = self.MODEL_PRICING[self.model]
         cost = (input_tokens * pricing['input_token_cost'] + output_tokens * pricing['output_token_cost']) / 1_000_000
         return cost
+    
+def form_message(role, content):
+        message = {
+            "role":role,
+            "content":convert_string_to_dict(content)
+        }
+        return message
 
-
-def simple_agent (task_prompt):
-    global system_prompt
-    user_prompt = task_prompt + "\nPlease execute the given task to the best of your ability. The user role will be used for tool responses going forward."
-    context = []
-    context.append(form_message("user", user_prompt))
-    client = ClaudeClient()
-    response = client.generate_response(system_prompt, context)
-    context.append(form_message("assistant", response))
-    console.print (response, style="cyan")
-    command_response = process_content(response)
-    console.print(command_response)
-    context.append(form_message("user", command_response))
+def safe_console_print(text, style="default"):
     try:
-        while command_response != "End.":
-            response = client.generate_response(system_prompt, context)
-            context.append(form_message("assistant", response))
-            console.print (response, style="cyan")
-            command_response = process_content(response)
-            console.print(command_response)
-            context.append(form_message("user", command_response))
-    except KeyboardInterrupt:
-        pass
-    print(f'Total Cost: {client.cost}')
+        console.print(text, style=style)
+    except Exception:
+        print(text)
+
+def read_yaml_file(file_path):
+    with open(file_path, 'r') as file:
+        data = yaml.safe_load(file)
+    return data
+
+def read_configuration(configuration_name):
+    script_dir = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
+    config_path = os.path.join(script_dir, configuration_name)
+
+    configuration = read_yaml_file(config_path)
+    return configuration
+
+class ClaudeAgent:
+
+    def __init__(self, configuration_name, task, compute_budget=1.0, context=[]):
+        configuration = read_configuration(configuration_name)
+        self.model_name = configuration["model"]
+        self.client = ClaudeClient(model=self.model_name)
+        self.system_prompt = configuration["system_prompt"]
+        self.overbudget_prompt = configuration["overbudget"]
+        self.context = context
+        self.task = task
+        self.context.append(ClaudeAgent._form_message("user", self.task))
+        self.compute_budget = compute_budget
+
+    @staticmethod
+    def _form_message(role, content):
+        message = {
+            "role":role,
+            "content":convert_string_to_dict(content)
+        }
+        return message
+    
+    def _iterate(self):
+        response = self.client.generate_response(self.system_prompt, self.context)
+        self.context.append(ClaudeAgent._form_message("assistant", response))
+        safe_console_print(response, style="cyan")
+        command_response = process_content(response)
+        self.context.append(ClaudeAgent._form_message("user", command_response))
+        command_called = not (command_response == "End.")
+        return command_called
+    
+    def run(self):
+        try:
+            running = self._iterate()
+            cost = 0.0
+            while (running):
+                running = self._iterate()
+                if self.client.cost > self.compute_budget:
+                    console.print("Compute budget exceeded", style="red")
+                    break
+        except Exception as e:
+            console.print(e, style="red")
+        console.print(f'Total Cost: {self.client.cost}')
+
+    def save_context(self, filename='context.pkl'):
+        with open(filename, 'wb') as file:
+            pickle.dump(self.context, file)
+
+    def load_context(self, filename='context.pkl'):
+        with open(filename, 'rb') as file:
+            self.context = pickle.load(file)
+        self.context.pop() #todo: this should check that the last message is from the user but for now whatever
+        self.context.append(ClaudeAgent._form_message("user", self.task))
 
 def main():
     parser = argparse.ArgumentParser(description="Autonomous AI agent")
     parser.add_argument('command', type=str, help='A command string like "update my system"')
+    parser.add_argument('-b', '--compute-budget', type=float, default=1.0, help='Compute budget in dollars')
+    parser.add_argument('-r', '--restore', action='store_true', help='Restore previous context')
+
     args = parser.parse_args()
-    simple_agent(args.command)
+    agent = ClaudeAgent('basic_agent.yaml', args.command, args.compute_budget)
+    if args.restore:
+        agent.load_context()
+    agent.run()
+    agent.save_context()
+
 
 if __name__ == "__main__":
     main()
