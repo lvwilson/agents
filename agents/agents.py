@@ -10,6 +10,7 @@ from rich.console import Console
 import yaml
 import pickle
 import time
+import platform
 
 console = Console()
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -110,6 +111,8 @@ class ClaudeAgent:
         self.model_name = configuration["model"]
         self.client = ClaudeClient(model=self.model_name)
         self.system_prompt = configuration["system_prompt"]
+        os_info = platform.platform()
+        self.system_prompt += f"\nOperating System: {os_info}"
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
