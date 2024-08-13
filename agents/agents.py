@@ -9,6 +9,7 @@ import os
 from rich.console import Console
 import yaml
 import pickle
+import time
 
 console = Console()
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -35,27 +36,38 @@ class ClaudeClient():
         self.model = model
         self.cost = 0.0
 
-    def _get_response(self, system_prompt, context):
-        response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4095,
-                temperature=0.5,
-                system=system_prompt,
-                messages=context
-            )
-        return response
+    def _get_response(self, system_prompt, context, max_retries=3):
+        response = None
+        retries = 0
+        
+        while retries < max_retries:
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=4095,
+                    temperature=0.5,
+                    system=system_prompt,
+                    messages=context
+                )
+                if response:  # If a valid response is received, return it
+                    return response
+            except anthropic.RateLimitError as e:
+                retries += 1
+                if hasattr(e, 'response') and e.response is not None:
+                    headers = e.response.headers
+                    retry_after = int(headers.get('retry-after', 1))  # Default to 1 second if header is missing
+                    safe_console_print(f"Rate limit exceeded, retrying in: {retry_after}s", style="yellow")
+                    time.sleep(retry_after + 1)
+            except Exception as e:
+                retries += 1
+                # Log or handle the exception as needed
+                print(f"Attempt {retries} failed: {e}")
+        
+        raise Exception("Maximum retries exceeded on response request")
+                    
 
     def generate_response(self, system_prompt, context):
-        try:
-            response = self._get_response(system_prompt, context)
-        except anthropic.RateLimitError as e:
-            # Check if the response attribute is present in the exception
-            if hasattr(e, 'response') and e.response is not None:
-                headers = e.response.headers
-                console.print("Rate Limit Headers:", headers, style="red")
-            else:
-                console.print("Rate limit error occurred, but no response headers are available.", style="red")
-        
+        response = self._get_response(system_prompt, context)
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
         self.cost += self.calculate_cost(input_tokens, output_tokens)
