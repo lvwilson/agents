@@ -31,6 +31,8 @@ system_prompt: |
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
 
+  Note regarding commands: In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
+
   Example output: 
   Detailed thoughts and Plans: This is how to read a file
   Command: read_code_from_file file.py
