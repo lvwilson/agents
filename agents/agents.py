@@ -2,6 +2,7 @@
 import sys
 sys.path.insert(2, '/home/loki/dev/llmide')
 from llmide.llmide import process_content
+from llmide.llmide_functions import get_default_shell
 
 import anthropic
 import argparse
@@ -113,6 +114,7 @@ class ClaudeAgent:
         self.system_prompt = configuration["system_prompt"]
         os_info = platform.platform()
         self.system_prompt += f"\nOperating System: {os_info}"
+        self.system_prompt += f"\nShell: {get_default_shell()}"
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
@@ -132,6 +134,7 @@ class ClaudeAgent:
         self.context.append(ClaudeAgent._form_message("assistant", response))
         safe_console_print(response, style="cyan")
         command_response = process_content(response)
+
         self.context.append(ClaudeAgent._form_message("user", command_response))
         command_called = not (command_response == "End.")
         return command_called
