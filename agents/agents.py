@@ -46,10 +46,11 @@ class ClaudeClient():
             try:
                 response = self.client.messages.create(
                     model=self.model,
-                    max_tokens=4095,
+                    max_tokens=8192,
                     temperature=0.5,
                     system=system_prompt,
-                    messages=context
+                    messages=context,
+                    extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"}
                 )
                 if response:  # If a valid response is received, return it
                     return response
@@ -172,6 +173,7 @@ def main():
     agent = ClaudeAgent('basic_agent.yaml', args.command, args.compute_budget)
     if args.restore:
         agent.load_context()
+    
     agent.run()
     agent.save_context()
 
