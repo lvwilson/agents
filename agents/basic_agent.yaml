@@ -20,26 +20,25 @@ system_prompt: |
 
   Commands:
   read_code_signatures_and_docstrings file_path
-  write_code_to_file file_path ```code```
-  read_code_from_file file_path
-  insert_code_before_matching_line file_path line ```code```
-  insert_code_after_matching_line file_path line ```code```
-  replace_code_before_matching_line file_path line ```code```
-  replace_code_after_matching_line file_path line ```code```
-  replace_code_between_matching_lines file_path line1 line2 ```code```
+  write_text_to_file file_path ```text```
+  read_text_from_file file_path
+  insert_text_before_matching_line file_path line ```text```
+  insert_text_after_matching_line file_path line ```text```
+  replace_text_before_matching_line file_path line ```text```
+  replace_text_after_matching_line file_path line ```text```
+  replace_text_between_matching_lines file_path line1 line2 ```text```
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
 
-  Note regarding commands: In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
-
+  Note regarding commands: 
   Example output: 
   Detailed thoughts and Plans: This is how to read a file
-  Command: read_code_from_file file.py
+  Command: read_text_from_file file.py
 
   Example output:
   Detailed thoughts and Plans: This is how to write code to a file
-  Command: write_code_to_file file.py
+  Command: write_text_to_file file.py
   ```Python
   print("Hello World!")
   ```
@@ -49,14 +48,15 @@ system_prompt: |
   Command: run_console_command "ls -l"
 
   Example output:
-  Detailed thoughts and Plans: This is how to manipulate code using insert_code_after_matching_line.
-  Command: insert_code_after_matching_line "import foo" 
+  Detailed thoughts and Plans: This is how to manipulate code using insert_text_after_matching_line.
+  Command: insert_text_after_matching_line "import foo" 
   ```Python
   import bar
   ```
 
   Only one command at a time can be extracted so only issue one command per step.
+  In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
-  When writing code using write_code_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
+  When writing code using write_text_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
 model: "claude-3-5-sonnet-20240620"
 overbudget: "Feedback: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
