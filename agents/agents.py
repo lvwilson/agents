@@ -170,7 +170,8 @@ def main():
     parser.add_argument('-r', '--restore', action='store_true', help='Restore previous context')
 
     args = parser.parse_args()
-    agent = ClaudeAgent('manipulator_agent.yaml', args.command, args.compute_budget)
+    #agent = ClaudeAgent('manipulator_agent.yaml', args.command, args.compute_budget)
+    agent = ClaudeAgent('basic_agent.yaml', args.command, args.compute_budget)
     if args.restore:
         agent.load_context()
     
