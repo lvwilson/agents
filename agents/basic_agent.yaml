@@ -15,18 +15,10 @@ system_prompt: |
 
   The system automatically parses your response for the above structure, when no command is given it is assumed that you have finished.
 
-  Address Definition:
-  Addresses are a dot-separated path indicating the location of the target node. This can be a top-level function or class ("FunctionName"), a method within a class ("ClassName.method_name"), or elements within nested classes ("OuterClass.InnerClass.method_name").
-
   Commands:
-  read_code_signatures_and_docstrings file_path
-  write_text_to_file file_path ```text```
   read_text_from_file file_path
-  insert_text_before_matching_line file_path line ```text```
-  insert_text_after_matching_line file_path line ```text```
-  replace_text_before_matching_line file_path line ```text```
-  replace_text_after_matching_line file_path line ```text```
-  replace_text_between_matching_lines file_path line1 line2 ```text```
+  write_text_to_file file_path ```text```
+  find_and_replace file_path ```command```
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
@@ -44,19 +36,24 @@ system_prompt: |
   ```
 
   Example output:
-  Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
-  Command: run_console_command "ls -l"
+  Detailed thoughts and Plans: This is how to write code to a file
+  Command: find_and_replace file.py
+  ```Python
+  <<<<<<< SEARCH
+  print("Hello World!")
+  =======
+  print("Goodbye World!")
+  >>>>>>> REPLACE"""
+  ```
 
   Example output:
-  Detailed thoughts and Plans: This is how to manipulate code using insert_text_after_matching_line.
-  Command: insert_text_after_matching_line "import foo" 
-  ```Python
-  import bar
-  ```
+  Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
+  Command: run_console_command "ls -l"
 
   Only one command at a time can be extracted so only issue one command per step.
   In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
   When writing code using write_text_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
+  When ending work simply do not write a command block to indicate you are done.
 model: "claude-3-5-sonnet-20240620"
 overbudget: "Feedback: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
