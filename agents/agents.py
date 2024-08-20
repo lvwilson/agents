@@ -44,14 +44,17 @@ class ClaudeClient():
         
         while retries < max_retries:
             try:
-                response = self.client.messages.create(
+                with self.client.messages.stream(
                     model=self.model,
                     max_tokens=8192,
                     temperature=0.5,
                     system=system_prompt,
                     messages=context,
                     extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"}
-                )
+                ) as stream:
+                    for text in stream.text_stream:
+                        safe_console_print(text, style="cyan", end="")
+                response = stream.get_final_message()
                 if response:  # If a valid response is received, return it
                     return response
             except anthropic.RateLimitError as e:
@@ -64,7 +67,7 @@ class ClaudeClient():
             except Exception as e:
                 retries += 1
                 # Log or handle the exception as needed
-                print(f"Attempt {retries} failed: {e}")
+                safe_console_print(f"Attempt {retries} failed: {e}", style="red")
         
         raise Exception("Maximum retries exceeded on response request")
                     
@@ -88,9 +91,9 @@ def form_message(role, content):
         }
         return message
 
-def safe_console_print(text, style="default"):
+def safe_console_print(text, style="default", end="\n"):
     try:
-        console.print(text, style=style)
+        console.print(text, style=style, end=end)
     except Exception:
         print(text)
 
@@ -133,9 +136,7 @@ class ClaudeAgent:
     def _iterate(self):
         response = self.client.generate_response(self.system_prompt, self.context)
         self.context.append(ClaudeAgent._form_message("assistant", response))
-        safe_console_print(response, style="cyan")
         command_response = process_content(response)
-
         self.context.append(ClaudeAgent._form_message("user", command_response))
         command_called = not (command_response == "End.")
         return command_called
