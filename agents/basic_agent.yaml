@@ -50,7 +50,8 @@ system_prompt: |
   Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
   Command: run_console_command "ls -l"
 
-  Only one command at a time can be extracted so only issue one command per step.
+  Notes about commands:
+  Where possible queue up multiple commands to improve efficiency
   In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
   When writing code using write_text_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
