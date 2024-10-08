@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import signal
+import logging
+import traceback
 import sys
 sys.path.insert(2, '/home/loki/dev/llmide')
-from llmide.llmide import process_content
+from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
 
 import anthropic
@@ -13,9 +16,17 @@ import pickle
 import time
 import platform
 
+
 console = Console()
 script_dir = os.path.dirname(os.path.realpath(__file__))
 pickle_path = os.path.join(script_dir, 'context.pkl')
+iterations = 0
+
+def sigterm_handler(_signo, _stack_frame):
+    console.print("Sigterm caught, terminating subprocess...", style="red")
+    terminate_process()
+
+signal.signal(signal.SIGTERM, sigterm_handler)
 
 def convert_string_to_dict(string):
     result = []
@@ -134,7 +145,18 @@ class ClaudeAgent:
         return message
     
     def _iterate(self):
+        global iterations
+        console.print(f"[{iterations}]")
+        iterations+=1
         response = self.client.generate_response(self.system_prompt, self.context)
+        response_length = len(response)
+        response = filter_content(response)
+        filtered_length = len(response)
+        if (response_length > filtered_length):
+            clipped = response_length - filtered_length
+            safe_console_print(f"clipped {clipped} characters from response", style="yellow")
+            safe_console_print(response, style="cyan")
+
         self.context.append(ClaudeAgent._form_message("assistant", response))
         command_response = process_content(response)
         self.context.append(ClaudeAgent._form_message("user", command_response))
@@ -146,12 +168,15 @@ class ClaudeAgent:
             running = self._iterate()
             cost = 0.0
             while (running):
-                running = self._iterate()
-                if self.client.cost > self.compute_budget:
-                    console.print("Compute budget exceeded", style="red")
-                    break
+                    running = self._iterate()
+                    if self.client.cost > self.compute_budget:
+                        console.print("Compute budget exceeded", style="red")
+                        break
         except Exception as e:
             console.print(e, style="red")
+            trace_info = traceback.format_exc()
+            console.print(trace_info, style="white")
+        
         console.print(f'Total Cost: {self.client.cost}')
 
     def save_context(self, filename='context.pkl'):

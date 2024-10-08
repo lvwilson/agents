@@ -56,5 +56,14 @@ system_prompt: |
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
   When writing code using write_text_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
   When ending work simply do not write a command block to indicate you are done.
+  When queing read commands it is essential to output nothing after them. You may queue multiple read commands and then must stop output to wait for the content to be read.
+
+  Example for queueing mutliple read commands:
+
+  Command: read_text_from_file file1.txt
+  Command: read_text_from_file file2.txt
+  I must now output nothing more to allow the system to provide me with the content before continuing.
+
+  Remember that reading files is its own step and should not be combined with writing.
 model: "claude-3-5-sonnet-20240620"
 overbudget: "Feedback: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
