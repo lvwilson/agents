@@ -17,7 +17,7 @@ system_prompt: |
 
   Commands:
   read_text_from_file file_path
-  write_text_to_file file_path ```text```
+  write_text_to_file file_path ```text to replace file with```
   find_and_replace file_path ```command```
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
@@ -65,5 +65,5 @@ system_prompt: |
   I must now output nothing more to allow the system to provide me with the content before continuing.
 
   Remember that reading files is its own step and should not be combined with writing.
-model: "claude-3-5-sonnet-20240620"
-overbudget: "Feedback: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
+model: "claude-3-5-sonnet-20241022"
+overbudget: "System: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."

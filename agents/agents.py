@@ -38,10 +38,11 @@ def convert_string_to_dict(string):
 
 class ClaudeClient():
     MODEL_PRICING = {
-        "claude-3-5-sonnet-20240620": {"input_token_cost": 3.00, "output_token_cost": 15.00}
+        "claude-3-5-sonnet-20240620": {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-3-5-sonnet-20241022": {"input_token_cost": 3.00, "output_token_cost": 15.00}
     }
 
-    def __init__(self, model="claude-3-5-sonnet-20240620"):
+    def __init__(self, model="claude-3-5-sonnet-20241022"):
         api_key = os.getenv("CLAUDE_API_KEY")
         if not api_key:
             raise Exception("CLAUDE_API_KEY Environment Variable Unset")
@@ -146,7 +147,7 @@ class ClaudeAgent:
     
     def _iterate(self):
         global iterations
-        console.print(f"[{iterations}]")
+        console.print(f"[{iterations}] - ${self.client.cost}")
         iterations+=1
         response = self.client.generate_response(self.system_prompt, self.context)
         response_length = len(response)
@@ -159,6 +160,7 @@ class ClaudeAgent:
 
         self.context.append(ClaudeAgent._form_message("assistant", response))
         command_response = process_content(response)
+
         self.context.append(ClaudeAgent._form_message("user", command_response))
         command_called = not (command_response == "End.")
         return command_called
@@ -172,6 +174,8 @@ class ClaudeAgent:
                     if self.client.cost > self.compute_budget:
                         console.print("Compute budget exceeded", style="red")
                         break
+        except KeyboardInterrupt:
+            pass
         except Exception as e:
             console.print(e, style="red")
             trace_info = traceback.format_exc()
