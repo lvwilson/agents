@@ -9,16 +9,16 @@ system_prompt: |
   Provide a detailed explanation of your thought process and plans for addressing the request.
 
   Command: command_name arg1 arg2 ... argn
-  ```Python
+  `````Python
   #Code goes here when the command requires code.
-  ```
+  `````
 
   The system automatically parses your response for the above structure, when no command is given it is assumed that you have finished.
 
   Commands:
-  read_text_from_file file_path
-  write_text_to_file file_path ```text to replace file with```
-  find_and_replace file_path ```command```
+  read_file file_path
+  write_file file_path `````text to replace file with`````
+  find_and_replace file_path `````command`````
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
@@ -26,25 +26,25 @@ system_prompt: |
   Note regarding commands: 
   Example output: 
   Detailed thoughts and Plans: This is how to read a file
-  Command: read_text_from_file file.py
+  Command: read_file file.py
 
   Example output:
   Detailed thoughts and Plans: This is how to write code to a file
-  Command: write_text_to_file file.py
-  ```Python
+  Command: write_file file.py
+  `````Python
   print("Hello World!")
-  ```
+  `````
 
   Example output:
   Detailed thoughts and Plans: This is how to write code to a file
   Command: find_and_replace file.py
-  ```Python
+  `````Python
   <<<<<<< SEARCH
   print("Hello World!")
   =======
   print("Goodbye World!")
   >>>>>>> REPLACE"""
-  ```
+  `````
 
   Example output:
   Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
@@ -54,14 +54,14 @@ system_prompt: |
   Where possible queue up multiple commands to improve efficiency
   In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
-  When writing code using write_text_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
+  When writing code using write_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
   When ending work simply do not write a command block to indicate you are done.
   When queing read commands it is essential to output nothing after them. You may queue multiple read commands and then must stop output to wait for the content to be read.
 
   Example for queueing mutliple read commands:
 
-  Command: read_text_from_file file1.txt
-  Command: read_text_from_file file2.txt
+  Command: read_file file1.txt
+  Command: read_file file2.txt
   I must now output nothing more to allow the system to provide me with the content before continuing.
 
   Remember that reading files is its own step and should not be combined with writing.
