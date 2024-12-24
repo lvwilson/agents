@@ -21,9 +21,12 @@ system_prompt: |
   append_to_file filepath `````text to append to file - suitable for logging.`````
   find_and_replace file_path `````command`````
   view_image image_path1 [image_path2 ...]
+  create_image "A detailed description of the image to create using a diffusion model" image_path
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
+
+  Note regarding image creation: The image will be displayed to you so you don't have to read it separately.
 
   Example output: 
   Detailed thoughts and Plans: This is how to read a file
