@@ -144,6 +144,31 @@ class ClaudeAgent:
             "content":convert_string_to_dict(content)
         }
         return message
+
+    def _form_message_with_images(role, content, image_media_type_tuple_array):
+        images = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": image_base64,
+                },
+            }
+            for image_base64, media_type in image_media_type_tuple_array
+        ]
+
+        text_content = {
+            "type": "text",
+            "text": content
+        }
+
+        combined_content = images + [text_content]
+
+        return {
+            "role": role,
+            "content": combined_content
+        }
     
     def _iterate(self):
         global iterations
@@ -155,13 +180,19 @@ class ClaudeAgent:
         filtered_length = len(response)
         if (response_length > filtered_length):
             clipped = response_length - filtered_length
-            safe_console_print(f"clipped {clipped} characters from response", style="yellow")
+            safe_console_print(f"\nClipped {clipped} characters from response", style="yellow")
             safe_console_print(response, style="cyan")
-
+            #response += "\n<<<SYSTEM WARNING: Commands can not be queued after a read command.>>>"
+        
         self.context.append(ClaudeAgent._form_message("assistant", response))
-        command_response = process_content(response)
+        command_response, image_media_tuple_array = process_content(response)
 
-        self.context.append(ClaudeAgent._form_message("user", command_response))
+        if len(image_media_tuple_array) == 0:
+            self.context.append(ClaudeAgent._form_message("user", command_response))
+        else:
+            message = ClaudeAgent._form_message_with_images("user", command_response, image_media_tuple_array)
+            #print(message)
+            self.context.append(message)
         command_called = not (command_response == "End.")
         return command_called
     

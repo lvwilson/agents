@@ -20,11 +20,11 @@ system_prompt: |
   write_file file_path `````text to replace entire file with`````
   append_to_file filepath `````text to append to file - suitable for logging.`````
   find_and_replace file_path `````command`````
+  view_image image_path1 [image_path2 ...]
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
 
-  Note regarding commands: 
   Example output: 
   Detailed thoughts and Plans: This is how to read a file
   Command: read_file file.py
@@ -63,8 +63,8 @@ system_prompt: |
 
   Command: read_file file1.txt
   Command: read_file file2.txt
-  I must now output nothing more to allow the system to provide me with the content before continuing.
-
-  Remember that reading files is its own step and should not be combined with writing. All commands after a read command will be ignored.
+  You should output nothing more to allow the system to provide you with the content before continuing.
+  Remember that reading files is its own step and should not be combined with writing. 
+  All commands after a read command will be ignored.
 model: "claude-3-5-sonnet-20241022"
 overbudget: "System: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
