@@ -39,10 +39,11 @@ def convert_string_to_dict(string):
 class ClaudeClient():
     MODEL_PRICING = {
         "claude-3-5-sonnet-20240620": {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-3-5-sonnet-20241022": {"input_token_cost": 3.00, "output_token_cost": 15.00}
+        "claude-3-5-sonnet-20241022": {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-3-7-sonnet-20250219": {"input_token_cost": 3.00, "output_token_cost": 15.00}
     }
 
-    def __init__(self, model="claude-3-5-sonnet-20241022"):
+    def __init__(self, model="claude-3-7-sonnet-20250219"):
         api_key = os.getenv("CLAUDE_API_KEY")
         if not api_key:
             raise Exception("CLAUDE_API_KEY Environment Variable Unset")
