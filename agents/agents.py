@@ -18,7 +18,6 @@ import yaml
 from rich.console import Console
 
 # Add llmide to path
-sys.path.insert(2, '/home/loki/dev/llmide')
 from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
 
