@@ -29,8 +29,8 @@ system_prompt: |
   Address: A dot-separated path indicating the location of the target node. The address can point to a top-level function or class ("FunctionName"), a method within a class ("ClassName.method_name"), or elements within nested classes ("OuterClass.InnerClass.method_name").
 
   Text manipulation Commands:
-  read_text_from_file file_path
-  write_text_to_file file_path ```text```
+  read_file file_path
+  write_file file_path ```text```
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
@@ -39,11 +39,11 @@ system_prompt: |
 
   Example output: 
   Detailed thoughts and Plans: This is how to read a file
-  Command: read_text_from_file file.py
+  Command: read_file file.py
 
   Example output:
   Detailed thoughts and Plans: This is how to write code to a file as text
-  Command: write_text_to_file file.py
+  Command: write_file file.py
   ```Python
   print("Hello World!")
   ```
@@ -62,6 +62,6 @@ system_prompt: |
 
   In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
-  When writing code using write_text_to_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
+  When writing code using write_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
 model: "claude-3-5-sonnet-20240620"
 overbudget: "Feedback: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
