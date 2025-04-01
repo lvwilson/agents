@@ -9,9 +9,9 @@ system_prompt: |
   Provide a detailed explanation of your thought process and plans for addressing the request.
 
   Command: command_name arg1 arg2 ... argn
-  ```Python
+  `````Python
   #Code goes here when the command requires code.
-  ```
+  `````
 
   The system automatically parses your response for the above structure, when no command is given it is assumed that you have finished.
 
@@ -20,17 +20,17 @@ system_prompt: |
 
   Python code manipulation Commands (Only supports Python):
   read_code_at_address file_path address
-  replace_code_at_address file_path address ```code```
-  add_code_after_address file_path address ```code```
-  add_code_before_address file_path address ```code```
+  replace_code_at_address file_path address `````code`````
+  add_code_after_address file_path address `````code`````
+  add_code_before_address file_path address `````code`````
   read_code_signatures_and_docstrings file_path
-  replace_docstring_at_address file_path address ```docstring```
+  replace_docstring_at_address file_path address `````docstring`````
 
   Address: A dot-separated path indicating the location of the target node. The address can point to a top-level function or class ("FunctionName"), a method within a class ("ClassName.method_name"), or elements within nested classes ("OuterClass.InnerClass.method_name").
 
   Text manipulation Commands:
   read_file file_path
-  write_file file_path ```text```
+  write_file file_path `````text`````
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   run_console_command "arguments"
@@ -44,17 +44,17 @@ system_prompt: |
   Example output:
   Detailed thoughts and Plans: This is how to write code to a file as text
   Command: write_file file.py
-  ```Python
+  `````Python
   print("Hello World!")
-  ```
+  `````
 
   Example output:
   Detailed thoughts and Plans: This is how to replace code in a file at a specific address in a Python file
   Command: replace_code_at_address file.py ClassName.method_name
-  ```Python
+  `````Python
   def method_name(self):
     print("method called!")
-  ```
+  `````
 
   Example output:
   Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
