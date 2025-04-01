@@ -60,7 +60,7 @@ class ClaudeClient():
                 with self.client.messages.stream(
                     model=self.model,
                     max_tokens=8192,
-                    temperature=0.5,
+                    temperature=0.7,
                     system=system_prompt,
                     messages=context,
                     extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"}
@@ -183,10 +183,13 @@ class ClaudeAgent:
             clipped = response_length - filtered_length
             safe_console_print(f"\nClipped {clipped} characters from response", style="yellow")
             safe_console_print(response, style="cyan")
-            #response += "\n<<<SYSTEM WARNING: Commands can not be queued after a read command.>>>"
         
         self.context.append(ClaudeAgent._form_message("assistant", response))
         command_response, image_media_tuple_array = process_content(response)
+
+        if self.client.cost > self.compute_budget:
+            command_response +=  "/n" + self.overbudget_prompt
+            console.print("Compute budget warning", style="yellow")
 
         if len(image_media_tuple_array) == 0:
             self.context.append(ClaudeAgent._form_message("user", command_response))
