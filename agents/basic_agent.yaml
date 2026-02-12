@@ -68,8 +68,7 @@ system_prompt: |
 
   Command: read_file file1.txt
   Command: read_file file2.txt
-  You should output nothing more to allow the system to provide you with the content before continuing.
-  Remember that reading files is its own step and should not be combined with writing. 
-  All commands after a read command will be ignored. Remember to stop output after reading.
+  You should stop output to allow the system to provide you with the response from your commands.
+  All commands after read command(s) will be ignored. Remember to stop output after reading.
 model: "claude-3-7-sonnet-20250219"
 overbudget: "System: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."

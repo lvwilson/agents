@@ -12,12 +12,13 @@ import signal
 import sys
 import traceback
 import time
+import re
 
 # Third-party imports
 import yaml
 from rich.console import Console
 
-# Add llmide to path
+#llmide
 from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
 
@@ -29,6 +30,37 @@ console = Console()
 script_dir = os.path.dirname(os.path.realpath(__file__))
 pickle_path = os.path.join(script_dir, 'context.pkl')
 iterations = 0
+
+def extract_completion(text, backticks=5):
+    """
+    Extract the completion section from the given text.
+    
+    Args:
+        text (str): The text to extract the completion from.
+        backticks (int): The number of backticks used to wrap the YAML section (default: 3).
+    
+    Returns:
+        dict: A dictionary containing the completion information, or None if no completion was found.
+    """
+    # Create the pattern for matching the backtick-wrapped YAML section
+    backtick_pattern = '`' * backticks
+    pattern = rf"{backtick_pattern}(Completion:[\s\S]*?){backtick_pattern}"
+    
+    # Search for the pattern in the text
+    match = re.search(pattern, text, re.DOTALL)
+    if not match:
+        return None
+    
+    # Extract the YAML content
+    yaml_content = match.group(1).strip()
+    
+    try:
+        # Parse the YAML content using PyYAML
+        completion_data = yaml.safe_load(yaml_content)
+        return completion_data['Completion'], completion_data['Success']
+    except yaml.YAMLError as e:
+        print(f"Error parsing YAML: {e}", file=sys.stderr)
+        return "Task could not be varified.", False
 
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
@@ -101,7 +133,7 @@ class ClaudeAgent:
         self.compute_budget = compute_budget
 
     @staticmethod
-    def _form_message(role, content):
+    def _form_message(role, content, cache=False):
         """Create a message dictionary for Claude API.
         
         Args:
@@ -113,7 +145,7 @@ class ClaudeAgent:
         """
         message = {
             "role": role,
-            "content": convert_string_to_dict(content)
+            "content": convert_string_to_dict(content, cache)
         }
         return message
 
@@ -181,7 +213,7 @@ class ClaudeAgent:
         command_response, image_media_tuple_array = process_content(response)
 
         # Check compute budget
-        if self.client.cost > self.compute_budget:
+        if self.client.cost > 0.75*self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
             console.print("Compute budget warning", style="yellow")
 
@@ -233,7 +265,18 @@ class ClaudeAgent:
             self.context = pickle.load(file)
         # Remove the last user message and replace with current task
         self.context.pop()  # TODO: Check that the last message is from the user
-        self.context.append(ClaudeAgent._form_message("user", self.task))
+        self.context.append(ClaudeAgent._form_message("user", self.task, True))
+
+def run_agent(agent_definition, command, budget, save=True, restore=False):
+    agent = ClaudeAgent(agent_definition, command, budget)
+    if restore:
+        agent.load_context()
+    agent.run()
+    if save: 
+        agent.save_context()
+    final_content = agent.context[-2]['content'][0]['text']
+    completion, success = extract_completion(final_content)
+    return completion, success
 
 def main():
     """Parse arguments and run the Claude Agent."""
@@ -244,14 +287,9 @@ def main():
 
     args = parser.parse_args()
     
-    # Create agent with basic agent configuration
-    agent = ClaudeAgent('basic_agent.yaml', args.command, args.compute_budget)
-    
-    if args.restore:
-        agent.load_context()
-    
-    agent.run()
-    agent.save_context()
+    completion, success = run_agent('minion_agent.yaml', args.command, args.compute_budget, restore=args.restore)
+    console.print(completion)
+    console.print(success)
 
 if __name__ == "__main__":
     main()

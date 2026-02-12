@@ -12,30 +12,65 @@ def safe_console_print(text, style="default", end="\n"):
     except Exception:
         print(text)
 
-def convert_string_to_dict(string):
+def convert_string_to_dict(string, cache=False):
     result = []
-    result.append({
-        "type": "text",
-        "text": string
-    })
+    if cache:
+        result.append({
+            "type": "text",
+            "text": string,
+            "cache_control": {"type": "ephemeral"}
+        })
+    else:
+        result.append({
+            "type": "text",
+            "text": string,
+        })
+
     return result
 
 class ClaudeClient():
     MODEL_PRICING = {
         "claude-3-5-sonnet-20240620": {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-3-5-sonnet-20241022": {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-3-7-sonnet-20250219": {"input_token_cost": 3.00, "output_token_cost": 15.00}
+        "claude-3-7-sonnet-20250219": {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-sonnet-4-20250514" : {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-sonnet-4-5-20250929" : {"input_token_cost": 3.00, "output_token_cost": 15.00}
     }
 
-    def __init__(self, model="claude-3-7-sonnet-20250219"):
+    def __init__(self, model="claude-sonnet-4-5-20250929", cache_step=2):
         api_key = os.getenv("CLAUDE_API_KEY")
         if not api_key:
             raise Exception("CLAUDE_API_KEY Environment Variable Unset")
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
         self.cost = 0.0
+        self.call_count = 0
+        self.cache_step = cache_step
 
     def _get_response(self, system_prompt, context, max_retries=3):
+        # Increment call counter
+        self.call_count += 1
+        
+        # Determine if we should cache this request
+        should_cache = (self.call_count % self.cache_step == 0)
+        
+        # Remove any existing cache_control blocks from context
+        for message in context:
+            if message["role"] == "user" and "content" in message:
+                for content_item in message["content"]:
+                    if "cache_control" in content_item:
+                        del content_item["cache_control"]
+        
+        # Add cache_control to the latest user message if needed
+        if should_cache and context:
+            for i in range(len(context) - 1, -1, -1):
+                if context[i]["role"] == "user":
+                    for content_item in context[i]["content"]:
+                        if content_item["type"] == "text":
+                            content_item["cache_control"] = {"type": "ephemeral"}
+                            break
+                    break
+        
         response = None
         retries = 0
         
@@ -43,11 +78,11 @@ class ClaudeClient():
             try:
                 with self.client.messages.stream(
                     model=self.model,
-                    max_tokens=8192,
-                    temperature=0.7,
+                    max_tokens=128000,
+                    temperature=0.6,
                     system=system_prompt,
                     messages=context,
-                    extra_headers={"anthropic-beta": "max-tokens-3-5-sonnet-2024-07-15"}
+                    extra_headers={"anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"}
                 ) as stream:
                     for text in stream.text_stream:
                         safe_console_print(text, style="cyan", end="")
