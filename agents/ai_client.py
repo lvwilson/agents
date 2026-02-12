@@ -78,7 +78,7 @@ class ClaudeClient():
             try:
                 with self.client.messages.stream(
                     model=self.model,
-                    max_tokens=128000,
+                    max_tokens=64000,
                     temperature=0.6,
                     system=system_prompt,
                     messages=context,

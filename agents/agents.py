@@ -117,6 +117,7 @@ class ClaudeAgent:
         # Load configuration
         configuration = read_configuration(configuration_name)
         self.model_name = configuration["model"]
+        console.print(f"Initializing agent with backend model: {self.model_name}", style="green")
         self.client = ClaudeClient(model=self.model_name)
         
         # Set up system prompt with environment information
