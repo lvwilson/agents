@@ -3,10 +3,23 @@ import anthropic
 import os
 import time
 from rich.console import Console
+from rich.theme import Theme
+
+# Modern color theme
+agent_theme = Theme({
+    "stream": "bright_cyan",
+    "stream.dim": "dim cyan",
+    "info": "bright_blue",
+    "success": "bright_green",
+    "warning": "bright_yellow",
+    "error": "bright_red",
+    "cost": "bright_magenta",
+    "muted": "dim white",
+})
 
 # Use /dev/tty for all feedback output, reserving stdout for the stdout tool
 _tty = open('/dev/tty', 'w')
-console = Console(file=_tty)
+console = Console(file=_tty, theme=agent_theme)
 
 def safe_console_print(text, style="default", end="\n"):
     try:
@@ -41,6 +54,17 @@ class ClaudeClient():
         "claude-opus-4-6" : {"input_token_cost": 5.00, "output_token_cost": 25.00}
     }
 
+    # Friendly display names for models
+    MODEL_DISPLAY_NAMES = {
+        "claude-3-5-sonnet-20240620": "Claude 3.5 Sonnet",
+        "claude-3-5-sonnet-20241022": "Claude 3.5 Sonnet v2",
+        "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet",
+        "claude-sonnet-4-20250514": "Claude Sonnet 4",
+        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5",
+        "claude-sonnet-4-6": "Claude Sonnet 4.6",
+        "claude-opus-4-6": "Claude Opus 4.6",
+    }
+
     def __init__(self, model="claude-sonnet-4-5-20250929", cache_step=4):
         api_key = os.getenv("CLAUDE_API_KEY")
         if not api_key:
@@ -50,6 +74,12 @@ class ClaudeClient():
         self.cost = 0.0
         self.call_count = 0
         self.cache_step = cache_step
+        self.last_input_tokens = 0
+        self.last_output_tokens = 0
+
+    @property
+    def display_name(self):
+        return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
 
     def _has_cache_block(self, message):
         """Return True if a user message already has a cache_control block."""
@@ -102,7 +132,7 @@ class ClaudeClient():
                     extra_headers={"anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"}
                 ) as stream:
                     for text in stream.text_stream:
-                        safe_console_print(text, style="cyan", end="")
+                        safe_console_print(text, style="stream", end="")
                 response = stream.get_final_message()
                 if response:  # If a valid response is received, return it
                     return response
@@ -111,20 +141,20 @@ class ClaudeClient():
                 if hasattr(e, 'response') and e.response is not None:
                     headers = e.response.headers
                     retry_after = int(headers.get('retry-after', 1))  # Default to 1 second if header is missing
-                    safe_console_print(f"Rate limit exceeded, retrying in: {retry_after}s", style="yellow")
+                    safe_console_print(f"\n  ⏳ Rate limited — retrying in {retry_after}s", style="warning")
                     time.sleep(retry_after + 1)
             except Exception as e:
                 retries += 1
                 # Log or handle the exception as needed
-                safe_console_print(f"Attempt {retries} failed: {e}", style="red")
+                safe_console_print(f"\n  ✗ Attempt {retries}/{max_retries} failed: {e}", style="error")
         
         raise Exception("Maximum retries exceeded on response request")
                     
     def generate_response(self, system_prompt, context):
         response = self._get_response(system_prompt, context)
-        input_tokens = response.usage.input_tokens
-        output_tokens = response.usage.output_tokens
-        self.cost += self.calculate_cost(input_tokens, output_tokens)
+        self.last_input_tokens = response.usage.input_tokens
+        self.last_output_tokens = response.usage.output_tokens
+        self.cost += self.calculate_cost(self.last_input_tokens, self.last_output_tokens)
         return response.content[0].text
 
     def calculate_cost(self, input_tokens, output_tokens):
