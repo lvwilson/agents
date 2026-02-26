@@ -121,7 +121,8 @@ class ClaudeAgent:
     This agent can execute tasks, maintain context, and manage compute budget.
     """
 
-    def __init__(self, configuration_name, task, compute_budget=1.0, context=None):
+    def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
+                 local_model=None, local_port=8000):
         """Initialize the Claude Agent.
         
         Args:
@@ -129,14 +130,22 @@ class ClaudeAgent:
             task: The task to be performed
             compute_budget: Maximum allowed cost in dollars
             context: Optional list of previous conversation messages
+            local_model: If set, use a local Anthropic-compatible API with this model name
+            local_port: Port for the local API server (default 8000)
         """
         if context is None:
             context = []
             
         # Load configuration
         configuration = read_configuration(configuration_name)
-        self.model_name = configuration["model"]
-        self.client = ClaudeClient(model=self.model_name)
+        
+        if local_model:
+            self.model_name = local_model
+            base_url = f"http://localhost:{local_port}"
+            self.client = ClaudeClient(model=self.model_name, base_url=base_url)
+        else:
+            self.model_name = configuration["model"]
+            self.client = ClaudeClient(model=self.model_name)
         
         # Set up system prompt with environment information
         self.system_prompt = configuration["system_prompt"]
@@ -294,8 +303,10 @@ class ClaudeAgent:
         self.context.append(ClaudeAgent._form_message("user", self.task, True))
 
 
-def run_agent(agent_definition, command, budget, save=True, restore=False):
-    agent = ClaudeAgent(agent_definition, command, budget)
+def run_agent(agent_definition, command, budget, save=True, restore=False,
+              local_model=None, local_port=8000):
+    agent = ClaudeAgent(agent_definition, command, budget,
+                        local_model=local_model, local_port=local_port)
     if restore:
         agent.load_context()
     agent.run()
@@ -315,6 +326,10 @@ def main():
     parser.add_argument('command', type=str, help='A command string like "update my system"')
     parser.add_argument('-b', '--compute-budget', type=float, default=1.0, help='Compute budget in dollars')
     parser.add_argument('-r', '--restore', action='store_true', help='Restore previous context')
+    parser.add_argument('-l', '--local', type=str, default=None, metavar='MODEL',
+                        help='Use a local Anthropic-compatible API with the specified model name')
+    parser.add_argument('-p', '--port', type=int, default=8000,
+                        help='Port for the local API server (default: 8000)')
 
     args = parser.parse_args()
 
@@ -325,7 +340,9 @@ def main():
             backticks = '`' * 5
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
-    completion, success = run_agent('basic_agent.yaml', command, args.compute_budget, restore=args.restore)
+    completion, success = run_agent('basic_agent.yaml', command, args.compute_budget,
+                                    restore=args.restore, local_model=args.local,
+                                    local_port=args.port)
     print_completion_result(completion, success)
 
 

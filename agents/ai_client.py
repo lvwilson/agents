@@ -45,11 +45,19 @@ class ClaudeClient():
         "claude-opus-4-6": "Claude Opus 4.6",
     }
 
-    def __init__(self, model="claude-sonnet-4-5-20250929", cache_step=4):
+    def __init__(self, model="claude-sonnet-4-5-20250929", cache_step=4, base_url=None):
         api_key = os.getenv("CLAUDE_API_KEY")
-        if not api_key:
-            raise Exception("CLAUDE_API_KEY Environment Variable Unset")
-        self.client = anthropic.Anthropic(api_key=api_key)
+        if base_url:
+            # Local backend: use dummy key if none is set
+            if not api_key:
+                api_key = "local"
+            self.client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
+            self.is_local = True
+        else:
+            if not api_key:
+                raise Exception("CLAUDE_API_KEY Environment Variable Unset")
+            self.client = anthropic.Anthropic(api_key=api_key)
+            self.is_local = False
         self.model = model
         self.cost = 0.0
         self.call_count = 0
@@ -59,6 +67,8 @@ class ClaudeClient():
 
     @property
     def display_name(self):
+        if self.is_local:
+            return f"{self.model} (local)"
         return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
 
     def _has_cache_block(self, message):
@@ -89,7 +99,7 @@ class ClaudeClient():
         self.call_count += 1
 
         # Determine if we should place a new cache block this turn
-        should_cache = (self.call_count % self.cache_step == 0)
+        should_cache = (not self.is_local) and (self.call_count % self.cache_step == 0)
 
         if should_cache:
             # Collect all user messages that currently carry a cache block, in context order
@@ -113,14 +123,18 @@ class ClaudeClient():
             try:
                 spinner = create_spinner()
                 spinner.start()
-                with self.client.messages.stream(
+                stream_kwargs = dict(
                     model=self.model,
                     max_tokens=64000,
                     temperature=0.6,
                     system=system_prompt,
                     messages=context,
-                    extra_headers={"anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"}
-                ) as stream:
+                )
+                if not self.is_local:
+                    stream_kwargs["extra_headers"] = {
+                        "anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"
+                    }
+                with self.client.messages.stream(**stream_kwargs) as stream:
                     first_chunk = True
                     for text in stream.text_stream:
                         if first_chunk:
@@ -186,10 +200,16 @@ class ClaudeClient():
         self.last_input_tokens = response.usage.input_tokens
         self.last_output_tokens = response.usage.output_tokens
         self.cost += self.calculate_cost(self.last_input_tokens, self.last_output_tokens)
-        return response.content[0].text
+        # Find the first TextBlock, skipping ThinkingBlock objects from reasoning models
+        for block in response.content:
+            if hasattr(block, 'text'):
+                return block.text
+        raise Exception("No text content found in model response")
 
     def calculate_cost(self, input_tokens, output_tokens):
-        pricing = self.MODEL_PRICING[self.model]
+        pricing = self.MODEL_PRICING.get(self.model)
+        if pricing is None:
+            return 0.0
         cost = (input_tokens * pricing['input_token_cost'] + output_tokens * pricing['output_token_cost']) / 1_000_000
         return cost
     
