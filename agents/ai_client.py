@@ -2,30 +2,9 @@
 import anthropic
 import os
 import time
-from rich.console import Console
-from rich.theme import Theme
 
-# Modern color theme
-agent_theme = Theme({
-    "stream": "bright_cyan",
-    "stream.dim": "dim cyan",
-    "info": "bright_blue",
-    "success": "bright_green",
-    "warning": "bright_yellow",
-    "error": "bright_red",
-    "cost": "bright_magenta",
-    "muted": "dim white",
-})
+from ui import console, safe_console_print
 
-# Use /dev/tty for all feedback output, reserving stdout for the stdout tool
-_tty = open('/dev/tty', 'w')
-console = Console(file=_tty, theme=agent_theme)
-
-def safe_console_print(text, style="default", end="\n"):
-    try:
-        console.print(text, style=style, end=end)
-    except Exception:
-        print(text, file=_tty)
 
 def convert_string_to_dict(string, cache=False):
     result = []

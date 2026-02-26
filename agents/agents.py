@@ -16,52 +16,31 @@ import re
 
 # Third-party imports
 import yaml
-from rich.console import Console
-from rich.panel import Panel
-from rich.rule import Rule
 
-
-#llmide
+# llmide
 from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
 
 # Local imports
-from ai_client import ClaudeClient, safe_console_print, convert_string_to_dict, agent_theme
+from ai_client import ClaudeClient, convert_string_to_dict
+from ui import (
+    print_banner,
+    print_iteration_header,
+    print_summary,
+    print_completion_result,
+    print_budget_warning,
+    print_budget_exceeded,
+    print_error,
+    print_interrupted,
+    print_sigterm,
+    print_clipped,
+    safe_console_print,
+)
 
-# Initialize console and global variables
-# Use /dev/tty for all feedback output, reserving stdout for the stdout tool
-_tty = open('/dev/tty', 'w')
-console = Console(file=_tty, theme=agent_theme)
+# Global state
 script_dir = os.path.dirname(os.path.realpath(__file__))
 pickle_path = os.path.join(script_dir, 'context.pkl')
 iterations = 0
-
-
-def _build_budget_bar(spent, budget, width=20):
-    """Build a text-based progress bar for budget usage."""
-    ratio = min(spent / budget, 1.0) if budget > 0 else 0
-    filled = int(ratio * width)
-    empty = width - filled
-
-    if ratio < 0.5:
-        color = "bright_green"
-    elif ratio < 0.75:
-        color = "bright_yellow"
-    else:
-        color = "bright_red"
-
-    bar = f"[{color}]{'━' * filled}[/][dim]{'─' * empty}[/]"
-    pct = f"{ratio * 100:.0f}%"
-    return f"{bar} {pct}"
-
-
-def _format_tokens(n):
-    """Format token count with K/M suffix."""
-    if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
-    if n >= 1_000:
-        return f"{n / 1_000:.1f}K"
-    return str(n)
 
 
 def extract_completion(text, backticks=5):
@@ -98,13 +77,15 @@ def extract_completion(text, backticks=5):
         print(f"Error parsing YAML: {e}", file=sys.stderr)
         return "Task could not be verified.", False
 
+
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
-    console.print("\n  ⚠  SIGTERM received — terminating subprocess…", style="warning")
+    print_sigterm()
     terminate_process()
 
 # Register signal handler
 signal.signal(signal.SIGTERM, sigterm_handler)
+
 
 def read_yaml_file(file_path):
     """Read and parse a YAML file.
@@ -119,6 +100,7 @@ def read_yaml_file(file_path):
         data = yaml.safe_load(file)
     return data
 
+
 def read_configuration(configuration_name):
     """Read agent configuration from a YAML file.
     
@@ -131,6 +113,7 @@ def read_configuration(configuration_name):
     script_dir = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
     config_path = os.path.join(script_dir, configuration_name)
     return read_yaml_file(config_path)
+
 
 class ClaudeAgent:
     """An autonomous agent powered by Claude AI.
@@ -170,41 +153,7 @@ class ClaudeAgent:
         self.start_time = None
 
         # Display startup banner
-        self._print_banner()
-
-    def _print_banner(self):
-        """Display a modern startup banner."""
-        info_line = (
-            f"[muted]Model:[/] [bright_cyan]{self.client.display_name}[/]  "
-            f"[muted]Budget:[/] [bright_green]${self.compute_budget:.2f}[/]  "
-            f"[muted]System:[/] {platform.platform()}"
-        )
-
-        console.print(Panel(
-            info_line,
-            title="[bold bright_white]◈  Agent Initialized  ◈[/]",
-            border_style="bright_blue",
-            padding=(0, 1),
-        ))
-
-    def _print_iteration_header(self):
-        """Display the iteration header with cost and budget info."""
-        global iterations
-        cost_str = f"${self.client.cost:.4f}"
-        budget_bar = _build_budget_bar(self.client.cost, self.compute_budget)
-        token_info = ""
-        if self.client.last_input_tokens > 0:
-            token_info = (
-                f"  [muted]in:[/] {_format_tokens(self.client.last_input_tokens)}"
-                f"  [muted]out:[/] {_format_tokens(self.client.last_output_tokens)}"
-            )
-
-        header_left = f"[bold bright_white]Step {iterations}[/]"
-        header_right = f"[cost]{cost_str}[/]  {budget_bar}{token_info}"
-
-        console.print(Rule(style="dim bright_blue"))
-        console.print(f"  {header_left}    {header_right}")
-        console.print(Rule(style="dim bright_blue"))
+        print_banner(self.client.display_name, self.compute_budget, platform.platform())
 
     @staticmethod
     def _form_message(role, content, cache=False):
@@ -266,7 +215,10 @@ class ClaudeAgent:
             bool: True if the agent should continue running, False otherwise
         """
         global iterations
-        self._print_iteration_header()
+        print_iteration_header(
+            iterations, self.client.cost, self.compute_budget,
+            self.client.last_input_tokens, self.client.last_output_tokens,
+        )
         iterations += 1
         
         # Generate response from Claude
@@ -279,8 +231,7 @@ class ClaudeAgent:
         
         if response_length > filtered_length:
             clipped = response_length - filtered_length
-            console.print(f"\n  ✂  Clipped {clipped} characters from response", style="warning")
-            safe_console_print(response, style="stream")
+            print_clipped(clipped, response)
         
         # Add response to context and process it
         self.context.append(ClaudeAgent._form_message("assistant", response))
@@ -289,11 +240,7 @@ class ClaudeAgent:
         # Check compute budget
         if self.client.cost > 0.75 * self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
-            pct = self.client.cost / self.compute_budget * 100
-            console.print(Panel(
-                f"[warning]Budget at {pct:.0f}% (${self.client.cost:.4f} / ${self.compute_budget:.2f})[/]",
-                title="[bold warning]⚠  Budget Warning[/]", border_style="bright_yellow", padding=(0, 1),
-            ))
+            print_budget_warning(self.client.cost, self.compute_budget)
 
         # Add user message to context (with or without images)
         if len(image_media_tuple_array) == 0:
@@ -314,43 +261,16 @@ class ClaudeAgent:
             while running:
                 running = self._iterate()
                 if self.client.cost > self.compute_budget:
-                    console.print(Panel(
-                        f"[error]Spent ${self.client.cost:.4f} of ${self.compute_budget:.2f} budget[/]",
-                        title="[bold error]✗  Budget Exceeded[/]", border_style="bright_red", padding=(0, 1),
-                    ))
+                    print_budget_exceeded(self.client.cost, self.compute_budget)
                     break
         except KeyboardInterrupt:
-            console.print("\n  ⚠  Interrupted by user", style="warning")
+            print_interrupted()
         except Exception as e:
-            console.print(Panel(
-                f"[error]{e}[/]\n[muted]{traceback.format_exc()}[/]",
-                title="[bold error]✗  Error[/]", border_style="bright_red", padding=(0, 1),
-            ))
+            print_error(e, traceback.format_exc())
         
         # Print final summary
         elapsed = time.time() - self.start_time
-        self._print_summary(elapsed)
-
-    def _print_summary(self, elapsed):
-        """Display a final summary panel."""
-        console.print()
-        minutes, seconds = divmod(int(elapsed), 60)
-        time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
-
-        summary_line = (
-            f"[muted]Cost:[/] [cost]${self.client.cost:.4f}[/]  "
-            f"[muted]Steps:[/] {iterations}  "
-            f"[muted]Duration:[/] {time_str}  "
-            f"[muted]Budget:[/] {_build_budget_bar(self.client.cost, self.compute_budget)}"
-        )
-
-        console.print(Panel(
-            summary_line,
-            title="[bold bright_white]◈  Session Complete  ◈[/]",
-            border_style="bright_blue",
-            padding=(0, 1),
-        ))
-        console.print()
+        print_summary(self.client.cost, iterations, elapsed, self.compute_budget)
 
     def save_context(self, filename='context.pkl'):
         """Save conversation context to a pickle file.
@@ -373,6 +293,7 @@ class ClaudeAgent:
         self.context.pop()  # TODO: Check that the last message is from the user
         self.context.append(ClaudeAgent._form_message("user", self.task, True))
 
+
 def run_agent(agent_definition, command, budget, save=True, restore=False):
     agent = ClaudeAgent(agent_definition, command, budget)
     if restore:
@@ -387,23 +308,6 @@ def run_agent(agent_definition, command, budget, save=True, restore=False):
         completion, success = extract_completion(final_content)
     return completion, success
 
-def _print_completion_result(completion, success):
-    """Display the final completion result in a styled panel."""
-    if success:
-        icon = "✓"
-        style = "bright_green"
-        title_style = "bold bright_green"
-    else:
-        icon = "✗"
-        style = "bright_red"
-        title_style = "bold bright_red"
-
-    console.print(Panel(
-        f"[{style}]{completion}[/]",
-        title=f"[{title_style}]{icon}  {'Success' if success else 'Failed'}[/]",
-        border_style=style,
-        padding=(0, 1),
-    ))
 
 def main():
     """Parse arguments and run the Claude Agent."""
@@ -422,7 +326,8 @@ def main():
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
     completion, success = run_agent('minion_agent.yaml', command, args.compute_budget, restore=args.restore)
-    _print_completion_result(completion, success)
+    print_completion_result(completion, success)
+
 
 if __name__ == "__main__":
     main()
