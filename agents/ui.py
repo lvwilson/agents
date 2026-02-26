@@ -189,3 +189,12 @@ def print_clipped(clipped_chars, response_text):
     """Display a clipping notice and the filtered response."""
     console.print(f"\n  ✂  Clipped {clipped_chars} characters from response", style="warning")
     safe_console_print(response_text, style="stream")
+
+
+def create_spinner(message="  ◌  Waiting for response…"):
+    """Create a Rich Status spinner for display while awaiting LLM response.
+
+    Returns a Status object that must be started with .start() and stopped
+    with .stop().
+    """
+    return console.status(message, spinner="dots", spinner_style="bright_cyan")

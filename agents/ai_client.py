@@ -3,7 +3,7 @@ import anthropic
 import os
 import time
 
-from ui import console, safe_console_print
+from ui import console, safe_console_print, create_spinner
 
 
 def convert_string_to_dict(string, cache=False):
@@ -102,6 +102,8 @@ class ClaudeClient():
         
         while retries < max_retries:
             try:
+                spinner = create_spinner()
+                spinner.start()
                 with self.client.messages.stream(
                     model=self.model,
                     max_tokens=64000,
@@ -110,12 +112,19 @@ class ClaudeClient():
                     messages=context,
                     extra_headers={"anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"}
                 ) as stream:
+                    first_chunk = True
                     for text in stream.text_stream:
+                        if first_chunk:
+                            spinner.stop()
+                            first_chunk = False
                         safe_console_print(text, style="stream", end="")
+                    if first_chunk:
+                        spinner.stop()
                 response = stream.get_final_message()
                 if response:  # If a valid response is received, return it
                     return response
             except anthropic.RateLimitError as e:
+                spinner.stop()
                 retries += 1
                 if hasattr(e, 'response') and e.response is not None:
                     headers = e.response.headers
@@ -123,6 +132,7 @@ class ClaudeClient():
                     safe_console_print(f"\n  ⏳ Rate limited — retrying in {retry_after}s", style="warning")
                     time.sleep(retry_after + 1)
             except Exception as e:
+                spinner.stop()
                 retries += 1
                 # Log or handle the exception as needed
                 safe_console_print(f"\n  ✗ Attempt {retries}/{max_retries} failed: {e}", style="error")
