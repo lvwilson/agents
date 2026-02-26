@@ -70,5 +70,5 @@ system_prompt: |
   Command: read_file file2.txt
   You should stop output to allow the system to provide you with the response from your commands.
   All commands after read command(s) will be ignored. Remember to stop output after reading.
-model: "claude-sonnet-4-5-20250929"
+model: "claude-sonnet-4-6"
 overbudget: "System: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
