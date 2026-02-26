@@ -22,6 +22,7 @@ system_prompt: |
   find_and_replace file_path `````command (see example)`````
   view_image image_path1 [image_path2 ...]
   create_image "A detailed description of the image to create using a diffusion model" image_path
+  stdout `````what you want to write to stdout`````
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.

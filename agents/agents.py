@@ -26,7 +26,9 @@ from llmide.llmide_functions import get_default_shell
 from ai_client import ClaudeClient, safe_console_print, convert_string_to_dict
 
 # Initialize console and global variables
-console = Console()
+# Use /dev/tty for all feedback output, reserving stdout for the stdout tool
+_tty = open('/dev/tty', 'w')
+console = Console(file=_tty)
 script_dir = os.path.dirname(os.path.realpath(__file__))
 pickle_path = os.path.join(script_dir, 'context.pkl')
 iterations = 0
@@ -290,8 +292,15 @@ def main():
     parser.add_argument('-r', '--restore', action='store_true', help='Restore previous context')
 
     args = parser.parse_args()
-    
-    completion, success = run_agent('minion_agent.yaml', args.command, args.compute_budget, restore=args.restore)
+
+    command = args.command
+    if not sys.stdin.isatty():
+        piped_content = sys.stdin.read()
+        if piped_content:
+            backticks = '`' * 5
+            command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
+
+    completion, success = run_agent('minion_agent.yaml', command, args.compute_budget, restore=args.restore)
     console.print(completion)
     console.print(success)
 
