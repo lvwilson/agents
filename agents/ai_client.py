@@ -38,7 +38,7 @@ class ClaudeClient():
         "claude-sonnet-4-6" : {"input_token_cost": 3.00, "output_token_cost": 15.00}
     }
 
-    def __init__(self, model="claude-sonnet-4-5-20250929", cache_step=2):
+    def __init__(self, model="claude-sonnet-4-5-20250929", cache_step=4):
         api_key = os.getenv("CLAUDE_API_KEY")
         if not api_key:
             raise Exception("CLAUDE_API_KEY Environment Variable Unset")
@@ -48,28 +48,41 @@ class ClaudeClient():
         self.call_count = 0
         self.cache_step = cache_step
 
+    def _has_cache_block(self, message):
+        """Return True if a user message already has a cache_control block."""
+        return any("cache_control" in item for item in message.get("content", []))
+
+    def _add_cache_block(self, message):
+        """Add a cache_control block to the first text item of a user message."""
+        for content_item in message.get("content", []):
+            if content_item["type"] == "text":
+                content_item["cache_control"] = {"type": "ephemeral"}
+                break
+
+    def _remove_cache_block(self, message):
+        """Remove cache_control from all content items in a user message."""
+        for content_item in message.get("content", []):
+            content_item.pop("cache_control", None)
+
     def _get_response(self, system_prompt, context, max_retries=3):
         # Increment call counter
         self.call_count += 1
-        
-        # Determine if we should cache this request
+
+        # Determine if we should place a new cache block this turn
         should_cache = (self.call_count % self.cache_step == 0)
-        
-        # Remove any existing cache_control blocks from context
-        for message in context:
-            if message["role"] == "user" and "content" in message:
-                for content_item in message["content"]:
-                    if "cache_control" in content_item:
-                        del content_item["cache_control"]
-        
-        # Add cache_control to the latest user message if needed
-        if should_cache and context:
-            for i in range(len(context) - 1, -1, -1):
-                if context[i]["role"] == "user":
-                    for content_item in context[i]["content"]:
-                        if content_item["type"] == "text":
-                            content_item["cache_control"] = {"type": "ephemeral"}
-                            break
+
+        if should_cache:
+            # Collect all user messages that currently carry a cache block, in context order
+            cached_messages = [m for m in context if m["role"] == "user" and self._has_cache_block(m)]
+
+            # Trim oldest cache blocks until only one remains, so the new one makes two
+            while len(cached_messages) >= 2:
+                self._remove_cache_block(cached_messages.pop(0))
+
+            # Add a new cache block at the latest user message that doesn't already have one
+            for message in reversed(context):
+                if message["role"] == "user" and not self._has_cache_block(message):
+                    self._add_cache_block(message)
                     break
         
         response = None
