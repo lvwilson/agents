@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import anthropic
 import os
+import random
 import time
 
 from ui import console, safe_console_print, create_spinner
@@ -76,7 +77,14 @@ class ClaudeClient():
         for content_item in message.get("content", []):
             content_item.pop("cache_control", None)
 
-    def _get_response(self, system_prompt, context, max_retries=3):
+    # Retry configuration — exponential backoff for rate limits only
+    RETRY_TIMEOUT = 300        # 5 minutes overall timeout for rate-limit retries
+    RETRY_BASE_DELAY = 1       # Initial backoff delay in seconds
+    RETRY_MAX_DELAY = 60       # Maximum backoff delay in seconds
+    RETRY_BACKOFF_FACTOR = 2   # Exponential backoff multiplier
+    MAX_ERROR_RETRIES = 3      # Fixed retry limit for non-rate-limit errors
+
+    def _get_response(self, system_prompt, context):
         # Increment call counter
         self.call_count += 1
 
@@ -97,10 +105,11 @@ class ClaudeClient():
                     self._add_cache_block(message)
                     break
         
-        response = None
-        retries = 0
+        start_time = time.monotonic()
+        error_retries = 0
+        current_delay = self.RETRY_BASE_DELAY
         
-        while retries < max_retries:
+        while True:
             try:
                 spinner = create_spinner()
                 spinner.start()
@@ -125,19 +134,52 @@ class ClaudeClient():
                     return response
             except anthropic.RateLimitError as e:
                 spinner.stop()
-                retries += 1
+
+                # Exponential backoff with 5-minute timeout for rate limits
+                sleep_time = current_delay
                 if hasattr(e, 'response') and e.response is not None:
                     headers = e.response.headers
-                    retry_after = int(headers.get('retry-after', 1))  # Default to 1 second if header is missing
-                    safe_console_print(f"\n  ⏳ Rate limited — retrying in {retry_after}s", style="warning")
-                    time.sleep(retry_after + 1)
+                    retry_after = headers.get('retry-after')
+                    if retry_after is not None:
+                        try:
+                            sleep_time = max(int(retry_after), sleep_time)
+                        except (ValueError, TypeError):
+                            pass  # fall back to exponential backoff delay
+
+                # Add jitter: ±25% randomisation to avoid thundering herd
+                jitter = sleep_time * 0.25 * (2 * random.random() - 1)
+                sleep_time = max(0, sleep_time + jitter)
+
+                # Ensure we don't exceed the overall timeout
+                remaining = self.RETRY_TIMEOUT - (time.monotonic() - start_time)
+                if remaining <= 0:
+                    raise Exception(
+                        f"Rate-limit retry timeout exceeded ({self.RETRY_TIMEOUT}s)"
+                    )
+                sleep_time = min(sleep_time, remaining)
+
+                safe_console_print(
+                    f"\n  ⏳ Rate limited — retrying in {sleep_time:.1f}s "
+                    f"({remaining:.0f}s remaining)",
+                    style="warning"
+                )
+                time.sleep(sleep_time)
+
+                # Escalate delay for next rate-limit retry
+                current_delay = min(current_delay * self.RETRY_BACKOFF_FACTOR, self.RETRY_MAX_DELAY)
+
             except Exception as e:
                 spinner.stop()
-                retries += 1
-                # Log or handle the exception as needed
-                safe_console_print(f"\n  ✗ Attempt {retries}/{max_retries} failed: {e}", style="error")
-        
-        raise Exception("Maximum retries exceeded on response request")
+                error_retries += 1
+                if error_retries >= self.MAX_ERROR_RETRIES:
+                    raise Exception(
+                        f"Maximum retries exceeded ({self.MAX_ERROR_RETRIES}) "
+                        f"on response request: {e}"
+                    )
+                safe_console_print(
+                    f"\n  ✗ Attempt {error_retries}/{self.MAX_ERROR_RETRIES} failed: {e}",
+                    style="error"
+                )
                     
     def generate_response(self, system_prompt, context):
         response = self._get_response(system_prompt, context)
