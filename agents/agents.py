@@ -12,31 +12,80 @@ import signal
 import sys
 import traceback
 import time
+import re
 
 # Third-party imports
 import yaml
-from rich.console import Console
 
-# Add llmide to path
+# llmide
 from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
 
 # Local imports
-from ai_client import ClaudeClient, safe_console_print, convert_string_to_dict
+from ai_client import ClaudeClient, convert_string_to_dict
+from ui import (
+    print_banner,
+    print_iteration_header,
+    print_summary,
+    print_completion_result,
+    print_budget_warning,
+    print_budget_exceeded,
+    print_error,
+    print_interrupted,
+    print_sigterm,
+    print_clipped,
+    safe_console_print,
+)
 
-# Initialize console and global variables
-console = Console()
+# Global state
 script_dir = os.path.dirname(os.path.realpath(__file__))
 pickle_path = os.path.join(script_dir, 'context.pkl')
 iterations = 0
 
+
+def extract_completion(text, backticks=5):
+    """
+    Extract the completion section from the given text.
+    
+    Args:
+        text (str): The text to extract the completion from.
+        backticks (int): The number of backticks used to wrap the YAML section (default: 5).
+    
+    Returns:
+        dict: A dictionary containing the completion information, or None if no completion was found.
+    """
+    # Create the pattern for matching the backtick-wrapped YAML section
+    backtick_pattern = '`' * backticks
+    pattern = rf"{backtick_pattern}(Completion:[\s\S]*?){backtick_pattern}"
+    
+    # Search for the pattern in the text
+    match = re.search(pattern, text, re.DOTALL)
+    if not match:
+        return None
+    
+    # Extract the YAML content
+    yaml_content = match.group(1).strip()
+    
+    try:
+        # Parse the YAML content using PyYAML
+        completion_data = yaml.safe_load(yaml_content)
+        completion_text = completion_data['Completion']
+        if isinstance(completion_text, str):
+            completion_text = completion_text.strip()
+        return completion_text, completion_data['Success']
+    except yaml.YAMLError as e:
+        print(f"Error parsing YAML: {e}", file=sys.stderr)
+        return "Task could not be verified.", False
+
+
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
-    console.print("Sigterm caught, terminating subprocess...", style="red")
+    print_sigterm()
     terminate_process()
 
 # Register signal handler
 signal.signal(signal.SIGTERM, sigterm_handler)
+
 
 def read_yaml_file(file_path):
     """Read and parse a YAML file.
@@ -51,6 +100,7 @@ def read_yaml_file(file_path):
         data = yaml.safe_load(file)
     return data
 
+
 def read_configuration(configuration_name):
     """Read agent configuration from a YAML file.
     
@@ -63,6 +113,7 @@ def read_configuration(configuration_name):
     script_dir = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
     config_path = os.path.join(script_dir, configuration_name)
     return read_yaml_file(config_path)
+
 
 class ClaudeAgent:
     """An autonomous agent powered by Claude AI.
@@ -99,9 +150,13 @@ class ClaudeAgent:
         self.task = task
         self.context.append(ClaudeAgent._form_message("user", self.task))
         self.compute_budget = compute_budget
+        self.start_time = None
+
+        # Display startup banner
+        print_banner(self.client.display_name, self.compute_budget, platform.platform())
 
     @staticmethod
-    def _form_message(role, content):
+    def _form_message(role, content, cache=False):
         """Create a message dictionary for Claude API.
         
         Args:
@@ -113,7 +168,7 @@ class ClaudeAgent:
         """
         message = {
             "role": role,
-            "content": convert_string_to_dict(content)
+            "content": convert_string_to_dict(content, cache)
         }
         return message
 
@@ -160,7 +215,10 @@ class ClaudeAgent:
             bool: True if the agent should continue running, False otherwise
         """
         global iterations
-        console.print(f"[{iterations}] - ${self.client.cost}")
+        print_iteration_header(
+            iterations, self.client.cost, self.compute_budget,
+            self.client.last_input_tokens, self.client.last_output_tokens,
+        )
         iterations += 1
         
         # Generate response from Claude
@@ -173,17 +231,16 @@ class ClaudeAgent:
         
         if response_length > filtered_length:
             clipped = response_length - filtered_length
-            safe_console_print(f"\nClipped {clipped} characters from response", style="yellow")
-            safe_console_print(response, style="cyan")
+            print_clipped(clipped, response)
         
         # Add response to context and process it
         self.context.append(ClaudeAgent._form_message("assistant", response))
         command_response, image_media_tuple_array = process_content(response)
 
         # Check compute budget
-        if self.client.cost > self.compute_budget:
+        if self.client.cost > 0.75 * self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
-            console.print("Compute budget warning", style="yellow")
+            print_budget_warning(self.client.cost, self.compute_budget)
 
         # Add user message to context (with or without images)
         if len(image_media_tuple_array) == 0:
@@ -198,21 +255,22 @@ class ClaudeAgent:
     
     def run(self):
         """Run the agent until completion or interruption."""
+        self.start_time = time.time()
         try:
             running = self._iterate()
             while running:
                 running = self._iterate()
                 if self.client.cost > self.compute_budget:
-                    console.print("Compute budget exceeded", style="red")
+                    print_budget_exceeded(self.client.cost, self.compute_budget)
                     break
         except KeyboardInterrupt:
-            console.print("Interrupted by user", style="yellow")
+            print_interrupted()
         except Exception as e:
-            console.print(e, style="red")
-            trace_info = traceback.format_exc()
-            console.print(trace_info, style="white")
+            print_error(e, traceback.format_exc())
         
-        console.print(f'Total Cost: ${self.client.cost:.4f}')
+        # Print final summary
+        elapsed = time.time() - self.start_time
+        print_summary(self.client.cost, iterations, elapsed, self.compute_budget)
 
     def save_context(self, filename='context.pkl'):
         """Save conversation context to a pickle file.
@@ -233,7 +291,23 @@ class ClaudeAgent:
             self.context = pickle.load(file)
         # Remove the last user message and replace with current task
         self.context.pop()  # TODO: Check that the last message is from the user
-        self.context.append(ClaudeAgent._form_message("user", self.task))
+        self.context.append(ClaudeAgent._form_message("user", self.task, True))
+
+
+def run_agent(agent_definition, command, budget, save=True, restore=False):
+    agent = ClaudeAgent(agent_definition, command, budget)
+    if restore:
+        agent.load_context()
+    agent.run()
+    if save: 
+        agent.save_context()
+    completion = "Error"
+    success = False
+    if len(agent.context) > 2:
+        final_content = agent.context[-2]['content'][0]['text']
+        completion, success = extract_completion(final_content)
+    return completion, success
+
 
 def main():
     """Parse arguments and run the Claude Agent."""
@@ -243,15 +317,17 @@ def main():
     parser.add_argument('-r', '--restore', action='store_true', help='Restore previous context')
 
     args = parser.parse_args()
-    
-    # Create agent with basic agent configuration
-    agent = ClaudeAgent('basic_agent.yaml', args.command, args.compute_budget)
-    
-    if args.restore:
-        agent.load_context()
-    
-    agent.run()
-    agent.save_context()
+
+    command = args.command
+    if not sys.stdin.isatty():
+        piped_content = sys.stdin.read()
+        if piped_content:
+            backticks = '`' * 5
+            command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
+
+    completion, success = run_agent('basic_agent.yaml', command, args.compute_budget, restore=args.restore)
+    print_completion_result(completion, success)
+
 
 if __name__ == "__main__":
     main()
