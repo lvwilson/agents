@@ -80,5 +80,5 @@ system_prompt: |
   Success: True or False
   `````
   Failure to adhere to this format will result in the task being considered failed. If you wrote any commands, do not write a completion as you will get a response from the executed commands.
-model: "claude-sonnet-4-6"
+model: "claude-opus-4-6"
 overbudget: "System: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."

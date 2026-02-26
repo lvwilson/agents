@@ -275,8 +275,11 @@ def run_agent(agent_definition, command, budget, save=True, restore=False):
     agent.run()
     if save: 
         agent.save_context()
-    final_content = agent.context[-2]['content'][0]['text']
-    completion, success = extract_completion(final_content)
+    completion = "Error"
+    success = False
+    if len(agent.context) > 2:
+        final_content = agent.context[-2]['content'][0]['text']
+        completion, success = extract_completion(final_content)
     return completion, success
 
 def main():

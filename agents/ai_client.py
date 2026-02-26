@@ -35,7 +35,8 @@ class ClaudeClient():
         "claude-3-7-sonnet-20250219": {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-sonnet-4-20250514" : {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-sonnet-4-5-20250929" : {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-sonnet-4-6" : {"input_token_cost": 3.00, "output_token_cost": 15.00}
+        "claude-sonnet-4-6" : {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-opus-4-6" : {"input_token_cost": 5.00, "output_token_cost": 25.00}
     }
 
     def __init__(self, model="claude-sonnet-4-5-20250929", cache_step=4):
