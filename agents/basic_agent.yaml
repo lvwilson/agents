@@ -22,6 +22,7 @@ system_prompt: |
   find_and_replace file_path `````command (see example)`````
   view_image image_path1 [image_path2 ...]
   create_image "A detailed description of the image to create using a diffusion model" image_path
+  stdout `````what you want to write to stdout`````
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
@@ -63,12 +64,22 @@ system_prompt: |
   When writing code using write_file always include all the code. If there is a significant amount of code to leave intact please use the other manipulation functions.
   When ending work simply do not write a command block to indicate you are done.
 
-
   Example for queuing multiple read commands:
 
   Command: read_file file1.txt
   Command: read_file file2.txt
-  You should stop output to allow the system to provide you with the response from your commands.
-  All commands after read command(s) will be ignored. Remember to stop output after reading.
-model: "claude-sonnet-4-6"
+  You should stop output after read commands to allow the system to provide you with the contents of the files.
+  All commands after read command(s) will be ignored. Remember to queue as many read commands as needed for efficiency and stop output after reading.
+  
+  Before you stop output create a concise (approximately up to 12 word) summary of what you did in the following form:
+
+  Worklog: "What I did this step."
+
+  When your task is complete (i.e you are not waiting for any commands to execute and intend to issue no further commands), please respond with a yaml formatted completion message in exactly the following form:
+  `````Completion: |
+    A an accurate but concise description of what you did.
+  Success: True or False
+  `````
+  Failure to adhere to this format will result in the task being considered failed. If you wrote any commands, do not write a completion as you will get a response from the executed commands.
+model: "claude-opus-4-6"
 overbudget: "System: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."

@@ -325,7 +325,7 @@ def main():
             backticks = '`' * 5
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
-    completion, success = run_agent('minion_agent.yaml', command, args.compute_budget, restore=args.restore)
+    completion, success = run_agent('basic_agent.yaml', command, args.compute_budget, restore=args.restore)
     print_completion_result(completion, success)
 
 
