@@ -233,6 +233,9 @@ class ClaudeAgent:
         # Generate response from Claude
         response = self.client.generate_response(self.system_prompt, self.context)
         
+        if not response:
+            return "End."
+
         # Filter response content
         response_length = len(response)
         response = filter_content(response)

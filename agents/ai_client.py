@@ -203,7 +203,8 @@ class ClaudeClient():
         # Find the first TextBlock, skipping ThinkingBlock objects from reasoning models
         for block in response.content:
             if hasattr(block, 'text'):
-                return block.text
+                if block.text:
+                    return block.text
         raise Exception("No text content found in model response")
 
     def calculate_cost(self, input_tokens, output_tokens):
