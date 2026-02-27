@@ -203,11 +203,16 @@ class ClaudeClient():
         response = self._get_response(system_prompt, context)
         self.last_input_tokens = response.usage.input_tokens
         self.last_output_tokens = response.usage.output_tokens
-        # Total tokens in the context window = input tokens sent + output tokens received
-        # (the output becomes part of the window for the next call)
-        self.last_total_context_tokens = self.last_input_tokens + self.last_output_tokens
+        # When prompt caching is active, input_tokens only reflects the
+        # non-cached portion.  The full context window usage must include
+        # tokens read from / written to the cache as well.
+        cache_creation = getattr(response.usage, 'cache_creation_input_tokens', 0) or 0
+        cache_read = getattr(response.usage, 'cache_read_input_tokens', 0) or 0
+        total_input = self.last_input_tokens + cache_creation + cache_read
+        self.last_total_context_tokens = total_input + self.last_output_tokens
         self.peak_context_tokens = max(self.peak_context_tokens, self.last_total_context_tokens)
-        self.cost += self.calculate_cost(self.last_input_tokens, self.last_output_tokens)
+        self.cost += self.calculate_cost(self.last_input_tokens, self.last_output_tokens,
+                                         cache_creation, cache_read)
         # Find the first TextBlock, skipping ThinkingBlock objects from reasoning models
         for block in response.content:
             if hasattr(block, 'text'):
@@ -215,11 +220,20 @@ class ClaudeClient():
                     return block.text
         raise Exception("No text content found in model response")
 
-    def calculate_cost(self, input_tokens, output_tokens):
+    def calculate_cost(self, input_tokens, output_tokens,
+                       cache_creation_tokens=0, cache_read_tokens=0):
         pricing = self.MODEL_PRICING.get(self.model)
         if pricing is None:
             return 0.0
-        cost = (input_tokens * pricing['input_token_cost'] + output_tokens * pricing['output_token_cost']) / 1_000_000
+        input_cost = pricing['input_token_cost']
+        output_cost = pricing['output_token_cost']
+        # Anthropic cache pricing: creation = 1.25× input, read = 0.1× input
+        cost = (
+            input_tokens * input_cost
+            + cache_creation_tokens * input_cost * 1.25
+            + cache_read_tokens * input_cost * 0.10
+            + output_tokens * output_cost
+        ) / 1_000_000
         return cost
     
 def form_message(role, content):
