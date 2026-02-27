@@ -329,8 +329,8 @@ def main():
     parser.add_argument('command', type=str, help='A command string like "update my system"')
     parser.add_argument('-b', '--compute-budget', type=float, default=1.0, help='Compute budget in dollars')
     parser.add_argument('-r', '--restore', action='store_true', help='Restore previous context')
-    parser.add_argument('-l', '--local', type=str, default=None, metavar='MODEL',
-                        help='Use a local Anthropic-compatible API with the specified model name')
+    parser.add_argument('-l', '--local', action='store_true',
+                        help='Use a local Anthropic-compatible API (requires LOCAL_MODEL environment variable)')
     parser.add_argument('-p', '--port', type=int, default=8000,
                         help='Port for the local API server (default: 8000)')
 
@@ -343,8 +343,15 @@ def main():
             backticks = '`' * 5
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
+    # Resolve local model: only use local mode when -l is explicitly passed
+    local_model = None
+    if args.local:
+        local_model = os.environ.get('LOCAL_MODEL')
+        if not local_model:
+            parser.error('--local requires the LOCAL_MODEL environment variable to be set')
+
     completion, success = run_agent('basic_agent.yaml', command, args.compute_budget,
-                                    restore=args.restore, local_model=args.local,
+                                    restore=args.restore, local_model=local_model,
                                     local_port=args.port)
     print_completion_result(completion, success)
 
