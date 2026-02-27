@@ -39,6 +39,8 @@ def safe_console_print(text, style="default", end="\n"):
 
 # ── Formatting helpers ───────────────────────────────────────────────
 
+CONTEXT_WINDOW_TOKENS = 256_000
+
 def build_budget_bar(spent, budget, width=20):
     """Return a Rich-markup progress bar for budget usage."""
     ratio = min(spent / budget, 1.0) if budget > 0 else 0
@@ -51,6 +53,26 @@ def build_budget_bar(spent, budget, width=20):
         color = "bright_yellow"
     else:
         color = "bright_red"
+
+    bar = f"[{color}]{'━' * filled}[/][dim]{'─' * empty}[/]"
+    pct = f"{ratio * 100:.0f}%"
+    return f"{bar} {pct}"
+
+
+def build_context_bar(used_tokens, max_tokens=CONTEXT_WINDOW_TOKENS, width=20):
+    """Return a Rich-markup progress bar for context window usage."""
+    ratio = min(used_tokens / max_tokens, 1.0) if max_tokens > 0 else 0
+    filled = int(ratio * width)
+    empty = width - filled
+
+    if ratio < 0.5:
+        color = "bright_green"
+    elif ratio < 0.75:
+        color = "bright_yellow"
+    elif ratio < 0.9:
+        color = "bright_red"
+    else:
+        color = "bold bright_red"
 
     bar = f"[{color}]{'━' * filled}[/][dim]{'─' * empty}[/]"
     pct = f"{ratio * 100:.0f}%"
@@ -73,7 +95,8 @@ def print_banner(display_name, compute_budget, platform_str):
     info_line = (
         f"[muted]Model:[/] [bright_cyan]{display_name}[/]  "
         f"[muted]Budget:[/] [bright_green]${compute_budget:.2f}[/]  "
-        f"[muted]System:[/] {platform_str}"
+        f"[muted]System:[/] {platform_str}  "
+        f"[muted]Context window:[/] {format_tokens(CONTEXT_WINDOW_TOKENS)}"
     )
     console.print(Panel(
         info_line,
@@ -85,7 +108,7 @@ def print_banner(display_name, compute_budget, platform_str):
 
 def print_iteration_header(step, cost, compute_budget,
                            last_input_tokens=0, last_output_tokens=0):
-    """Display the iteration header with cost and budget info."""
+    """Display the iteration header with cost, budget, and context window info."""
     cost_str = f"${cost:.4f}"
     budget_bar = build_budget_bar(cost, compute_budget)
 
@@ -96,8 +119,14 @@ def print_iteration_header(step, cost, compute_budget,
             f"  [muted]out:[/] {format_tokens(last_output_tokens)}"
         )
 
+    context_bar = build_context_bar(last_input_tokens)
+    context_info = (
+        f"  [muted]Context:[/] {format_tokens(last_input_tokens)}"
+        f"/{format_tokens(CONTEXT_WINDOW_TOKENS)}  {context_bar}"
+    )
+
     header_left = f"[bold bright_white]Step {step}[/]"
-    header_right = f"[cost]{cost_str}[/]  {budget_bar}{token_info}"
+    header_right = f"[cost]{cost_str}[/]  {budget_bar}{token_info}{context_info}"
 
     console.print()
     console.print(Rule(style="dim bright_blue"))
@@ -105,7 +134,7 @@ def print_iteration_header(step, cost, compute_budget,
     console.print(Rule(style="dim bright_blue"))
 
 
-def print_summary(cost, steps, elapsed, compute_budget):
+def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0):
     """Display the final session summary panel."""
     console.print()
     minutes, seconds = divmod(int(elapsed), 60)
@@ -117,6 +146,15 @@ def print_summary(cost, steps, elapsed, compute_budget):
         f"[muted]Duration:[/] {time_str}  "
         f"[muted]Budget:[/] {build_budget_bar(cost, compute_budget)}"
     )
+
+    if peak_context_tokens > 0:
+        context_bar = build_context_bar(peak_context_tokens)
+        summary_line += (
+            f"  [muted]Peak context:[/] "
+            f"{format_tokens(peak_context_tokens)}/{format_tokens(CONTEXT_WINDOW_TOKENS)}"
+            f"  {context_bar}"
+        )
+
     console.print(Panel(
         summary_line,
         title="[bold bright_white]◈  Session Complete  ◈[/]",

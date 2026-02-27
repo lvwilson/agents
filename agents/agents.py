@@ -282,7 +282,8 @@ class ClaudeAgent:
         
         # Print final summary
         elapsed = time.time() - self.start_time
-        print_summary(self.client.cost, iterations, elapsed, self.compute_budget)
+        print_summary(self.client.cost, iterations, elapsed, self.compute_budget,
+                      self.client.peak_context_tokens)
 
     def save_context(self, filename='context.pkl'):
         """Save conversation context to a pickle file.

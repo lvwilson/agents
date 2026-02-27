@@ -64,6 +64,7 @@ class ClaudeClient():
         self.cache_step = cache_step
         self.last_input_tokens = 0
         self.last_output_tokens = 0
+        self.peak_context_tokens = 0
 
     @property
     def display_name(self):
@@ -199,6 +200,7 @@ class ClaudeClient():
         response = self._get_response(system_prompt, context)
         self.last_input_tokens = response.usage.input_tokens
         self.last_output_tokens = response.usage.output_tokens
+        self.peak_context_tokens = max(self.peak_context_tokens, self.last_input_tokens)
         self.cost += self.calculate_cost(self.last_input_tokens, self.last_output_tokens)
         # Find the first TextBlock, skipping ThinkingBlock objects from reasoning models
         for block in response.content:
