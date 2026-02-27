@@ -305,6 +305,8 @@ class ClaudeAgent:
         # Remove the last user message and replace with current task
         self.context.pop()  # TODO: Check that the last message is from the user
         self.context.append(ClaudeAgent._form_message("user", self.task, True))
+        # Trim so at most 2 cache blocks remain after adding the new one
+        self.client.trim_cache_blocks(self.context)
 
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,

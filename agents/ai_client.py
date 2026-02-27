@@ -88,6 +88,12 @@ class ClaudeClient():
         for content_item in message.get("content", []):
             content_item.pop("cache_control", None)
 
+    def trim_cache_blocks(self, context, max_blocks=2):
+        """Trim oldest cache blocks so that at most max_blocks remain."""
+        cached_messages = [m for m in context if m["role"] == "user" and self._has_cache_block(m)]
+        while len(cached_messages) > max_blocks:
+            self._remove_cache_block(cached_messages.pop(0))
+
     # Retry configuration — exponential backoff for rate limits only
     RETRY_TIMEOUT = 300        # 5 minutes overall timeout for rate-limit retries
     RETRY_BASE_DELAY = 1       # Initial backoff delay in seconds
@@ -103,18 +109,14 @@ class ClaudeClient():
         should_cache = (not self.is_local) and (self.call_count % self.cache_step == 0)
 
         if should_cache:
-            # Collect all user messages that currently carry a cache block, in context order
-            cached_messages = [m for m in context if m["role"] == "user" and self._has_cache_block(m)]
-
-            # Trim oldest cache blocks until only one remains, so the new one makes two
-            while len(cached_messages) >= 2:
-                self._remove_cache_block(cached_messages.pop(0))
-
             # Add a new cache block at the latest user message that doesn't already have one
             for message in reversed(context):
                 if message["role"] == "user" and not self._has_cache_block(message):
                     self._add_cache_block(message)
                     break
+
+            # Trim oldest cache blocks so at most 2 remain
+            self.trim_cache_blocks(context)
         
         start_time = time.monotonic()
         error_retries = 0
