@@ -107,7 +107,8 @@ def print_banner(display_name, compute_budget, platform_str):
 
 
 def print_iteration_header(step, cost, compute_budget,
-                           last_input_tokens=0, last_output_tokens=0):
+                           last_input_tokens=0, last_output_tokens=0,
+                           last_total_context_tokens=0):
     """Display the iteration header with cost, budget, and context window info."""
     cost_str = f"${cost:.4f}"
     budget_bar = build_budget_bar(cost, compute_budget)
@@ -119,9 +120,9 @@ def print_iteration_header(step, cost, compute_budget,
             f"  [muted]out:[/] {format_tokens(last_output_tokens)}"
         )
 
-    context_bar = build_context_bar(last_input_tokens)
+    context_bar = build_context_bar(last_total_context_tokens)
     context_info = (
-        f"  [muted]Context:[/] {format_tokens(last_input_tokens)}"
+        f"  [muted]Context:[/] {format_tokens(last_total_context_tokens)}"
         f"/{format_tokens(CONTEXT_WINDOW_TOKENS)}  {context_bar}"
     )
 

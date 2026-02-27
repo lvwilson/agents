@@ -227,6 +227,7 @@ class ClaudeAgent:
         print_iteration_header(
             iterations, self.client.cost, self.compute_budget,
             self.client.last_input_tokens, self.client.last_output_tokens,
+            self.client.last_total_context_tokens,
         )
         iterations += 1
         
@@ -286,22 +287,41 @@ class ClaudeAgent:
                       self.client.peak_context_tokens)
 
     def save_context(self, filename='context.pkl'):
-        """Save conversation context to a pickle file.
+        """Save conversation context and token state to a pickle file.
         
         Args:
             filename: Path to save the pickle file
         """
+        state = {
+            'context': self.context,
+            'total_context_tokens': self.client.last_total_context_tokens,
+            'peak_context_tokens': self.client.peak_context_tokens,
+            'last_input_tokens': self.client.last_input_tokens,
+            'last_output_tokens': self.client.last_output_tokens,
+        }
         with open(filename, 'wb') as file:
-            pickle.dump(self.context, file)
+            pickle.dump(state, file)
 
     def load_context(self, filename='context.pkl'):
-        """Load conversation context from a pickle file.
+        """Load conversation context and token state from a pickle file.
         
         Args:
             filename: Path to the pickle file
         """
         with open(filename, 'rb') as file:
-            self.context = pickle.load(file)
+            data = pickle.load(file)
+
+        # Support both old format (bare list) and new format (dict with state)
+        if isinstance(data, dict):
+            self.context = data['context']
+            self.client.last_total_context_tokens = data.get('total_context_tokens', 0)
+            self.client.peak_context_tokens = data.get('peak_context_tokens', 0)
+            self.client.last_input_tokens = data.get('last_input_tokens', 0)
+            self.client.last_output_tokens = data.get('last_output_tokens', 0)
+        else:
+            # Legacy format: data is just the context list
+            self.context = data
+
         # Remove the last user message and replace with current task
         self.context.pop()  # TODO: Check that the last message is from the user
         self.context.append(ClaudeAgent._form_message("user", self.task, True))
