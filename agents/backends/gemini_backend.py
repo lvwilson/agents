@@ -16,28 +16,40 @@ from ui import create_spinner, safe_console_print
 
 
 class GeminiBackend(LLMBackend):
-    """Gemini backend with streaming and retry logic."""
+    """Gemini backend with streaming, context caching, and retry logic."""
 
     MODEL_PRICING: dict[str, dict[str, float]] = {
-        # Pricing per 1M tokens (as of mid-2025)
-        "gemini-2.5-pro":          {"input_token_cost": 1.25,  "output_token_cost": 10.00},
-        "gemini-2.5-flash":        {"input_token_cost": 0.15,  "output_token_cost": 0.60},
-        "gemini-2.0-flash":        {"input_token_cost": 0.10,  "output_token_cost": 0.40},
-        "gemini-2.0-flash-lite":   {"input_token_cost": 0.075, "output_token_cost": 0.30},
+        # Pricing per 1M tokens (as of mid-2025, prompts <= 200k tokens)
+        "gemini-3.1-pro-preview": {
+            "input_token_cost": 2.00,
+            "output_token_cost": 12.00,
+            "cache_read_cost": 0.20,
+            "cache_storage_cost_per_hour": 4.50,  # $/1M tokens/hour
+        },
+        "gemini-3.1-pro-preview-customtools": {
+            "input_token_cost": 2.00,
+            "output_token_cost": 12.00,
+            "cache_read_cost": 0.20,
+            "cache_storage_cost_per_hour": 4.50,  # $/1M tokens/hour
+        },
+        "gemini-3-flash-preview": {
+            "input_token_cost": 0.50,
+            "output_token_cost": 3.00,
+            "cache_read_cost": 0.05,
+            "cache_storage_cost_per_hour": 1.00,  # $/1M tokens/hour
+        },
     }
 
     MODEL_DISPLAY_NAMES: dict[str, str] = {
-        "gemini-2.5-pro":          "Gemini 2.5 Pro",
-        "gemini-2.5-flash":        "Gemini 2.5 Flash",
-        "gemini-2.0-flash":        "Gemini 2.0 Flash",
-        "gemini-2.0-flash-lite":   "Gemini 2.0 Flash Lite",
+        "gemini-3.1-pro-preview":  "Gemini 3.1 Pro Preview",
+        "gemini-3-flash-preview":  "Gemini 3 Flash Preview",
     }
 
     def __init__(
         self,
-        model: str = "gemini-3.1-pro",
+        model: str = "gemini-3.1-pro-preview",
         base_url: str | None = None,
-        cache_step: int = 4,
+        cache_step: int = 2,
         **_kwargs,
     ):
         super().__init__(model=model, base_url=base_url)
@@ -60,6 +72,13 @@ class GeminiBackend(LLMBackend):
             if not api_key:
                 raise Exception("GEMINI_API_KEY Environment Variable Unset")
             self._client = _genai.Client(api_key=api_key)
+
+        self.cache_step = cache_step
+
+        # Context caching state
+        self._cache_name: str | None = None       # Server-side cache resource name
+        self._cached_msg_count: int = 0            # Number of context messages in the cache
+        self._cached_system_prompt: str | None = None  # System prompt stored in cache
 
     # ── Display name ─────────────────────────────────────────────────
 
@@ -108,6 +127,94 @@ class GeminiBackend(LLMBackend):
                 contents.append(types.Content(role=role, parts=parts))
         return contents
 
+    # ── Context caching helpers ──────────────────────────────────────
+
+    # Cache TTL in seconds — each cache is charged for this full duration
+    # even if deleted early (over-estimate to keep budget tracking safe).
+    CACHE_TTL = 300
+
+    def _delete_cache(self) -> None:
+        """Delete the current server-side cache if it exists."""
+        if self._cache_name:
+            try:
+                self._client.caches.delete(name=self._cache_name)
+            except Exception:
+                pass  # Cache may have already expired
+            self._cache_name = None
+            self._cached_msg_count = 0
+            self._cached_system_prompt = None
+
+    def _create_cache(self, system_prompt: str, context: list[dict]) -> bool:
+        """Create a server-side cache with the system prompt and context.
+
+        Caches all messages except the last user message so that the
+        next call can send only the final message as new content.
+        Storage cost for the full TTL is charged immediately.
+
+        Returns True if cache was created successfully, False otherwise.
+        """
+        if len(context) < 2:
+            return False
+
+        messages_to_cache = context[:-1]
+        contents = self._translate_messages(messages_to_cache)
+        if not contents:
+            return False
+
+        # Delete any existing cache before creating a new one
+        self._delete_cache()
+
+        try:
+            cached_content = self._client.caches.create(
+                model=self.model,
+                config={
+                    "contents": contents,
+                    "system_instruction": system_prompt,
+                    "ttl": f"{self.CACHE_TTL}s",
+                    "display_name": "agent-context-cache",
+                },
+            )
+            self._cache_name = cached_content.name
+            self._cached_msg_count = len(messages_to_cache)
+            self._cached_system_prompt = system_prompt
+
+            # Charge storage for the full TTL up-front.  Use the
+            # API-reported token count when available, otherwise
+            # fall back to the total prompt tokens as an upper bound.
+            usage = getattr(cached_content, "usage_metadata", None)
+            token_count = (
+                getattr(usage, "total_token_count", 0) if usage else 0
+            ) or self.last_input_tokens
+            self.cost += self.calculate_cost(
+                0, 0,
+                cache_storage_tokens=token_count,
+                cache_storage_seconds=self.CACHE_TTL,
+            )
+
+            return True
+        except Exception as e:
+            safe_console_print(
+                f"\n  ⚠ Cache creation failed (falling back to uncached): {e}",
+                style="warning",
+            )
+            self._cache_name = None
+            self._cached_msg_count = 0
+            self._cached_system_prompt = None
+            return False
+
+    def _is_cache_valid(self, system_prompt: str, context: list[dict]) -> bool:
+        """Check if the current cache is still usable for this request."""
+        if not self._cache_name:
+            return False
+        if self._cached_system_prompt != system_prompt:
+            return False
+        # The cache covers messages [0:_cached_msg_count].  It's valid
+        # as long as the context still starts with those same messages
+        # and has grown (new messages appended after the cached portion).
+        if len(context) <= self._cached_msg_count:
+            return False
+        return True
+
     # ── Cost calculation ─────────────────────────────────────────────
 
     def calculate_cost(
@@ -116,14 +223,32 @@ class GeminiBackend(LLMBackend):
         output_tokens: int,
         cache_creation_tokens: int = 0,
         cache_read_tokens: int = 0,
+        cache_storage_tokens: int = 0,
+        cache_storage_seconds: int = 0,
     ) -> float:
         pricing = self.MODEL_PRICING.get(self.model)
         if pricing is None:
             return 0.0
-        return (
-            input_tokens * pricing["input_token_cost"]
-            + output_tokens * pricing["output_token_cost"]
+        input_cost = pricing["input_token_cost"]
+        output_cost = pricing["output_token_cost"]
+        # Gemini has an explicit per-model cache read price rather than
+        # a fixed fraction of the input price.  Cache creation is charged
+        # at the normal input rate (no surcharge).
+        cache_cost = pricing.get("cache_read_cost", input_cost * 0.10)
+        cost = (
+            input_tokens * input_cost
+            + cache_creation_tokens * input_cost
+            + cache_read_tokens * cache_cost
+            + output_tokens * output_cost
         ) / 1_000_000
+
+        # Storage cost: charged per 1M tokens per hour, prorated by TTL
+        if cache_storage_tokens > 0 and cache_storage_seconds > 0:
+            storage_rate = pricing.get("cache_storage_cost_per_hour", 0.0)
+            storage_hours = cache_storage_seconds / 3600.0
+            cost += (cache_storage_tokens / 1_000_000) * storage_rate * storage_hours
+
+        return cost
 
     # ── Core: streaming API call with retries ────────────────────────
 
@@ -134,15 +259,39 @@ class GeminiBackend(LLMBackend):
         """
         self.call_count += 1
         types = self._types
-        contents = self._translate_messages(context)
 
-        # TODO: max_output_tokens varies by backend (64K for Anthropic, 16K here).
-        # Consider making this configurable via the backend or constructor.
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0.6,
-            max_output_tokens=16384,
+        # Determine whether to use or create a cache
+        use_cache = False
+        should_create_cache = (
+            not self.is_local
+            and self.call_count % self.cache_step == 0
         )
+
+        if not self.is_local and self._is_cache_valid(system_prompt, context):
+            # Use existing cache — send only the uncached messages
+            use_cache = True
+        elif should_create_cache:
+            # Create a new cache, then use it
+            if self._create_cache(system_prompt, context):
+                use_cache = True
+
+        if use_cache:
+            # Only send messages not covered by the cache
+            uncached_messages = context[self._cached_msg_count:]
+            contents = self._translate_messages(uncached_messages)
+            config = types.GenerateContentConfig(
+                cached_content=self._cache_name,
+                temperature=0.6,
+                max_output_tokens=16384,
+                # system_instruction is in the cache — do not pass it again
+            )
+        else:
+            contents = self._translate_messages(context)
+            config = types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.6,
+                max_output_tokens=16384,
+            )
 
         start_time = time.monotonic()
         error_retries = 0
@@ -182,6 +331,23 @@ class GeminiBackend(LLMBackend):
 
             except Exception as e:
                 spinner.stop()
+
+                # If cache-related error, invalidate cache and retry without it
+                if use_cache and ("cache" in str(e).lower() or "NOT_FOUND" in str(e)):
+                    safe_console_print(
+                        f"\n  ⚠ Cache expired or invalid, retrying without cache",
+                        style="warning",
+                    )
+                    self._delete_cache()
+                    use_cache = False
+                    contents = self._translate_messages(context)
+                    config = types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.6,
+                        max_output_tokens=16384,
+                    )
+                    continue
+
                 # Check for rate limiting (Google API uses 429 status)
                 is_rate_limit = (
                     "429" in str(e)
@@ -231,10 +397,20 @@ class GeminiBackend(LLMBackend):
 
         if usage_metadata is not None:
             self.last_input_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
-            self.last_output_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
+            self.last_output_tokens = (
+                getattr(usage_metadata, "candidates_token_count", 0)
+                or getattr(usage_metadata, "response_token_count", 0)
+                or 0
+            )
+            cache_read = getattr(usage_metadata, "cached_content_token_count", 0) or 0
         else:
             self.last_input_tokens = 0
             self.last_output_tokens = 0
+            cache_read = 0
+
+        # prompt_token_count from Gemini already includes cached tokens,
+        # so uncached input = total prompt tokens - cached tokens.
+        uncached_input = max(0, self.last_input_tokens - cache_read)
 
         self.last_total_context_tokens = self.last_input_tokens + self.last_output_tokens
         self.peak_context_tokens = max(
@@ -242,7 +418,15 @@ class GeminiBackend(LLMBackend):
         )
 
         self.cost += self.calculate_cost(
-            self.last_input_tokens, self.last_output_tokens
+            uncached_input,
+            self.last_output_tokens,
+            cache_read_tokens=cache_read,
+        )
+
+        # Track what this call would have cost without caching
+        self.cost_without_cache += self.calculate_cost(
+            self.last_input_tokens,
+            self.last_output_tokens,
         )
 
         if not text:
