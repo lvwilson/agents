@@ -38,6 +38,9 @@ class AnthropicBackend(LLMBackend):
         "claude-opus-4-6":             "Claude Opus 4.6",
     }
 
+    # Models that route to MiniMax (require special API key validation)
+    MINIMAX_MODELS = {"MiniMax-M2.5"}
+
     def __init__(
         self,
         model: str = "claude-opus-4-6",
@@ -52,7 +55,17 @@ class AnthropicBackend(LLMBackend):
         self._anthropic = _anthropic
 
         api_key = os.getenv("CLAUDE_API_KEY")
+
         if base_url:
+            # Defensive check: MiniMax models require specific API key prefix
+            # to prevent credential leaks. Only allow keys starting with "sk-api-kt"
+            if model in self.MINIMAX_MODELS:
+                if not api_key or not api_key.startswith("sk-api-kt"):
+                    raise ValueError(
+                        f"Invalid API key for MiniMax model '{model}'. "
+                        "API key must begin with 'sk-api-kt' to prevent credential leakage. "
+                        "Please use a valid MiniMax API key."
+                    )
             if not api_key:
                 api_key = "local"
             self._client = _anthropic.Anthropic(api_key=api_key, base_url=base_url)
