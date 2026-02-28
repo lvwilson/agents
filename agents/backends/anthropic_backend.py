@@ -41,7 +41,7 @@ class AnthropicBackend(LLMBackend):
         self,
         model: str = "claude-opus-4-6",
         base_url: str | None = None,
-        cache_step: int = 4,
+        cache_step: int = 2,
         **_kwargs,
     ):
         super().__init__(model=model, base_url=base_url)
@@ -129,6 +129,20 @@ class AnthropicBackend(LLMBackend):
                     break
             self.trim_cache_blocks(context)
 
+        # Pass system prompt as a cacheable content block so it is
+        # written to the prompt cache on the first call and read from
+        # cache on every subsequent call.
+        if self.is_local:
+            system_value = system_prompt
+        else:
+            system_value = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+
         start_time = time.monotonic()
         error_retries = 0
         current_delay = self.RETRY_BASE_DELAY
@@ -143,7 +157,7 @@ class AnthropicBackend(LLMBackend):
                     model=self.model,
                     max_tokens=64000,
                     temperature=0.6,
-                    system=system_prompt,
+                    system=system_value,
                     messages=context,
                 )
                 if not self.is_local:

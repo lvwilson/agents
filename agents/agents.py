@@ -167,7 +167,11 @@ class ClaudeAgent:
             base_url=base_url,
         )
         
-        # Set up system prompt with environment information
+        # Set up system prompt with environment information.
+        # NOTE: This prompt is persisted in save_context() and restored on
+        # resume so that the prompt-cache prefix stays identical.  Any
+        # dynamic content (e.g. the timestamp below) would otherwise
+        # invalidate the entire Anthropic prompt cache on resumption.
         self.system_prompt = configuration["system_prompt"]
         os_info = platform.platform()
         self.system_prompt += f"\nOperating System: {os_info}"
@@ -319,6 +323,7 @@ class ClaudeAgent:
         """
         state = {
             'context': self.context,
+            'system_prompt': self.system_prompt,
             'total_context_tokens': self.client.last_total_context_tokens,
             'peak_context_tokens': self.client.peak_context_tokens,
             'last_input_tokens': self.client.last_input_tokens,
@@ -339,6 +344,10 @@ class ClaudeAgent:
         # Support both old format (bare list) and new format (dict with state)
         if isinstance(data, dict):
             self.context = data['context']
+            # Restore the original system prompt so the prompt cache
+            # remains valid across resumed sessions.
+            if 'system_prompt' in data:
+                self.system_prompt = data['system_prompt']
             self.client.last_total_context_tokens = data.get('total_context_tokens', 0)
             self.client.peak_context_tokens = data.get('peak_context_tokens', 0)
             self.client.last_input_tokens = data.get('last_input_tokens', 0)
