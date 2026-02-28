@@ -17,34 +17,22 @@ from ui import create_spinner, safe_console_print
 
 
 class OpenAIBackend(LLMBackend):
-    """OpenAI chat-completions backend with streaming and retry logic."""
+    """OpenAI completions backend with streaming and retry logic."""
 
     MODEL_PRICING: dict[str, dict[str, float]] = {
-        "gpt-4o":                {"input_token_cost": 2.50,  "output_token_cost": 10.00},
-        "gpt-4o-2024-11-20":    {"input_token_cost": 2.50,  "output_token_cost": 10.00},
-        "gpt-4o-mini":          {"input_token_cost": 0.15,  "output_token_cost": 0.60},
-        "gpt-4.1":              {"input_token_cost": 2.00,  "output_token_cost": 8.00},
-        "gpt-4.1-mini":         {"input_token_cost": 0.40,  "output_token_cost": 1.60},
-        "gpt-4.1-nano":         {"input_token_cost": 0.10,  "output_token_cost": 0.40},
-        "o1":                   {"input_token_cost": 15.00, "output_token_cost": 60.00},
-        "o1-mini":              {"input_token_cost": 1.10,  "output_token_cost": 4.40},
-        "o3":                   {"input_token_cost": 2.00,  "output_token_cost": 8.00},
-        "o3-mini":              {"input_token_cost": 1.10,  "output_token_cost": 4.40},
-        "o4-mini":              {"input_token_cost": 1.10,  "output_token_cost": 4.40},
+        "gpt-5.2": {"input_token_cost": 2.50, "output_token_cost": 10.00},
+        "gpt-5.2-mini": {"input_token_cost": 0.15, "output_token_cost": 0.60},
+        "gpt-5.3": {"input_token_cost": 2.50, "output_token_cost": 10.00},
+        "gpt-5.3-mini": {"input_token_cost": 0.15, "output_token_cost": 0.60},
+        "gpt-5.3-codex": {"input_token_cost": 3.00, "output_token_cost": 12.00},
     }
 
     MODEL_DISPLAY_NAMES: dict[str, str] = {
-        "gpt-4o":               "GPT-4o",
-        "gpt-4o-2024-11-20":   "GPT-4o (Nov 2024)",
-        "gpt-4o-mini":         "GPT-4o Mini",
-        "gpt-4.1":             "GPT-4.1",
-        "gpt-4.1-mini":        "GPT-4.1 Mini",
-        "gpt-4.1-nano":        "GPT-4.1 Nano",
-        "o1":                  "o1",
-        "o1-mini":             "o1 Mini",
-        "o3":                  "o3",
-        "o3-mini":             "o3 Mini",
-        "o4-mini":             "o4 Mini",
+        "gpt-5.2": "GPT-5.2",
+        "gpt-5.2-mini": "GPT-5.2 Mini",
+        "gpt-5.3": "GPT-5.3",
+        "gpt-5.3-mini": "GPT-5.3 Mini",
+        "gpt-5.3-codex": "GPT-5.3 Codex",
     }
 
     def __init__(
@@ -58,6 +46,7 @@ class OpenAIBackend(LLMBackend):
 
         # Lazy import
         import openai as _openai
+
         self._openai = _openai
 
         api_key = os.getenv("OPENAI_API_KEY")
@@ -84,54 +73,88 @@ class OpenAIBackend(LLMBackend):
     # ── Message format translation ───────────────────────────────────
 
     @staticmethod
-    def _translate_messages(
-        system_prompt: str, context: list[dict]
-    ) -> list[dict]:
-        """Convert internal message format to OpenAI chat-completions format.
+    def _format_messages(system_prompt: str, context: list[dict]) -> list[dict]:
+        """Convert internal message format to OpenAI Responses API input.
 
-        Internal format::
-
-            [{"role": "user"|"assistant",
-              "content": [{"type": "text", "text": "…"}, …]}, …]
-
-        OpenAI format::
-
-            [{"role": "system", "content": "…"},
-             {"role": "user"|"assistant", "content": "…"}, …]
+        Role/content constraints enforced:
+        - system/user: input_text (and user may include input_image)
+        - assistant: output_text (or refusal; we only emit output_text)
         """
-        messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        for msg in context:
-            role = msg["role"]
-            content_parts = msg.get("content", [])
 
-            # Handle image + text messages
-            has_images = any(
-                p.get("type") == "image" for p in content_parts
+        def _to_user_items(parts: list[dict]) -> list[dict]:
+            items: list[dict] = []
+            for part in parts:
+                ptype = part.get("type")
+                if ptype == "text":
+                    text = part.get("text")
+                    if text:
+                        items.append({"type": "input_text", "text": text})
+                elif ptype == "image":
+                    source = part.get("source", {}) or {}
+                    media_type = source.get("media_type", "image/png")
+                    data = source.get("data", "")
+                    if data:
+                        items.append(
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:{media_type};base64,{data}",
+                            }
+                        )
+            return items
+
+        def _to_text_items(parts: list[dict], item_type: str) -> list[dict]:
+            text = "\n".join(
+                p["text"] for p in parts if p.get("type") == "text" and p.get("text")
             )
-            if has_images:
-                oai_parts: list[dict] = []
-                for part in content_parts:
-                    if part.get("type") == "text":
-                        oai_parts.append({"type": "text", "text": part["text"]})
-                    elif part.get("type") == "image":
-                        source = part.get("source", {})
-                        media_type = source.get("media_type", "image/png")
-                        data = source.get("data", "")
-                        oai_parts.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{media_type};base64,{data}"
-                            },
-                        })
-                messages.append({"role": role, "content": oai_parts})
+            if not text:
+                return []
+            return [{"type": item_type, "text": text}]
+
+        messages: list[dict] = []
+        if system_prompt:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": system_prompt}],
+                }
+            )
+
+        for msg in context:
+            role = msg.get("role")
+            parts = msg.get("content", []) or []
+
+            if role == "user":
+                items = _to_user_items(parts)
+            elif role == "assistant":
+                # Assistant history must be output_* content types.
+                # Ignore non-text parts (e.g. images) as they are not valid replay items here.
+                items = _to_text_items(parts, "output_text")
+            elif role == "system":
+                items = _to_text_items(parts, "input_text")
             else:
-                # Plain text — collapse content parts into a single string
-                text = "\n".join(
-                    p["text"] for p in content_parts
-                    if p.get("type") == "text" and p.get("text")
-                )
-                messages.append({"role": role, "content": text})
+                continue
+
+            if items:
+                messages.append({"role": role, "content": items})
+
         return messages
+
+    @staticmethod
+    def _validate_responses_input(messages: list[dict]) -> None:
+        """Fail fast on role/content-type mismatches before API call."""
+        for i, msg in enumerate(messages):
+            role = msg.get("role")
+            content = msg.get("content", []) or []
+            for j, item in enumerate(content):
+                ctype = item.get("type")
+                if role == "assistant" and ctype not in {"output_text", "refusal"}:
+                    raise ValueError(
+                        f"Invalid assistant content type at input[{i}].content[{j}]: {ctype}"
+                    )
+                if role in {"user", "system"} and ctype == "output_text":
+                    raise ValueError(
+                        f"Invalid {role} content type at input[{i}].content[{j}]: {ctype}"
+                    )
 
     # ── Cost calculation ─────────────────────────────────────────────
 
@@ -145,20 +168,25 @@ class OpenAIBackend(LLMBackend):
         pricing = self.MODEL_PRICING.get(self.model)
         if pricing is None:
             return 0.0
+
+        uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
+
         return (
-            input_tokens * pricing["input_token_cost"]
+            uncached_input_tokens * pricing["input_token_cost"]
+            + cache_read_tokens * pricing["input_token_cost"] * 0.5
             + output_tokens * pricing["output_token_cost"]
         ) / 1_000_000
 
     # ── Core: streaming API call with retries ────────────────────────
 
     def _get_response(self, system_prompt: str, context: list[dict]):
-        """Call the OpenAI chat-completions API with streaming and retries.
+        """Call the OpenAI responses API with streaming and retries.
 
         Returns the full collected response text and usage dict.
         """
         self.call_count += 1
-        messages = self._translate_messages(system_prompt, context)
+        messages = self._format_messages(system_prompt, context)
+        self._validate_responses_input(messages)
 
         start_time = time.monotonic()
         error_retries = 0
@@ -169,34 +197,30 @@ class OpenAIBackend(LLMBackend):
                 spinner = create_spinner()
                 spinner.start()
 
-                # TODO: max_tokens varies by backend (64K for Anthropic, 16K here).
-                # Consider making this configurable via the backend or constructor.
-                stream = self._client.chat.completions.create(
+                stream = self._client.responses.create(
                     model=self.model,
-                    messages=messages,
-                    max_tokens=16384,
+                    input=messages,
+                    max_output_tokens=16384,
                     temperature=0.6,
                     stream=True,
-                    stream_options={"include_usage": True},
                 )
 
                 collected_text = ""
                 usage = None
                 first_chunk = True
 
-                for chunk in stream:
-                    # Extract usage from the final chunk
-                    if chunk.usage is not None:
-                        usage = chunk.usage
-
-                    if chunk.choices:
-                        delta = chunk.choices[0].delta
-                        if delta and delta.content:
+                for event in stream:
+                    if event.type == "response.output_text.delta":
+                        text = event.delta
+                        if text:
                             if first_chunk:
                                 spinner.stop()
                                 first_chunk = False
-                            safe_console_print(delta.content, style="stream", end="")
-                            collected_text += delta.content
+                            safe_console_print(text, style="stream", end="")
+                            collected_text += text
+                    elif event.type == "response.completed":
+                        if hasattr(event, "response") and event.response:
+                            usage = event.response.usage
 
                 if first_chunk:
                     spinner.stop()
@@ -207,7 +231,6 @@ class OpenAIBackend(LLMBackend):
                 spinner.stop()
                 sleep_time = current_delay
 
-                # Try to read retry-after header
                 if hasattr(e, "response") and e.response is not None:
                     retry_after = e.response.headers.get("retry-after")
                     if retry_after is not None:
@@ -254,9 +277,14 @@ class OpenAIBackend(LLMBackend):
     def generate_response(self, system_prompt: str, context: list[dict]) -> str:
         text, usage = self._get_response(system_prompt, context)
 
+        cache_read = 0
         if usage is not None:
-            self.last_input_tokens = usage.prompt_tokens or 0
-            self.last_output_tokens = usage.completion_tokens or 0
+            self.last_input_tokens = getattr(usage, "input_tokens", 0) or 0
+            self.last_output_tokens = getattr(usage, "output_tokens", 0) or 0
+            if hasattr(usage, "input_tokens_details") and usage.input_tokens_details:
+                cache_read = (
+                    getattr(usage.input_tokens_details, "cached_tokens", 0) or 0
+                )
         else:
             self.last_input_tokens = 0
             self.last_output_tokens = 0
@@ -267,7 +295,15 @@ class OpenAIBackend(LLMBackend):
         )
 
         self.cost += self.calculate_cost(
-            self.last_input_tokens, self.last_output_tokens
+            self.last_input_tokens,
+            self.last_output_tokens,
+            cache_read_tokens=cache_read,
+        )
+
+        self.cost_without_cache += self.calculate_cost(
+            self.last_input_tokens,
+            self.last_output_tokens,
+            cache_read_tokens=0,
         )
 
         if not text:
