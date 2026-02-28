@@ -25,6 +25,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00},
+        "MiniMax-M2.5" :               {"input_token_cost": 0.3,  "output_token_cost": 1.2},
     }
 
     MODEL_DISPLAY_NAMES = {
@@ -252,4 +253,12 @@ class AnthropicBackend(LLMBackend):
             if hasattr(block, "text") and block.text:
                 return block.text
 
-        raise Exception("No text content found in model response")
+        # Model returned no text content - this happens when the model calls
+        # tools but doesn't provide a text response. We must provide feedback
+        # to the agent that it must complete its response block.
+        content_types = [type(block).__name__ for block in response.content]
+        return ("You must include a text response with your response block. "
+                "After calling any tools, you must provide a text response explaining "
+                "what you did and the results. Include your Completion: and Success: "
+                "fields at the end when the task is complete. "
+                f"(Debug: response contained blocks: {content_types})")
