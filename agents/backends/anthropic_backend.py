@@ -39,7 +39,7 @@ class AnthropicBackend(LLMBackend):
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-5-20250929",
+        model: str = "claude-opus-4-6",
         base_url: str | None = None,
         cache_step: int = 4,
         **_kwargs,

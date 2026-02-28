@@ -35,7 +35,7 @@ class GeminiBackend(LLMBackend):
 
     def __init__(
         self,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.1-pro",
         base_url: str | None = None,
         cache_step: int = 4,
         **_kwargs,

@@ -49,7 +49,7 @@ class OpenAIBackend(LLMBackend):
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = "gpt-5.3-codex",
         base_url: str | None = None,
         cache_step: int = 4,
         **_kwargs,
