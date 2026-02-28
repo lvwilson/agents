@@ -106,11 +106,21 @@ def print_banner(display_name, compute_budget, platform_str):
     ))
 
 
+def _format_cache_savings(cost, cost_without_cache):
+    """Return a Rich-markup string showing cache savings, or empty string."""
+    if cost_without_cache > 0 and cost_without_cache > cost:
+        pct = (cost_without_cache - cost) / cost_without_cache * 100
+        return f" [success]({pct:.0f}% saved)[/]"
+    return ""
+
+
 def print_iteration_header(step, cost, compute_budget,
                            last_input_tokens=0, last_output_tokens=0,
-                           last_total_context_tokens=0):
+                           last_total_context_tokens=0,
+                           cost_without_cache=0.0):
     """Display the iteration header with cost, budget, and context window info."""
     cost_str = f"${cost:.4f}"
+    savings_str = _format_cache_savings(cost, cost_without_cache)
     budget_bar = build_budget_bar(cost, compute_budget)
 
     token_info = ""
@@ -127,7 +137,7 @@ def print_iteration_header(step, cost, compute_budget,
     )
 
     header_left = f"[bold bright_white]Step {step}[/]"
-    header_right = f"[cost]{cost_str}[/]  {budget_bar}{token_info}{context_info}"
+    header_right = f"[cost]{cost_str}[/]{savings_str}  {budget_bar}{token_info}{context_info}"
 
     console.print()
     console.print(Rule(style="dim bright_blue"))
@@ -135,14 +145,16 @@ def print_iteration_header(step, cost, compute_budget,
     console.print(Rule(style="dim bright_blue"))
 
 
-def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0):
+def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0,
+                  cost_without_cache=0.0):
     """Display the final session summary panel."""
     console.print()
     minutes, seconds = divmod(int(elapsed), 60)
     time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
 
+    savings_str = _format_cache_savings(cost, cost_without_cache)
     summary_line = (
-        f"[muted]Cost:[/] [cost]${cost:.4f}[/]  "
+        f"[muted]Cost:[/] [cost]${cost:.4f}[/]{savings_str}  "
         f"[muted]Steps:[/] {steps}  "
         f"[muted]Duration:[/] {time_str}  "
         f"[muted]Budget:[/] {build_budget_bar(cost, compute_budget)}"

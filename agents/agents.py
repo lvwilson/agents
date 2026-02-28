@@ -22,7 +22,8 @@ from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
 
 # Local imports
-from ai_client import ClaudeClient, convert_string_to_dict
+from backends import create_backend
+from ai_client import convert_string_to_dict
 from ui import (
     print_banner,
     print_iteration_header,
@@ -139,13 +140,20 @@ class ClaudeAgent:
         # Load configuration
         configuration = read_configuration(configuration_name)
         
+        # Determine provider, model, and optional base URL
+        provider = configuration.get("provider", "anthropic")
         if local_model:
             self.model_name = local_model
             base_url = f"http://localhost:{local_port}"
-            self.client = ClaudeClient(model=self.model_name, base_url=base_url)
         else:
             self.model_name = configuration["model"]
-            self.client = ClaudeClient(model=self.model_name)
+            base_url = configuration.get("base_url", None)
+
+        self.client = create_backend(
+            provider,
+            model=self.model_name,
+            base_url=base_url,
+        )
         
         # Set up system prompt with environment information
         self.system_prompt = configuration["system_prompt"]
@@ -228,6 +236,7 @@ class ClaudeAgent:
             iterations, self.client.cost, self.compute_budget,
             self.client.last_input_tokens, self.client.last_output_tokens,
             self.client.last_total_context_tokens,
+            cost_without_cache=self.client.cost_without_cache,
         )
         iterations += 1
         
@@ -284,7 +293,8 @@ class ClaudeAgent:
         # Print final summary
         elapsed = time.time() - self.start_time
         print_summary(self.client.cost, iterations, elapsed, self.compute_budget,
-                      self.client.peak_context_tokens)
+                      self.client.peak_context_tokens,
+                      cost_without_cache=self.client.cost_without_cache)
 
     def save_context(self, filename='context.pkl'):
         """Save conversation context and token state to a pickle file.
