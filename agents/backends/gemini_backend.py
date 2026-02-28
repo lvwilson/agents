@@ -6,6 +6,7 @@ Implements :class:`LLMBackend` using the ``google-genai`` unified SDK.
 
 from __future__ import annotations
 
+import base64
 import os
 import random
 import time
@@ -31,13 +32,6 @@ class GeminiBackend(LLMBackend):
         "gemini-2.0-flash":        "Gemini 2.0 Flash",
         "gemini-2.0-flash-lite":   "Gemini 2.0 Flash Lite",
     }
-
-    # Retry configuration
-    RETRY_TIMEOUT = 300
-    RETRY_BASE_DELAY = 1
-    RETRY_MAX_DELAY = 60
-    RETRY_BACKOFF_FACTOR = 2
-    MAX_ERROR_RETRIES = 3
 
     def __init__(
         self,
@@ -103,8 +97,6 @@ class GeminiBackend(LLMBackend):
                     source = part.get("source", {})
                     media_type = source.get("media_type", "image/png")
                     data = source.get("data", "")
-                    # Gemini accepts inline_data with base64
-                    import base64
                     parts.append(types.Part(
                         inline_data=types.Blob(
                             mime_type=media_type,
@@ -144,6 +136,8 @@ class GeminiBackend(LLMBackend):
         types = self._types
         contents = self._translate_messages(context)
 
+        # TODO: max_output_tokens varies by backend (64K for Anthropic, 16K here).
+        # Consider making this configurable via the backend or constructor.
         config = types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=0.6,
@@ -192,7 +186,7 @@ class GeminiBackend(LLMBackend):
                 is_rate_limit = (
                     "429" in str(e)
                     or "RESOURCE_EXHAUSTED" in str(e)
-                    or "rate" in str(e).lower()
+                    or "rate limit" in str(e).lower()
                 )
 
                 if is_rate_limit:

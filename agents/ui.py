@@ -39,6 +39,8 @@ def safe_console_print(text, style="default", end="\n"):
 
 # ── Formatting helpers ───────────────────────────────────────────────
 
+# TODO: This is Anthropic-specific (256K). OpenAI models use 128K, Gemini varies.
+# Now that multiple backends exist, this should come from the backend instance.
 CONTEXT_WINDOW_TOKENS = 256_000
 
 def build_budget_bar(spent, budget, width=20):

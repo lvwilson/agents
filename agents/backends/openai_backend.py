@@ -47,13 +47,6 @@ class OpenAIBackend(LLMBackend):
         "o4-mini":             "o4 Mini",
     }
 
-    # Retry configuration
-    RETRY_TIMEOUT = 300
-    RETRY_BASE_DELAY = 1
-    RETRY_MAX_DELAY = 60
-    RETRY_BACKOFF_FACTOR = 2
-    MAX_ERROR_RETRIES = 3
-
     def __init__(
         self,
         model: str = "gpt-4o",
@@ -176,6 +169,8 @@ class OpenAIBackend(LLMBackend):
                 spinner = create_spinner()
                 spinner.start()
 
+                # TODO: max_tokens varies by backend (64K for Anthropic, 16K here).
+                # Consider making this configurable via the backend or constructor.
                 stream = self._client.chat.completions.create(
                     model=self.model,
                     messages=messages,

@@ -37,13 +37,6 @@ class AnthropicBackend(LLMBackend):
         "claude-opus-4-6":             "Claude Opus 4.6",
     }
 
-    # Retry configuration
-    RETRY_TIMEOUT = 300
-    RETRY_BASE_DELAY = 1
-    RETRY_MAX_DELAY = 60
-    RETRY_BACKOFF_FACTOR = 2
-    MAX_ERROR_RETRIES = 3
-
     def __init__(
         self,
         model: str = "claude-sonnet-4-5-20250929",
@@ -144,6 +137,8 @@ class AnthropicBackend(LLMBackend):
             try:
                 spinner = create_spinner()
                 spinner.start()
+                # TODO: max_tokens varies by backend (64K here, 16K for OpenAI/Gemini).
+                # Consider making this configurable via the backend or constructor.
                 stream_kwargs = dict(
                     model=self.model,
                     max_tokens=64000,

@@ -16,6 +16,13 @@ class LLMBackend(ABC):
     backends which don't support them still satisfy the interface.
     """
 
+    # Retry configuration — shared defaults for all backends
+    RETRY_TIMEOUT = 300        # 5 minutes overall timeout for rate-limit retries
+    RETRY_BASE_DELAY = 1       # Initial backoff delay in seconds
+    RETRY_MAX_DELAY = 60       # Maximum backoff delay in seconds
+    RETRY_BACKOFF_FACTOR = 2   # Exponential backoff multiplier
+    MAX_ERROR_RETRIES = 3      # Fixed retry limit for non-rate-limit errors
+
     def __init__(self, model: str, base_url: str | None = None):
         self.model: str = model
         self.base_url: str | None = base_url
