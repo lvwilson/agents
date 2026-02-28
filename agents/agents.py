@@ -141,10 +141,10 @@ class ClaudeAgent:
         configuration = read_configuration(configuration_name)
         
         # Determine provider from environment variable or config
-        provider = os.environ.get("PROVIDER", configuration.get("provider", "anthropic"))
+        provider = os.environ.get("AGENT_MODEL_PROVIDER", configuration.get("provider", "anthropic"))
         
         # Determine model from environment variable with provider-specific defaults
-        model_env = os.environ.get("MODEL")
+        model_env = os.environ.get("AGENT_MODEL")
         if local_model:
             self.model_name = local_model
             base_url = f"http://localhost:{local_port}"
@@ -156,7 +156,7 @@ class ClaudeAgent:
             provider_defaults = {
                 "anthropic": "claude-opus-4-6",
                 "openai": "gpt-5.3-codex",
-                "gemini": "gemini-3.1-pro",
+                "gemini": "gemini-3.1-pro-preview",
             }
             self.model_name = provider_defaults.get(provider, "claude-opus-4-6")
             base_url = configuration.get("base_url", None)
