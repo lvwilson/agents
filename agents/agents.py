@@ -374,9 +374,22 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         agent.save_context()
     completion = "Error"
     success = False
+    feedback = None
     if len(agent.context) > 2:
         final_content = agent.context[-2]['content'][0]['text']
-        completion, success = extract_completion(final_content)
+        result = extract_completion(final_content)
+        if result is not None:
+            completion, success = result
+        else:
+            # Provide feedback when agent fails to provide completion block
+            feedback = "Feedback: No completion block was found in your response. Please provide a completion block with 'Completion: <description>' and 'Success: True/False' at the end of your response."
+    
+    # If feedback was generated, add it to context for potential resume
+    if feedback:
+        agent.context.append(ClaudeAgent._form_message("user", feedback))
+        if save:
+            agent.save_context()
+    
     return completion, success
 
 
