@@ -172,6 +172,9 @@ class ClaudeAgent:
         os_info = platform.platform()
         self.system_prompt += f"\nOperating System: {os_info}"
         self.system_prompt += f"\nShell: {get_default_shell()}"
+        self.system_prompt += f"\nSystem Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        self.system_prompt += f"\nWorking Directory: {os.getcwd()}"
+        self.system_prompt += f"\nUser: {os.environ.get('USER', 'unknown')}"
         
         # Set remaining attributes
         self.overbudget_prompt = configuration["overbudget"]
