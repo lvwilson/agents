@@ -13,7 +13,7 @@ Usage
 
     client = create_backend("anthropic", model="claude-sonnet-4-5-20250929")
     client = create_backend("openai",    model="gpt-4o", base_url="http://localhost:8000")
-    client = create_backend("gemini",    model="gemini-2.0-flash")
+    client = create_backend("gemini",    model="gemini-3.1-pro-preview")
 """
 
 from __future__ import annotations
