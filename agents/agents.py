@@ -330,6 +330,9 @@ class ClaudeAgent:
             'peak_context_tokens': self.client.peak_context_tokens,
             'last_input_tokens': self.client.last_input_tokens,
             'last_output_tokens': self.client.last_output_tokens,
+            'cost': self.client.cost,
+            'cost_without_cache': self.client.cost_without_cache,
+            'call_count': self.client.call_count,
         }
         with open(filename, 'wb') as file:
             pickle.dump(state, file)
@@ -354,6 +357,9 @@ class ClaudeAgent:
             self.client.peak_context_tokens = data.get('peak_context_tokens', 0)
             self.client.last_input_tokens = data.get('last_input_tokens', 0)
             self.client.last_output_tokens = data.get('last_output_tokens', 0)
+            self.client.cost = data.get('cost', 0.0)
+            self.client.cost_without_cache = data.get('cost_without_cache', 0.0)
+            self.client.call_count = data.get('call_count', 0)
         else:
             # Legacy format: data is just the context list
             self.context = data

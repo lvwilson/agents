@@ -59,7 +59,7 @@ def create_backend(
     *,
     model: str,
     base_url: str | None = None,
-    cache_step: int = 4,
+    cache_step: int = 2,
     stream_handler: "StreamHandler | None" = None,
     **kwargs,
 ) -> "LLMBackend":
@@ -75,7 +75,8 @@ def create_backend(
         Optional override URL (e.g. for local / self-hosted inference).
     cache_step : int
         How often to place prompt-cache markers (Anthropic-specific;
-        ignored by backends that don't support it).
+        ignored by backends that don't support it).  Default is ``2``
+        meaning a cache block is placed every 2 API calls.
     stream_handler : StreamHandler | None
         Optional callback handler for streaming events.  When ``None``
         a silent no-op handler is used (headless mode).  Pass a
