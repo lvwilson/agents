@@ -193,11 +193,7 @@ class GeminiBackend(LLMBackend):
             token_count = (
                 getattr(usage, "total_token_count", 0) if usage else 0
             ) or self.last_input_tokens
-            self.cost += self.calculate_cost(
-                0, 0,
-                cache_storage_tokens=token_count,
-                cache_storage_seconds=self.CACHE_TTL,
-            )
+            self.cost += self._calculate_storage_cost(token_count, self.CACHE_TTL)
 
             return True
         except Exception as e:
@@ -230,14 +226,25 @@ class GeminiBackend(LLMBackend):
 
     # ── Cost calculation ─────────────────────────────────────────────
 
+    def _calculate_storage_cost(self, token_count: int, seconds: int) -> float:
+        """Return the dollar cost for caching *token_count* tokens for *seconds*.
+
+        Storage is charged per 1 M tokens per hour, prorated by the
+        actual duration.
+        """
+        pricing = self.MODEL_PRICING.get(self.model)
+        if not pricing:
+            return 0.0
+        storage_rate = pricing.get("cache_storage_cost_per_hour", 0.0)
+        storage_hours = seconds / 3600.0
+        return (token_count / 1_000_000) * storage_rate * storage_hours
+
     def calculate_cost(
         self,
         input_tokens: int,
         output_tokens: int,
         cache_creation_tokens: int = 0,
         cache_read_tokens: int = 0,
-        cache_storage_tokens: int = 0,
-        cache_storage_seconds: int = 0,
     ) -> float:
         pricing = self.MODEL_PRICING.get(self.model)
         if pricing is None:
@@ -248,20 +255,12 @@ class GeminiBackend(LLMBackend):
         # a fixed fraction of the input price.  Cache creation is charged
         # at the normal input rate (no surcharge).
         cache_cost = pricing.get("cache_read_cost", input_cost * 0.10)
-        cost = (
+        return (
             input_tokens * input_cost
             + cache_creation_tokens * input_cost
             + cache_read_tokens * cache_cost
             + output_tokens * output_cost
         ) / 1_000_000
-
-        # Storage cost: charged per 1M tokens per hour, prorated by TTL
-        if cache_storage_tokens > 0 and cache_storage_seconds > 0:
-            storage_rate = pricing.get("cache_storage_cost_per_hour", 0.0)
-            storage_hours = cache_storage_seconds / 3600.0
-            cost += (cache_storage_tokens / 1_000_000) * storage_rate * storage_hours
-
-        return cost
 
     # ── Error classification ─────────────────────────────────────────
 

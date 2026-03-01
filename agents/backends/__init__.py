@@ -59,7 +59,6 @@ def create_backend(
     *,
     model: str,
     base_url: str | None = None,
-    cache_step: int = 2,
     stream_handler: "StreamHandler | None" = None,
     **kwargs,
 ) -> "LLMBackend":
@@ -73,22 +72,19 @@ def create_backend(
         Model identifier to pass to the backend.
     base_url : str | None
         Optional override URL (e.g. for local / self-hosted inference).
-    cache_step : int
-        How often to place prompt-cache markers (Anthropic-specific;
-        ignored by backends that don't support it).  Default is ``2``
-        meaning a cache block is placed every 2 API calls.
     stream_handler : StreamHandler | None
         Optional callback handler for streaming events.  When ``None``
         a silent no-op handler is used (headless mode).  Pass a
         ``RichStreamHandler`` for interactive terminal output.
     **kwargs
-        Forwarded to the backend constructor.
+        Forwarded to the backend constructor.  Backends that support
+        prompt caching (Anthropic, Gemini) define their own
+        ``cache_step`` default in their constructor.
     """
     cls = _load_class(provider)
     return cls(
         model=model,
         base_url=base_url,
-        cache_step=cache_step,
         stream_handler=stream_handler,
         **kwargs,
     )

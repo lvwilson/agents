@@ -84,9 +84,6 @@ def sigterm_handler(_signo, _stack_frame):
     print_sigterm()
     terminate_process()
 
-# Register signal handler
-signal.signal(signal.SIGTERM, sigterm_handler)
-
 
 def read_yaml_file(file_path):
     """Read and parse a YAML file.
@@ -335,6 +332,27 @@ class Agent:
                       cost_without_cache=self.client.cost_without_cache,
                       context_window_tokens=self.client.context_window_size)
 
+    def request_completion(self) -> bool:
+        """Ask the LLM for a completion block if none was found.
+
+        Appends a feedback message requesting a completion block and
+        runs one more iteration.
+
+        Returns True if an iteration was performed, False if budget
+        was already exhausted.
+        """
+        if self.client.cost > self.compute_budget:
+            return False
+        feedback = (
+            "Feedback: No completion block was found in your response. "
+            "Please provide a completion block with "
+            "'Completion: <description>' and 'Success: True/False' "
+            "at the end of your response."
+        )
+        self.context.append(Agent._form_message("user", feedback))
+        self._iterate()
+        return True
+
     def save_context(self, filename='context.pkl'):
         """Save conversation context and token state to a pickle file.
         
@@ -414,24 +432,15 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         if result is not None:
             completion, success = result
         else:
-            # Give the agent one more chance to provide a completion block,
-            # but only if there is budget remaining.
-            if agent.client.cost <= agent.compute_budget:
-                feedback = ("Feedback: No completion block was found in your response. "
-                            "Please provide a completion block with "
-                            "'Completion: <description>' and 'Success: True/False' "
-                            "at the end of your response.")
-                agent.context.append(Agent._form_message("user", feedback))
-                try:
-                    agent._iterate()
-                except Exception as e:
-                    logging.warning("Completion-retry iteration failed: %s", e)
-                # Check the new response for a completion block
-                if len(agent.context) > 2:
+            # Give the agent one more chance to provide a completion block.
+            try:
+                if agent.request_completion() and len(agent.context) > 2:
                     final_content = agent.context[-2]['content'][0]['text']
                     result = extract_completion(final_content)
                     if result is not None:
                         completion, success = result
+            except Exception as e:
+                logging.warning("Completion-retry iteration failed: %s", e)
 
     if save:
         agent.save_context()
@@ -440,7 +449,11 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
 
 def main():
-    """Parse arguments and run the Claude Agent."""
+    """Parse arguments and run the agent."""
+    # Register signal handler here rather than at import time so that
+    # importing this module as a library doesn't install a handler as a
+    # side-effect.
+    signal.signal(signal.SIGTERM, sigterm_handler)
     parser = argparse.ArgumentParser(description="Autonomous AI agent")
     parser.add_argument('command', type=str, help='A command string like "update my system"')
     parser.add_argument('-b', '--compute-budget', type=float, default=1.0, help='Compute budget in dollars')

@@ -7,6 +7,8 @@ renders styled output.  Neither agents.py nor ai_client.py should
 import Rich directly.
 """
 
+import sys
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
@@ -25,16 +27,50 @@ agent_theme = Theme({
 })
 
 # ── Console (writes to /dev/tty so stdout stays clean) ───────────────
-_tty = open("/dev/tty", "w")
-console = Console(file=_tty, theme=agent_theme)
+_tty = None
+
+
+def _get_tty():
+    """Return a writable file for /dev/tty, falling back to stderr."""
+    global _tty
+    if _tty is None:
+        try:
+            _tty = open("/dev/tty", "w")
+        except OSError:
+            _tty = sys.stderr
+    return _tty
+
+
+# Lazy console singleton — initialised on first access so that the
+# /dev/tty open is deferred until the module is actually *used*.
+_console = None
+
+
+def _get_console():
+    """Return the module-level Rich Console, creating it on first use."""
+    global _console
+    if _console is None:
+        _console = Console(file=_get_tty(), theme=agent_theme)
+    return _console
+
+
+# Keep a module-level ``console`` property-like accessor.  Existing code
+# references ``console`` directly (e.g. ``console.print(…)``), so we
+# replace the module attribute with a lazy wrapper.
+class _LazyConsole:
+    """Proxy that forwards attribute access to the real Console."""
+    def __getattr__(self, name):
+        return getattr(_get_console(), name)
+
+console = _LazyConsole()
 
 
 def safe_console_print(text, style="default", end="\n"):
     """Print to the console, falling back to plain write on error."""
     try:
-        console.print(text, style=style, end=end)
+        _get_console().print(text, style=style, end=end)
     except Exception:
-        print(text, file=_tty)
+        print(text, file=_get_tty())
 
 
 # ── Formatting helpers ───────────────────────────────────────────────
