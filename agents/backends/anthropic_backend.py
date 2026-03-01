@@ -159,8 +159,15 @@ class AnthropicBackend(LLMBackend):
         self.call_count += 1
         sh = self.stream_handler
 
-        # Place a new cache block periodically
-        should_cache = (not self.is_local) and (self.call_count % self.cache_step == 0)
+        # Place a new cache block periodically.
+        # Always cache on the first call so the initial task message is
+        # written to the prompt cache immediately — without this, call 1
+        # sends all message tokens as uncached input and the cache block
+        # is only created on call 2 (at 1.25× cost), with reads not
+        # benefiting until call 3.
+        should_cache = (not self.is_local) and (
+            self.call_count == 1 or self.call_count % self.cache_step == 0
+        )
         if should_cache:
             for message in reversed(context):
                 if message["role"] == "user" and not self._has_cache_block(message):

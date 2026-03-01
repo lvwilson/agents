@@ -287,6 +287,12 @@ class Agent:
         self.context.append(Agent._form_message("assistant", response))
         command_response, image_media_tuple_array = process_content(response)
 
+        # Determine if we should continue running.  This must be checked
+        # *before* the overbudget prompt is appended — otherwise the
+        # "End." sentinel is mutated and the agent fails to terminate
+        # even when no commands were found.
+        command_called = command_response != "End."
+
         # Check compute budget
         if self.client.cost > 0.75 * self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
@@ -306,8 +312,6 @@ class Agent:
             self.client.mark_for_caching(message)
             self.client.trim_cache_blocks(self.context)
 
-        # Determine if we should continue running
-        command_called = not (command_response == "End.")
         return command_called
     
     def run(self):
