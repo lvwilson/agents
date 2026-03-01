@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude Agent - An autonomous AI agent using Anthropic's Claude API.
+Agent - An autonomous AI agent with pluggable LLM backends.
 """
 # Standard library imports
 import argparse
@@ -117,8 +117,8 @@ def read_configuration(configuration_name):
     return read_yaml_file(config_path)
 
 
-class ClaudeAgent:
-    """An autonomous agent powered by Claude AI.
+class Agent:
+    """An autonomous agent powered by an LLM backend.
     
     This agent can execute tasks, maintain context, and manage compute budget.
     """
@@ -186,12 +186,13 @@ class ClaudeAgent:
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
-        self.context.append(ClaudeAgent._form_message("user", self.task))
+        self.context.append(Agent._form_message("user", self.task))
         self.compute_budget = compute_budget
         self.start_time = None
 
         # Display startup banner
-        print_banner(self.client.display_name, self.compute_budget, platform.platform())
+        print_banner(self.client.display_name, self.compute_budget, platform.platform(),
+                     self.client.context_window_size)
 
     @staticmethod
     def _form_message(role, content, cache=False):
@@ -258,6 +259,7 @@ class ClaudeAgent:
             self.client.last_input_tokens, self.client.last_output_tokens,
             self.client.last_total_context_tokens,
             cost_without_cache=self.client.cost_without_cache,
+            context_window_tokens=self.client.context_window_size,
         )
         iterations += 1
         
@@ -277,7 +279,7 @@ class ClaudeAgent:
             print_clipped(clipped, response)
         
         # Add response to context and process it
-        self.context.append(ClaudeAgent._form_message("assistant", response))
+        self.context.append(Agent._form_message("assistant", response))
         command_response, image_media_tuple_array = process_content(response)
 
         # Check compute budget
@@ -287,9 +289,9 @@ class ClaudeAgent:
 
         # Add user message to context (with or without images)
         if len(image_media_tuple_array) == 0:
-            self.context.append(ClaudeAgent._form_message("user", command_response))
+            self.context.append(Agent._form_message("user", command_response))
         else:
-            message = ClaudeAgent._form_message_with_images("user", command_response, image_media_tuple_array)
+            message = Agent._form_message_with_images("user", command_response, image_media_tuple_array)
             self.context.append(message)
             
         # Determine if we should continue running
@@ -315,7 +317,8 @@ class ClaudeAgent:
         elapsed = time.time() - self.start_time
         print_summary(self.client.cost, iterations, elapsed, self.compute_budget,
                       self.client.peak_context_tokens,
-                      cost_without_cache=self.client.cost_without_cache)
+                      cost_without_cache=self.client.cost_without_cache,
+                      context_window_tokens=self.client.context_window_size)
 
     def save_context(self, filename='context.pkl'):
         """Save conversation context and token state to a pickle file.
@@ -366,15 +369,15 @@ class ClaudeAgent:
 
         # Remove the last user message and replace with current task
         self.context.pop()  # TODO: Check that the last message is from the user
-        self.context.append(ClaudeAgent._form_message("user", self.task, True))
+        self.context.append(Agent._form_message("user", self.task, True))
         # Trim so at most 2 cache blocks remain after adding the new one
         self.client.trim_cache_blocks(self.context)
 
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               local_model=None, local_port=8000):
-    agent = ClaudeAgent(agent_definition, command, budget,
-                        local_model=local_model, local_port=local_port)
+    agent = Agent(agent_definition, command, budget,
+                  local_model=local_model, local_port=local_port)
     if restore:
         agent.load_context()
     agent.run()
@@ -393,7 +396,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                             "Please provide a completion block with "
                             "'Completion: <description>' and 'Success: True/False' "
                             "at the end of your response.")
-                agent.context.append(ClaudeAgent._form_message("user", feedback))
+                agent.context.append(Agent._form_message("user", feedback))
                 try:
                     agent._iterate()
                 except Exception as e:

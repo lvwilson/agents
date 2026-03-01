@@ -35,6 +35,17 @@ class AnthropicBackend(LLMBackend):
         "claude-opus-4-6":             "Claude Opus 4.6",
     }
 
+    MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+        "claude-3-5-sonnet-20240620":  200_000,
+        "claude-3-5-sonnet-20241022":  200_000,
+        "claude-3-7-sonnet-20250219":  200_000,
+        "claude-sonnet-4-20250514":    200_000,
+        "claude-sonnet-4-5-20250929":  200_000,
+        "claude-sonnet-4-6":           200_000,
+        "claude-opus-4-6":             200_000,
+        "MiniMax-M2.5":                200_000,
+    }
+
     # Models that route to MiniMax (require special API key validation)
     MINIMAX_MODELS = {"MiniMax-M2.5"}
 
@@ -81,6 +92,10 @@ class AnthropicBackend(LLMBackend):
         if self.is_local:
             return f"{self.model} (local)"
         return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
+
+    @property
+    def context_window_size(self) -> int:
+        return self.MODEL_CONTEXT_WINDOWS.get(self.model, 256_000)
 
     # ── Prompt-cache helpers ─────────────────────────────────────────
 

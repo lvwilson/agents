@@ -225,6 +225,15 @@ class LLMBackend(ABC):
     def display_name(self) -> str:
         """Human-readable model name shown in the UI banner."""
 
+    @property
+    def context_window_size(self) -> int:
+        """Maximum context window size in tokens for the current model.
+
+        Subclasses should override this to return the correct value for
+        their model.  The default is 256 000 tokens.
+        """
+        return 256_000
+
     # ── Optional overrides ───────────────────────────────────────────
 
     def trim_cache_blocks(self, context: list[dict], max_blocks: int = 2) -> None:

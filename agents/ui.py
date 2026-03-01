@@ -39,10 +39,6 @@ def safe_console_print(text, style="default", end="\n"):
 
 # ── Formatting helpers ───────────────────────────────────────────────
 
-# TODO: This is Anthropic-specific (256K). OpenAI models use 128K, Gemini varies.
-# Now that multiple backends exist, this should come from the backend instance.
-CONTEXT_WINDOW_TOKENS = 256_000
-
 def build_budget_bar(spent, budget, width=20):
     """Return a Rich-markup progress bar for budget usage."""
     ratio = min(spent / budget, 1.0) if budget > 0 else 0
@@ -61,7 +57,7 @@ def build_budget_bar(spent, budget, width=20):
     return f"{bar} {pct}"
 
 
-def build_context_bar(used_tokens, max_tokens=CONTEXT_WINDOW_TOKENS, width=20):
+def build_context_bar(used_tokens, max_tokens, width=20):
     """Return a Rich-markup progress bar for context window usage."""
     ratio = min(used_tokens / max_tokens, 1.0) if max_tokens > 0 else 0
     filled = int(ratio * width)
@@ -92,13 +88,13 @@ def format_tokens(n):
 
 # ── Display functions ────────────────────────────────────────────────
 
-def print_banner(display_name, compute_budget, platform_str):
+def print_banner(display_name, compute_budget, platform_str, context_window_tokens):
     """Display the startup banner."""
     info_line = (
         f"[muted]Model:[/] [bright_cyan]{display_name}[/]  "
         f"[muted]Budget:[/] [bright_green]${compute_budget:.2f}[/]  "
         f"[muted]System:[/] {platform_str}  "
-        f"[muted]Context window:[/] {format_tokens(CONTEXT_WINDOW_TOKENS)}"
+        f"[muted]Context window:[/] {format_tokens(context_window_tokens)}"
     )
     console.print(Panel(
         info_line,
@@ -119,7 +115,8 @@ def _format_cache_savings(cost, cost_without_cache):
 def print_iteration_header(step, cost, compute_budget,
                            last_input_tokens=0, last_output_tokens=0,
                            last_total_context_tokens=0,
-                           cost_without_cache=0.0):
+                           cost_without_cache=0.0,
+                           context_window_tokens=256_000):
     """Display the iteration header with cost, budget, and context window info."""
     cost_str = f"${cost:.4f}"
     savings_str = _format_cache_savings(cost, cost_without_cache)
@@ -132,10 +129,10 @@ def print_iteration_header(step, cost, compute_budget,
             f"  [muted]out:[/] {format_tokens(last_output_tokens)}"
         )
 
-    context_bar = build_context_bar(last_total_context_tokens)
+    context_bar = build_context_bar(last_total_context_tokens, context_window_tokens)
     context_info = (
         f"  [muted]Context:[/] {format_tokens(last_total_context_tokens)}"
-        f"/{format_tokens(CONTEXT_WINDOW_TOKENS)}  {context_bar}"
+        f"/{format_tokens(context_window_tokens)}  {context_bar}"
     )
 
     header_left = f"[bold bright_white]Step {step}[/]"
@@ -148,7 +145,7 @@ def print_iteration_header(step, cost, compute_budget,
 
 
 def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0,
-                  cost_without_cache=0.0):
+                  cost_without_cache=0.0, context_window_tokens=256_000):
     """Display the final session summary panel."""
     console.print()
     minutes, seconds = divmod(int(elapsed), 60)
@@ -163,10 +160,10 @@ def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0,
     )
 
     if peak_context_tokens > 0:
-        context_bar = build_context_bar(peak_context_tokens)
+        context_bar = build_context_bar(peak_context_tokens, context_window_tokens)
         summary_line += (
             f"  [muted]Peak context:[/] "
-            f"{format_tokens(peak_context_tokens)}/{format_tokens(CONTEXT_WINDOW_TOKENS)}"
+            f"{format_tokens(peak_context_tokens)}/{format_tokens(context_window_tokens)}"
             f"  {context_bar}"
         )
 

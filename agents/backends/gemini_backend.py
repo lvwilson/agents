@@ -42,6 +42,12 @@ class GeminiBackend(LLMBackend):
         "gemini-3-flash-preview":  "Gemini 3 Flash Preview",
     }
 
+    MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+        "gemini-3.1-pro-preview":             2_000_000,
+        "gemini-3.1-pro-preview-customtools": 2_000_000,
+        "gemini-3-flash-preview":             1_000_000,
+    }
+
     def __init__(
         self,
         model: str = "gemini-3.1-pro-preview",
@@ -85,6 +91,10 @@ class GeminiBackend(LLMBackend):
         if self.is_local:
             return f"{self.model} (local)"
         return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
+
+    @property
+    def context_window_size(self) -> int:
+        return self.MODEL_CONTEXT_WINDOWS.get(self.model, 1_000_000)
 
     # ── Message format translation ───────────────────────────────────
 

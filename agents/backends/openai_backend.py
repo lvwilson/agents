@@ -32,6 +32,14 @@ class OpenAIBackend(LLMBackend):
         "gpt-5.3-codex": "GPT-5.3 Codex",
     }
 
+    MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+        "gpt-5.2":       128_000,
+        "gpt-5.2-mini":  128_000,
+        "gpt-5.3":       128_000,
+        "gpt-5.3-mini":  128_000,
+        "gpt-5.3-codex": 128_000,
+    }
+
     def __init__(
         self,
         model: str = "gpt-5.3-codex",
@@ -67,6 +75,10 @@ class OpenAIBackend(LLMBackend):
         if self.is_local:
             return f"{self.model} (local)"
         return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
+
+    @property
+    def context_window_size(self) -> int:
+        return self.MODEL_CONTEXT_WINDOWS.get(self.model, 256_000)
 
     # ── Message format translation ───────────────────────────────────
 
