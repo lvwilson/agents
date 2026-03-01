@@ -392,12 +392,12 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                     agent._iterate()
                 except Exception as e:
                     logging.warning("Completion-retry iteration failed: %s", e)
-            # Check the new response for a completion block
-            if len(agent.context) > 2:
-                final_content = agent.context[-2]['content'][0]['text']
-                result = extract_completion(final_content)
-                if result is not None:
-                    completion, success = result
+                # Check the new response for a completion block
+                if len(agent.context) > 2:
+                    final_content = agent.context[-2]['content'][0]['text']
+                    result = extract_completion(final_content)
+                    if result is not None:
+                        completion, success = result
 
     if save:
         agent.save_context()

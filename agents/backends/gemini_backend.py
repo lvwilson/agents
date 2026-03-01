@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import base64
 import os
-import random
-import time
 
-from llm_backend import LLMBackend, StreamHandler
+from llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
 
 
 class GeminiBackend(LLMBackend):
@@ -214,6 +212,12 @@ class GeminiBackend(LLMBackend):
             return False
         return True
 
+    @staticmethod
+    def _is_cache_error(error: Exception) -> bool:
+        """Return True if *error* looks like a stale/invalid cache error."""
+        error_str = str(error)
+        return "cache" in error_str.lower() or "NOT_FOUND" in error_str
+
     # ── Cost calculation ─────────────────────────────────────────────
 
     def calculate_cost(
@@ -249,6 +253,28 @@ class GeminiBackend(LLMBackend):
 
         return cost
 
+    # ── Error classification ─────────────────────────────────────────
+
+    def _classify_error(self, error: Exception) -> str:
+        # Prefer typed exception check when google.api_core is available
+        try:
+            from google.api_core.exceptions import ResourceExhausted, TooManyRequests
+            if isinstance(error, (ResourceExhausted, TooManyRequests)):
+                return RATE_LIMIT
+        except ImportError:
+            pass
+
+        # Fall back to string matching for wrapped or non-typed errors
+        error_str = str(error)
+        if (
+            "429" in error_str
+            or "RESOURCE_EXHAUSTED" in error_str
+            or "rate limit" in error_str.lower()
+        ):
+            return RATE_LIMIT
+
+        return TRANSIENT
+
     # ── Core: streaming API call with retries ────────────────────────
 
     def _get_response(self, system_prompt: str, context: list[dict]):
@@ -261,124 +287,70 @@ class GeminiBackend(LLMBackend):
         types = self._types
 
         # Determine whether to use or create a cache
-        use_cache = False
         should_create_cache = (
             not self.is_local
             and self.call_count % self.cache_step == 0
         )
 
+        use_cache = False
         if not self.is_local and self._is_cache_valid(system_prompt, context):
-            # Use existing cache — send only the uncached messages
             use_cache = True
         elif should_create_cache:
-            # Create a new cache, then use it
             if self._create_cache(system_prompt, context):
                 use_cache = True
 
-        if use_cache:
-            # Only send messages not covered by the cache
-            uncached_messages = context[self._cached_msg_count:]
-            contents = self._translate_messages(uncached_messages)
-            config = types.GenerateContentConfig(
-                cached_content=self._cache_name,
-                temperature=0.6,
-                max_output_tokens=16384,
-                # system_instruction is in the cache — do not pass it again
-            )
-        else:
-            contents = self._translate_messages(context)
-            config = types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.6,
-                max_output_tokens=16384,
-            )
-
-        start_time = time.monotonic()
-        error_retries = 0
-        current_delay = self.RETRY_BASE_DELAY
-
-        while True:
-            try:
-                sh.on_stream_start()
-
-                stream = self._client.models.generate_content_stream(
-                    model=self.model,
-                    contents=contents,
-                    config=config,
+        def _do_stream(cached):
+            """Run one streaming call, optionally using the server cache."""
+            if cached:
+                uncached_messages = context[self._cached_msg_count:]
+                contents = self._translate_messages(uncached_messages)
+                config = types.GenerateContentConfig(
+                    cached_content=self._cache_name,
+                    temperature=0.6,
+                    max_output_tokens=16384,
+                )
+            else:
+                contents = self._translate_messages(context)
+                config = types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.6,
+                    max_output_tokens=16384,
                 )
 
-                collected_text = ""
-                usage_metadata = None
+            stream = self._client.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=config,
+            )
 
-                for chunk in stream:
-                    # Capture usage metadata from any chunk that has it
-                    if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
-                        usage_metadata = chunk.usage_metadata
+            collected_text = ""
+            usage_metadata = None
 
-                    if chunk.text:
-                        sh.on_stream_token(chunk.text)
-                        collected_text += chunk.text
+            for chunk in stream:
+                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    usage_metadata = chunk.usage_metadata
+                if chunk.text:
+                    sh.on_stream_token(chunk.text)
+                    collected_text += chunk.text
 
-                sh.on_stream_end()
-                return collected_text, usage_metadata
+            return collected_text, usage_metadata
 
+        def attempt():
+            nonlocal use_cache
+            try:
+                return _do_stream(use_cache)
             except Exception as e:
-                sh.on_stream_end()
-
-                # If cache-related error, invalidate cache and retry without it
-                if use_cache and ("cache" in str(e).lower() or "NOT_FOUND" in str(e)):
-                    sh.on_retry(
-                        "Cache expired or invalid, retrying without cache"
-                    )
+                # If the error is cache-related, invalidate and retry
+                # once without the cache before letting _run_with_retries
+                # handle rate-limit / transient classification.
+                if use_cache and self._is_cache_error(e):
+                    sh.on_retry("Cache expired or invalid, retrying without cache")
                     self._delete_cache()
                     use_cache = False
-                    contents = self._translate_messages(context)
-                    config = types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=0.6,
-                        max_output_tokens=16384,
-                    )
-                    continue
+                    return _do_stream(False)
+                raise
 
-                # Check for rate limiting (Google API uses 429 status)
-                is_rate_limit = (
-                    "429" in str(e)
-                    or "RESOURCE_EXHAUSTED" in str(e)
-                    or "rate limit" in str(e).lower()
-                )
-
-                if is_rate_limit:
-                    sleep_time = current_delay
-                    jitter = sleep_time * 0.25 * (2 * random.random() - 1)
-                    sleep_time = max(0, sleep_time + jitter)
-
-                    remaining = self.RETRY_TIMEOUT - (time.monotonic() - start_time)
-                    if remaining <= 0:
-                        raise Exception(
-                            f"Rate-limit retry timeout exceeded ({self.RETRY_TIMEOUT}s)"
-                        )
-                    sleep_time = min(sleep_time, remaining)
-
-                    sh.on_retry(
-                        f"Rate limited — retrying in {sleep_time:.1f}s "
-                        f"({remaining:.0f}s remaining)"
-                    )
-                    time.sleep(sleep_time)
-                    current_delay = min(
-                        current_delay * self.RETRY_BACKOFF_FACTOR,
-                        self.RETRY_MAX_DELAY,
-                    )
-                else:
-                    error_retries += 1
-                    if error_retries >= self.MAX_ERROR_RETRIES:
-                        raise Exception(
-                            f"Maximum retries exceeded ({self.MAX_ERROR_RETRIES}) "
-                            f"on response request: {e}"
-                        )
-                    sh.on_error(
-                        f"Attempt {error_retries}/{self.MAX_ERROR_RETRIES} "
-                        f"failed: {e}"
-                    )
+        return self._run_with_retries(attempt)
 
     # ── Public interface ─────────────────────────────────────────────
 

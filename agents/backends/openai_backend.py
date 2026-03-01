@@ -9,10 +9,8 @@ server (e.g. vLLM, llama.cpp, Ollama with OpenAI compat layer).
 from __future__ import annotations
 
 import os
-import random
-import time
 
-from llm_backend import LLMBackend, StreamHandler
+from llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
 
 
 class OpenAIBackend(LLMBackend):
@@ -177,6 +175,13 @@ class OpenAIBackend(LLMBackend):
             + output_tokens * pricing["output_token_cost"]
         ) / 1_000_000
 
+    # ── Error classification ─────────────────────────────────────────
+
+    def _classify_error(self, error: Exception) -> str:
+        if isinstance(error, self._openai.RateLimitError):
+            return RATE_LIMIT
+        return TRANSIENT
+
     # ── Core: streaming API call with retries ────────────────────────
 
     def _get_response(self, system_prompt: str, context: list[dict]):
@@ -189,80 +194,31 @@ class OpenAIBackend(LLMBackend):
         messages = self._format_messages(system_prompt, context)
         self._validate_responses_input(messages)
 
-        start_time = time.monotonic()
-        error_retries = 0
-        current_delay = self.RETRY_BASE_DELAY
+        def attempt():
+            stream = self._client.responses.create(
+                model=self.model,
+                input=messages,
+                max_output_tokens=16384,
+                temperature=0.6,
+                stream=True,
+            )
 
-        while True:
-            try:
-                sh.on_stream_start()
+            collected_text = ""
+            usage = None
 
-                stream = self._client.responses.create(
-                    model=self.model,
-                    input=messages,
-                    max_output_tokens=16384,
-                    temperature=0.6,
-                    stream=True,
-                )
+            for event in stream:
+                if event.type == "response.output_text.delta":
+                    text = event.delta
+                    if text:
+                        sh.on_stream_token(text)
+                        collected_text += text
+                elif event.type == "response.completed":
+                    if hasattr(event, "response") and event.response:
+                        usage = event.response.usage
 
-                collected_text = ""
-                usage = None
+            return collected_text, usage
 
-                for event in stream:
-                    if event.type == "response.output_text.delta":
-                        text = event.delta
-                        if text:
-                            sh.on_stream_token(text)
-                            collected_text += text
-                    elif event.type == "response.completed":
-                        if hasattr(event, "response") and event.response:
-                            usage = event.response.usage
-
-                sh.on_stream_end()
-                return collected_text, usage
-
-            except self._openai.RateLimitError as e:
-                sh.on_stream_end()
-                sleep_time = current_delay
-
-                if hasattr(e, "response") and e.response is not None:
-                    retry_after = e.response.headers.get("retry-after")
-                    if retry_after is not None:
-                        try:
-                            sleep_time = max(int(retry_after), sleep_time)
-                        except (ValueError, TypeError):
-                            pass
-
-                jitter = sleep_time * 0.25 * (2 * random.random() - 1)
-                sleep_time = max(0, sleep_time + jitter)
-
-                remaining = self.RETRY_TIMEOUT - (time.monotonic() - start_time)
-                if remaining <= 0:
-                    raise Exception(
-                        f"Rate-limit retry timeout exceeded ({self.RETRY_TIMEOUT}s)"
-                    )
-                sleep_time = min(sleep_time, remaining)
-
-                sh.on_retry(
-                    f"Rate limited — retrying in {sleep_time:.1f}s "
-                    f"({remaining:.0f}s remaining)"
-                )
-                time.sleep(sleep_time)
-                current_delay = min(
-                    current_delay * self.RETRY_BACKOFF_FACTOR, self.RETRY_MAX_DELAY
-                )
-
-            except Exception as e:
-                sh.on_stream_end()
-                error_retries += 1
-                if error_retries >= self.MAX_ERROR_RETRIES:
-                    raise Exception(
-                        f"Maximum retries exceeded ({self.MAX_ERROR_RETRIES}) "
-                        f"on response request: {e}"
-                    )
-                sh.on_error(
-                    f"Attempt {error_retries}/{self.MAX_ERROR_RETRIES} failed: {e}"
-                )
+        return self._run_with_retries(attempt)
 
     # ── Public interface ─────────────────────────────────────────────
 

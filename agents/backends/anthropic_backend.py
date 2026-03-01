@@ -7,10 +7,8 @@ Implements :class:`LLMBackend` using the ``anthropic`` Python SDK.
 from __future__ import annotations
 
 import os
-import random
-import time
 
-from llm_backend import LLMBackend, StreamHandler
+from llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
 
 
 class AnthropicBackend(LLMBackend):
@@ -129,6 +127,13 @@ class AnthropicBackend(LLMBackend):
         ) / 1_000_000
         return cost
 
+    # ── Error classification ─────────────────────────────────────────
+
+    def _classify_error(self, error: Exception) -> str:
+        if isinstance(error, self._anthropic.RateLimitError):
+            return RATE_LIMIT
+        return TRANSIENT
+
     # ── Core: get raw API response with retries ──────────────────────
 
     def _get_response(self, system_prompt: str, context: list[dict]):
@@ -158,73 +163,30 @@ class AnthropicBackend(LLMBackend):
                 }
             ]
 
-        start_time = time.monotonic()
-        error_retries = 0
-        current_delay = self.RETRY_BASE_DELAY
+        # TODO: max_tokens varies by backend (64K here, 16K for OpenAI/Gemini).
+        # Consider making this configurable via the backend or constructor.
+        stream_kwargs = dict(
+            model=self.model,
+            max_tokens=64000,
+            temperature=0.6,
+            system=system_value,
+            messages=context,
+        )
+        if not self.is_local:
+            stream_kwargs["extra_headers"] = {
+                "anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"
+            }
 
-        while True:
-            try:
-                sh.on_stream_start()
-                # TODO: max_tokens varies by backend (64K here, 16K for OpenAI/Gemini).
-                # Consider making this configurable via the backend or constructor.
-                stream_kwargs = dict(
-                    model=self.model,
-                    max_tokens=64000,
-                    temperature=0.6,
-                    system=system_value,
-                    messages=context,
-                )
-                if not self.is_local:
-                    stream_kwargs["extra_headers"] = {
-                        "anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"
-                    }
-                with self._client.messages.stream(**stream_kwargs) as stream:
-                    for text in stream.text_stream:
-                        sh.on_stream_token(text)
-                    sh.on_stream_end()
+        def attempt():
+            with self._client.messages.stream(**stream_kwargs) as stream:
+                for text in stream.text_stream:
+                    sh.on_stream_token(text)
                 response = stream.get_final_message()
-                if response:
-                    return response
+            if response:
+                return response
+            raise Exception("No response received from Anthropic API")
 
-            except self._anthropic.RateLimitError as e:
-                sh.on_stream_end()
-                sleep_time = current_delay
-                if hasattr(e, "response") and e.response is not None:
-                    retry_after = e.response.headers.get("retry-after")
-                    if retry_after is not None:
-                        try:
-                            sleep_time = max(int(retry_after), sleep_time)
-                        except (ValueError, TypeError):
-                            pass
-
-                jitter = sleep_time * 0.25 * (2 * random.random() - 1)
-                sleep_time = max(0, sleep_time + jitter)
-
-                remaining = self.RETRY_TIMEOUT - (time.monotonic() - start_time)
-                if remaining <= 0:
-                    raise Exception(
-                        f"Rate-limit retry timeout exceeded ({self.RETRY_TIMEOUT}s)"
-                    )
-                sleep_time = min(sleep_time, remaining)
-
-                sh.on_retry(
-                    f"Rate limited — retrying in {sleep_time:.1f}s "
-                    f"({remaining:.0f}s remaining)"
-                )
-                time.sleep(sleep_time)
-                current_delay = min(current_delay * self.RETRY_BACKOFF_FACTOR, self.RETRY_MAX_DELAY)
-
-            except Exception as e:
-                sh.on_stream_end()
-                error_retries += 1
-                if error_retries >= self.MAX_ERROR_RETRIES:
-                    raise Exception(
-                        f"Maximum retries exceeded ({self.MAX_ERROR_RETRIES}) "
-                        f"on response request: {e}"
-                    )
-                sh.on_error(
-                    f"Attempt {error_retries}/{self.MAX_ERROR_RETRIES} failed: {e}"
-                )
+        return self._run_with_retries(attempt)
 
     # ── Public interface ─────────────────────────────────────────────
 
