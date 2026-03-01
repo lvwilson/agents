@@ -123,6 +123,11 @@ class Agent:
     This agent can execute tasks, maintain context, and manage compute budget.
     """
 
+    # When a user message (e.g. file-read output) exceeds this many
+    # characters, the harness asks the backend to cache it so that
+    # subsequent API calls don't re-process the same large payload.
+    LARGE_MESSAGE_CACHE_THRESHOLD = 10_000
+
     def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
                  local_model=None, local_port=8000):
         """Initialize the Claude Agent.
@@ -289,11 +294,18 @@ class Agent:
 
         # Add user message to context (with or without images)
         if len(image_media_tuple_array) == 0:
-            self.context.append(Agent._form_message("user", command_response))
+            message = Agent._form_message("user", command_response)
         else:
             message = Agent._form_message_with_images("user", command_response, image_media_tuple_array)
-            self.context.append(message)
-            
+        self.context.append(message)
+
+        # Large command outputs (e.g. file reads) are expensive to
+        # re-process on every subsequent call.  Ask the backend to
+        # cache them so the prefix stays warm.
+        if len(command_response) >= self.LARGE_MESSAGE_CACHE_THRESHOLD:
+            self.client.mark_for_caching(message)
+            self.client.trim_cache_blocks(self.context)
+
         # Determine if we should continue running
         command_called = not (command_response == "End.")
         return command_called
