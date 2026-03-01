@@ -42,7 +42,6 @@ from ui import (
 # Global state
 script_dir = os.path.dirname(os.path.realpath(__file__))
 pickle_path = os.path.join(script_dir, 'context.pkl')
-iterations = 0
 
 
 def extract_completion(text, backticks=5):
@@ -130,7 +129,7 @@ class Agent:
 
     def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
                  local_model=None, local_port=8000):
-        """Initialize the Claude Agent.
+        """Initialize the Agent.
         
         Args:
             configuration_name: Name of the YAML configuration file
@@ -193,6 +192,7 @@ class Agent:
         self.task = task
         self.context.append(Agent._form_message("user", self.task))
         self.compute_budget = compute_budget
+        self.iterations = 0
         self.start_time = None
 
         # Display startup banner
@@ -258,15 +258,14 @@ class Agent:
         Returns:
             bool: True if the agent should continue running, False otherwise
         """
-        global iterations
         print_iteration_header(
-            iterations, self.client.cost, self.compute_budget,
+            self.iterations, self.client.cost, self.compute_budget,
             self.client.last_input_tokens, self.client.last_output_tokens,
             self.client.last_total_context_tokens,
             cost_without_cache=self.client.cost_without_cache,
             context_window_tokens=self.client.context_window_size,
         )
-        iterations += 1
+        self.iterations += 1
         
         # Generate response from Claude
         response = self.client.generate_response(self.system_prompt, self.context)
@@ -294,7 +293,7 @@ class Agent:
         command_called = command_response != "End."
 
         # Check compute budget
-        if self.client.cost > 0.75 * self.compute_budget:
+        if self.client.cost > 0.80 * self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
             print_budget_warning(self.client.cost, self.compute_budget)
 
@@ -331,7 +330,7 @@ class Agent:
         
         # Print final summary
         elapsed = time.time() - self.start_time
-        print_summary(self.client.cost, iterations, elapsed, self.compute_budget,
+        print_summary(self.client.cost, self.iterations, elapsed, self.compute_budget,
                       self.client.peak_context_tokens,
                       cost_without_cache=self.client.cost_without_cache,
                       context_window_tokens=self.client.context_window_size)
@@ -384,7 +383,14 @@ class Agent:
             self.context = data
 
         # Remove the last user message and replace with current task
-        self.context.pop()  # TODO: Check that the last message is from the user
+        if self.context and self.context[-1]["role"] == "user":
+            self.context.pop()
+        else:
+            logging.warning(
+                "load_context: expected last message role='user', got '%s'. "
+                "Appending new task without removing last message.",
+                self.context[-1]["role"] if self.context else "<empty>",
+            )
         new_message = Agent._form_message("user", self.task)
         self.context.append(new_message)
         # Let the backend annotate the new message for caching (e.g.
