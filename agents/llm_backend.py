@@ -236,6 +236,14 @@ class LLMBackend(ABC):
 
     # ── Optional overrides ───────────────────────────────────────────
 
+    def mark_for_caching(self, message: dict) -> None:
+        """Annotate *message* so the backend will cache it on the next call.
+
+        The default implementation is a no-op.  Backends that support
+        prompt caching (e.g. Anthropic) should override this to add
+        provider-specific cache annotations.
+        """
+
     def trim_cache_blocks(self, context: list[dict], max_blocks: int = 2) -> None:
         """Remove stale prompt-cache markers from *context*.
 

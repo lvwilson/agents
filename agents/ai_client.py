@@ -7,18 +7,14 @@ backend classes in ``backends/``.  Only format-conversion helpers remain.
 """
 
 
-def convert_string_to_dict(string, cache=False):
-    result = []
-    if cache:
-        result.append({
-            "type": "text",
-            "text": string,
-            "cache_control": {"type": "ephemeral"}
-        })
-    else:
-        result.append({
-            "type": "text",
-            "text": string,
-        })
+def convert_string_to_dict(string):
+    """Convert a plain string into the internal content-block format.
 
-    return result
+    Returns a list containing a single text block::
+
+        [{"type": "text", "text": string}]
+
+    Cache-control annotations are *not* added here — they are an
+    Anthropic-specific concern handled by the Anthropic backend.
+    """
+    return [{"type": "text", "text": string}]

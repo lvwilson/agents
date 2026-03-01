@@ -115,6 +115,10 @@ class AnthropicBackend(LLMBackend):
         for content_item in message.get("content", []):
             content_item.pop("cache_control", None)
 
+    def mark_for_caching(self, message: dict) -> None:
+        """Add an Anthropic ``cache_control`` annotation to *message*."""
+        self._add_cache_block(message)
+
     def trim_cache_blocks(self, context: list[dict], max_blocks: int = 2) -> None:
         cached = [m for m in context if m["role"] == "user" and self._has_cache_block(m)]
         while len(cached) > max_blocks:

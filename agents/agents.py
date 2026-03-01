@@ -195,8 +195,8 @@ class Agent:
                      self.client.context_window_size)
 
     @staticmethod
-    def _form_message(role, content, cache=False):
-        """Create a message dictionary for Claude API.
+    def _form_message(role, content):
+        """Create a message dictionary in the internal format.
         
         Args:
             role: Either "user" or "assistant"
@@ -207,7 +207,7 @@ class Agent:
         """
         message = {
             "role": role,
-            "content": convert_string_to_dict(content, cache)
+            "content": convert_string_to_dict(content)
         }
         return message
 
@@ -369,8 +369,11 @@ class Agent:
 
         # Remove the last user message and replace with current task
         self.context.pop()  # TODO: Check that the last message is from the user
-        self.context.append(Agent._form_message("user", self.task, True))
-        # Trim so at most 2 cache blocks remain after adding the new one
+        new_message = Agent._form_message("user", self.task)
+        self.context.append(new_message)
+        # Let the backend annotate the new message for caching (e.g.
+        # Anthropic adds cache_control blocks) and trim stale markers.
+        self.client.mark_for_caching(new_message)
         self.client.trim_cache_blocks(self.context)
 
 
