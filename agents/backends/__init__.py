@@ -21,13 +21,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from llm_backend import LLMBackend, StreamHandler
+    from ..llm_backend import LLMBackend, StreamHandler
 
 # Maps provider name → (module_path, class_name)
 _REGISTRY: dict[str, tuple[str, str]] = {
-    "anthropic": ("backends.anthropic_backend", "AnthropicBackend"),
-    "openai":    ("backends.openai_backend",    "OpenAIBackend"),
-    "gemini":    ("backends.gemini_backend",    "GeminiBackend"),
+    "anthropic": (".anthropic_backend", "AnthropicBackend"),
+    "openai":    (".openai_backend",    "OpenAIBackend"),
+    "gemini":    (".gemini_backend",    "GeminiBackend"),
 }
 
 # Cache of already-imported classes so we import each module at most once.

@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 import os
 
-from llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
+from ..llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
 
 
 class GeminiBackend(LLMBackend):

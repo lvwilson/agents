@@ -22,9 +22,9 @@ from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
 
 # Local imports
-from backends import create_backend
-from ai_client import convert_string_to_dict
-from ui import (
+from .backends import create_backend
+from .ai_client import convert_string_to_dict
+from .ui import (
     RichStreamHandler,
     print_banner,
     print_iteration_header,

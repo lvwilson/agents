@@ -288,7 +288,7 @@ def create_spinner(message="  ◌  Waiting for response…"):
 
 # ── Stream handler (decouples backends from Rich) ────────────────────
 
-from llm_backend import StreamHandler
+from .llm_backend import StreamHandler
 
 
 class RichStreamHandler(StreamHandler):
