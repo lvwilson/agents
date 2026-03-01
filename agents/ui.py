@@ -251,3 +251,44 @@ def create_spinner(message="  ◌  Waiting for response…"):
     with .stop().
     """
     return console.status(message, spinner="dots", spinner_style="bright_cyan")
+
+
+# ── Stream handler (decouples backends from Rich) ────────────────────
+
+from llm_backend import StreamHandler
+
+
+class RichStreamHandler(StreamHandler):
+    """StreamHandler that renders to the Rich console.
+
+    This is the interactive-terminal implementation.  Pass an instance to
+    ``create_backend(…, stream_handler=RichStreamHandler())`` to get the
+    same streaming UX the backends previously hard-coded.
+    """
+
+    def __init__(self):
+        self._spinner = None
+        self._first_chunk = True
+
+    def on_stream_start(self) -> None:
+        self._spinner = create_spinner()
+        self._spinner.start()
+        self._first_chunk = True
+
+    def on_stream_token(self, token: str) -> None:
+        if self._first_chunk:
+            if self._spinner is not None:
+                self._spinner.stop()
+            self._first_chunk = False
+        safe_console_print(token, style="stream", end="")
+
+    def on_stream_end(self) -> None:
+        if self._first_chunk and self._spinner is not None:
+            self._spinner.stop()
+        self._spinner = None
+
+    def on_retry(self, message: str) -> None:
+        safe_console_print(f"\n  ⏳ {message}", style="warning")
+
+    def on_error(self, message: str) -> None:
+        safe_console_print(f"\n  ✗ {message}", style="error")

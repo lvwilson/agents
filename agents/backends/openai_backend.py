@@ -12,8 +12,7 @@ import os
 import random
 import time
 
-from llm_backend import LLMBackend
-from ui import create_spinner, safe_console_print
+from llm_backend import LLMBackend, StreamHandler
 
 
 class OpenAIBackend(LLMBackend):
@@ -40,9 +39,10 @@ class OpenAIBackend(LLMBackend):
         model: str = "gpt-5.3-codex",
         base_url: str | None = None,
         cache_step: int = 4,
+        stream_handler: StreamHandler | None = None,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler)
 
         # Lazy import
         import openai as _openai
@@ -185,6 +185,7 @@ class OpenAIBackend(LLMBackend):
         Returns the full collected response text and usage dict.
         """
         self.call_count += 1
+        sh = self.stream_handler
         messages = self._format_messages(system_prompt, context)
         self._validate_responses_input(messages)
 
@@ -194,8 +195,7 @@ class OpenAIBackend(LLMBackend):
 
         while True:
             try:
-                spinner = create_spinner()
-                spinner.start()
+                sh.on_stream_start()
 
                 stream = self._client.responses.create(
                     model=self.model,
@@ -207,28 +207,22 @@ class OpenAIBackend(LLMBackend):
 
                 collected_text = ""
                 usage = None
-                first_chunk = True
 
                 for event in stream:
                     if event.type == "response.output_text.delta":
                         text = event.delta
                         if text:
-                            if first_chunk:
-                                spinner.stop()
-                                first_chunk = False
-                            safe_console_print(text, style="stream", end="")
+                            sh.on_stream_token(text)
                             collected_text += text
                     elif event.type == "response.completed":
                         if hasattr(event, "response") and event.response:
                             usage = event.response.usage
 
-                if first_chunk:
-                    spinner.stop()
-
+                sh.on_stream_end()
                 return collected_text, usage
 
             except self._openai.RateLimitError as e:
-                spinner.stop()
+                sh.on_stream_end()
                 sleep_time = current_delay
 
                 if hasattr(e, "response") and e.response is not None:
@@ -249,10 +243,9 @@ class OpenAIBackend(LLMBackend):
                     )
                 sleep_time = min(sleep_time, remaining)
 
-                safe_console_print(
-                    f"\n  ⏳ Rate limited — retrying in {sleep_time:.1f}s "
-                    f"({remaining:.0f}s remaining)",
-                    style="warning",
+                sh.on_retry(
+                    f"Rate limited — retrying in {sleep_time:.1f}s "
+                    f"({remaining:.0f}s remaining)"
                 )
                 time.sleep(sleep_time)
                 current_delay = min(
@@ -260,16 +253,15 @@ class OpenAIBackend(LLMBackend):
                 )
 
             except Exception as e:
-                spinner.stop()
+                sh.on_stream_end()
                 error_retries += 1
                 if error_retries >= self.MAX_ERROR_RETRIES:
                     raise Exception(
                         f"Maximum retries exceeded ({self.MAX_ERROR_RETRIES}) "
                         f"on response request: {e}"
                     )
-                safe_console_print(
-                    f"\n  ✗ Attempt {error_retries}/{self.MAX_ERROR_RETRIES} failed: {e}",
-                    style="error",
+                sh.on_error(
+                    f"Attempt {error_retries}/{self.MAX_ERROR_RETRIES} failed: {e}"
                 )
 
     # ── Public interface ─────────────────────────────────────────────

@@ -10,8 +10,7 @@ import os
 import random
 import time
 
-from llm_backend import LLMBackend
-from ui import create_spinner, safe_console_print
+from llm_backend import LLMBackend, StreamHandler
 
 
 class AnthropicBackend(LLMBackend):
@@ -46,9 +45,10 @@ class AnthropicBackend(LLMBackend):
         model: str = "claude-opus-4-6",
         base_url: str | None = None,
         cache_step: int = 2,
+        stream_handler: StreamHandler | None = None,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler)
 
         # Lazy import — only pull in anthropic when this backend is used
         import anthropic as _anthropic
@@ -133,6 +133,7 @@ class AnthropicBackend(LLMBackend):
 
     def _get_response(self, system_prompt: str, context: list[dict]):
         self.call_count += 1
+        sh = self.stream_handler
 
         # Place a new cache block periodically
         should_cache = (not self.is_local) and (self.call_count % self.cache_step == 0)
@@ -163,8 +164,7 @@ class AnthropicBackend(LLMBackend):
 
         while True:
             try:
-                spinner = create_spinner()
-                spinner.start()
+                sh.on_stream_start()
                 # TODO: max_tokens varies by backend (64K here, 16K for OpenAI/Gemini).
                 # Consider making this configurable via the backend or constructor.
                 stream_kwargs = dict(
@@ -179,20 +179,15 @@ class AnthropicBackend(LLMBackend):
                         "anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"
                     }
                 with self._client.messages.stream(**stream_kwargs) as stream:
-                    first_chunk = True
                     for text in stream.text_stream:
-                        if first_chunk:
-                            spinner.stop()
-                            first_chunk = False
-                        safe_console_print(text, style="stream", end="")
-                    if first_chunk:
-                        spinner.stop()
+                        sh.on_stream_token(text)
+                    sh.on_stream_end()
                 response = stream.get_final_message()
                 if response:
                     return response
 
             except self._anthropic.RateLimitError as e:
-                spinner.stop()
+                sh.on_stream_end()
                 sleep_time = current_delay
                 if hasattr(e, "response") and e.response is not None:
                     retry_after = e.response.headers.get("retry-after")
@@ -212,25 +207,23 @@ class AnthropicBackend(LLMBackend):
                     )
                 sleep_time = min(sleep_time, remaining)
 
-                safe_console_print(
-                    f"\n  ⏳ Rate limited — retrying in {sleep_time:.1f}s "
-                    f"({remaining:.0f}s remaining)",
-                    style="warning",
+                sh.on_retry(
+                    f"Rate limited — retrying in {sleep_time:.1f}s "
+                    f"({remaining:.0f}s remaining)"
                 )
                 time.sleep(sleep_time)
                 current_delay = min(current_delay * self.RETRY_BACKOFF_FACTOR, self.RETRY_MAX_DELAY)
 
             except Exception as e:
-                spinner.stop()
+                sh.on_stream_end()
                 error_retries += 1
                 if error_retries >= self.MAX_ERROR_RETRIES:
                     raise Exception(
                         f"Maximum retries exceeded ({self.MAX_ERROR_RETRIES}) "
                         f"on response request: {e}"
                     )
-                safe_console_print(
-                    f"\n  ✗ Attempt {error_retries}/{self.MAX_ERROR_RETRIES} failed: {e}",
-                    style="error",
+                sh.on_error(
+                    f"Attempt {error_retries}/{self.MAX_ERROR_RETRIES} failed: {e}"
                 )
 
     # ── Public interface ─────────────────────────────────────────────

@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from llm_backend import LLMBackend
+    from llm_backend import LLMBackend, StreamHandler
 
 # Maps provider name → (module_path, class_name)
 _REGISTRY: dict[str, tuple[str, str]] = {
@@ -60,6 +60,7 @@ def create_backend(
     model: str,
     base_url: str | None = None,
     cache_step: int = 4,
+    stream_handler: "StreamHandler | None" = None,
     **kwargs,
 ) -> "LLMBackend":
     """Instantiate an LLM backend by provider name.
@@ -75,8 +76,18 @@ def create_backend(
     cache_step : int
         How often to place prompt-cache markers (Anthropic-specific;
         ignored by backends that don't support it).
+    stream_handler : StreamHandler | None
+        Optional callback handler for streaming events.  When ``None``
+        a silent no-op handler is used (headless mode).  Pass a
+        ``RichStreamHandler`` for interactive terminal output.
     **kwargs
         Forwarded to the backend constructor.
     """
     cls = _load_class(provider)
-    return cls(model=model, base_url=base_url, cache_step=cache_step, **kwargs)
+    return cls(
+        model=model,
+        base_url=base_url,
+        cache_step=cache_step,
+        stream_handler=stream_handler,
+        **kwargs,
+    )

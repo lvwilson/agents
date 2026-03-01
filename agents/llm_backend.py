@@ -8,6 +8,35 @@ Backends are lazily loaded via the factory in ``backends/__init__.py``.
 from abc import ABC, abstractmethod
 
 
+class StreamHandler:
+    """Callback interface for streaming events from backends.
+
+    Backends call these methods to report streaming progress.  The default
+    implementation is a silent no-op so that backends work headlessly
+    without any UI dependency.  Pass a ``RichStreamHandler`` (from ``ui``)
+    for interactive terminal output.
+    """
+
+    def on_stream_start(self) -> None:
+        """Called once before the first token of a new API call."""
+
+    def on_stream_token(self, token: str) -> None:
+        """Called for each streamed token/chunk of text."""
+
+    def on_stream_end(self) -> None:
+        """Called after the last token (or if no tokens were received)."""
+
+    def on_retry(self, message: str) -> None:
+        """Called when a retryable error occurs (rate-limit or transient)."""
+
+    def on_error(self, message: str) -> None:
+        """Called when a non-retryable attempt fails."""
+
+
+# Convenience alias — a handler that does nothing.
+NullStreamHandler = StreamHandler
+
+
 class LLMBackend(ABC):
     """Unified interface for large-language-model providers.
 
@@ -23,10 +52,16 @@ class LLMBackend(ABC):
     RETRY_BACKOFF_FACTOR = 2   # Exponential backoff multiplier
     MAX_ERROR_RETRIES = 3      # Fixed retry limit for non-rate-limit errors
 
-    def __init__(self, model: str, base_url: str | None = None):
+    def __init__(
+        self,
+        model: str,
+        base_url: str | None = None,
+        stream_handler: StreamHandler | None = None,
+    ):
         self.model: str = model
         self.base_url: str | None = base_url
         self.is_local: bool = base_url is not None
+        self.stream_handler: StreamHandler = stream_handler or NullStreamHandler()
 
         # Running totals
         self.cost: float = 0.0
@@ -46,7 +81,7 @@ class LLMBackend(ABC):
         """Send *context* to the model and return the assistant's text reply.
 
         The method is responsible for:
-        * streaming output to the console (via ``ui`` helpers),
+        * notifying ``self.stream_handler`` of streaming progress,
         * updating ``cost`` and all token-tracking attributes,
         * retry / back-off on transient errors.
 

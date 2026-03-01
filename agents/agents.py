@@ -25,6 +25,7 @@ from llmide.llmide_functions import get_default_shell
 from backends import create_backend
 from ai_client import convert_string_to_dict
 from ui import (
+    RichStreamHandler,
     print_banner,
     print_iteration_header,
     print_summary,
@@ -165,6 +166,7 @@ class ClaudeAgent:
             provider,
             model=self.model_name,
             base_url=base_url,
+            stream_handler=RichStreamHandler(),
         )
         
         # Set up system prompt with environment information.
@@ -263,7 +265,7 @@ class ClaudeAgent:
         response = self.client.generate_response(self.system_prompt, self.context)
         
         if not response:
-            return "End."
+            return False
 
         # Filter response content
         response_length = len(response)
@@ -370,25 +372,33 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     if restore:
         agent.load_context()
     agent.run()
-    if save: 
-        agent.save_context()
     completion = "Error"
     success = False
-    feedback = None
     if len(agent.context) > 2:
         final_content = agent.context[-2]['content'][0]['text']
         result = extract_completion(final_content)
         if result is not None:
             completion, success = result
         else:
-            # Provide feedback when agent fails to provide completion block
-            feedback = "Feedback: No completion block was found in your response. Please provide a completion block with 'Completion: <description>' and 'Success: True/False' at the end of your response."
-    
-    # If feedback was generated, add it to context for potential resume
-    if feedback:
-        agent.context.append(ClaudeAgent._form_message("user", feedback))
-        if save:
-            agent.save_context()
+            # Give the agent one more chance to provide a completion block
+            feedback = ("Feedback: No completion block was found in your response. "
+                        "Please provide a completion block with "
+                        "'Completion: <description>' and 'Success: True/False' "
+                        "at the end of your response.")
+            agent.context.append(ClaudeAgent._form_message("user", feedback))
+            try:
+                agent._iterate()
+            except Exception:
+                pass
+            # Check the new response for a completion block
+            if len(agent.context) > 2:
+                final_content = agent.context[-2]['content'][0]['text']
+                result = extract_completion(final_content)
+                if result is not None:
+                    completion, success = result
+
+    if save:
+        agent.save_context()
     
     return completion, success
 

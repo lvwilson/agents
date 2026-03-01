@@ -11,8 +11,7 @@ import os
 import random
 import time
 
-from llm_backend import LLMBackend
-from ui import create_spinner, safe_console_print
+from llm_backend import LLMBackend, StreamHandler
 
 
 class GeminiBackend(LLMBackend):
@@ -50,9 +49,10 @@ class GeminiBackend(LLMBackend):
         model: str = "gemini-3.1-pro-preview",
         base_url: str | None = None,
         cache_step: int = 2,
+        stream_handler: StreamHandler | None = None,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler)
 
         # Lazy import
         from google import genai as _genai
@@ -193,9 +193,8 @@ class GeminiBackend(LLMBackend):
 
             return True
         except Exception as e:
-            safe_console_print(
-                f"\n  ⚠ Cache creation failed (falling back to uncached): {e}",
-                style="warning",
+            self.stream_handler.on_retry(
+                f"Cache creation failed (falling back to uncached): {e}"
             )
             self._cache_name = None
             self._cached_msg_count = 0
@@ -258,6 +257,7 @@ class GeminiBackend(LLMBackend):
         Returns the collected response text and usage metadata.
         """
         self.call_count += 1
+        sh = self.stream_handler
         types = self._types
 
         # Determine whether to use or create a cache
@@ -299,8 +299,7 @@ class GeminiBackend(LLMBackend):
 
         while True:
             try:
-                spinner = create_spinner()
-                spinner.start()
+                sh.on_stream_start()
 
                 stream = self._client.models.generate_content_stream(
                     model=self.model,
@@ -310,7 +309,6 @@ class GeminiBackend(LLMBackend):
 
                 collected_text = ""
                 usage_metadata = None
-                first_chunk = True
 
                 for chunk in stream:
                     # Capture usage metadata from any chunk that has it
@@ -318,25 +316,19 @@ class GeminiBackend(LLMBackend):
                         usage_metadata = chunk.usage_metadata
 
                     if chunk.text:
-                        if first_chunk:
-                            spinner.stop()
-                            first_chunk = False
-                        safe_console_print(chunk.text, style="stream", end="")
+                        sh.on_stream_token(chunk.text)
                         collected_text += chunk.text
 
-                if first_chunk:
-                    spinner.stop()
-
+                sh.on_stream_end()
                 return collected_text, usage_metadata
 
             except Exception as e:
-                spinner.stop()
+                sh.on_stream_end()
 
                 # If cache-related error, invalidate cache and retry without it
                 if use_cache and ("cache" in str(e).lower() or "NOT_FOUND" in str(e)):
-                    safe_console_print(
-                        f"\n  ⚠ Cache expired or invalid, retrying without cache",
-                        style="warning",
+                    sh.on_retry(
+                        "Cache expired or invalid, retrying without cache"
                     )
                     self._delete_cache()
                     use_cache = False
@@ -367,10 +359,9 @@ class GeminiBackend(LLMBackend):
                         )
                     sleep_time = min(sleep_time, remaining)
 
-                    safe_console_print(
-                        f"\n  ⏳ Rate limited — retrying in {sleep_time:.1f}s "
-                        f"({remaining:.0f}s remaining)",
-                        style="warning",
+                    sh.on_retry(
+                        f"Rate limited — retrying in {sleep_time:.1f}s "
+                        f"({remaining:.0f}s remaining)"
                     )
                     time.sleep(sleep_time)
                     current_delay = min(
@@ -384,10 +375,9 @@ class GeminiBackend(LLMBackend):
                             f"Maximum retries exceeded ({self.MAX_ERROR_RETRIES}) "
                             f"on response request: {e}"
                         )
-                    safe_console_print(
-                        f"\n  ✗ Attempt {error_retries}/{self.MAX_ERROR_RETRIES} "
-                        f"failed: {e}",
-                        style="error",
+                    sh.on_error(
+                        f"Attempt {error_retries}/{self.MAX_ERROR_RETRIES} "
+                        f"failed: {e}"
                     )
 
     # ── Public interface ─────────────────────────────────────────────
