@@ -380,16 +380,18 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         if result is not None:
             completion, success = result
         else:
-            # Give the agent one more chance to provide a completion block
-            feedback = ("Feedback: No completion block was found in your response. "
-                        "Please provide a completion block with "
-                        "'Completion: <description>' and 'Success: True/False' "
-                        "at the end of your response.")
-            agent.context.append(ClaudeAgent._form_message("user", feedback))
-            try:
-                agent._iterate()
-            except Exception:
-                pass
+            # Give the agent one more chance to provide a completion block,
+            # but only if there is budget remaining.
+            if agent.client.cost <= agent.compute_budget:
+                feedback = ("Feedback: No completion block was found in your response. "
+                            "Please provide a completion block with "
+                            "'Completion: <description>' and 'Success: True/False' "
+                            "at the end of your response.")
+                agent.context.append(ClaudeAgent._form_message("user", feedback))
+                try:
+                    agent._iterate()
+                except Exception as e:
+                    logging.warning("Completion-retry iteration failed: %s", e)
             # Check the new response for a completion block
             if len(agent.context) > 2:
                 final_content = agent.context[-2]['content'][0]['text']
