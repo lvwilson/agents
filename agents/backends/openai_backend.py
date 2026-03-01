@@ -46,9 +46,10 @@ class OpenAIBackend(LLMBackend):
         base_url: str | None = None,
         cache_step: int = 4,
         stream_handler: StreamHandler | None = None,
+        temperature: float = 1.0,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature)
 
         # Lazy import
         import openai as _openai
@@ -211,7 +212,7 @@ class OpenAIBackend(LLMBackend):
                 model=self.model,
                 input=messages,
                 max_output_tokens=16384,
-                temperature=0.6,
+                temperature=self.temperature,
                 stream=True,
             )
 

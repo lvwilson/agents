@@ -163,11 +163,19 @@ class Agent:
             self.model_name = provider_defaults.get(provider, "claude-opus-4-6")
             base_url = configuration.get("base_url", None)
 
+        # Temperature can be configured per-agent in the YAML config.
+        # If not specified, each backend uses its own default (1.0 for
+        # most providers, 0.6 for Anthropic).
+        backend_kwargs = {}
+        if "temperature" in configuration:
+            backend_kwargs["temperature"] = configuration["temperature"]
+
         self.client = create_backend(
             provider,
             model=self.model_name,
             base_url=base_url,
             stream_handler=RichStreamHandler(),
+            **backend_kwargs,
         )
         
         # Set up system prompt with environment information.

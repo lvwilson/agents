@@ -54,9 +54,10 @@ class GeminiBackend(LLMBackend):
         base_url: str | None = None,
         cache_step: int = 2,
         stream_handler: StreamHandler | None = None,
+        temperature: float = 1.0,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature)
 
         # Lazy import
         from google import genai as _genai
@@ -315,14 +316,14 @@ class GeminiBackend(LLMBackend):
                 contents = self._translate_messages(uncached_messages)
                 config = types.GenerateContentConfig(
                     cached_content=self._cache_name,
-                    temperature=0.6,
+                    temperature=self.temperature,
                     max_output_tokens=16384,
                 )
             else:
                 contents = self._translate_messages(context)
                 config = types.GenerateContentConfig(
                     system_instruction=system_prompt,
-                    temperature=0.6,
+                    temperature=self.temperature,
                     max_output_tokens=16384,
                 )
 

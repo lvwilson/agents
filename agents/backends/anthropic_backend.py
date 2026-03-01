@@ -55,9 +55,10 @@ class AnthropicBackend(LLMBackend):
         base_url: str | None = None,
         cache_step: int = 2,
         stream_handler: StreamHandler | None = None,
+        temperature: float = 0.6,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature)
 
         # Lazy import — only pull in anthropic when this backend is used
         import anthropic as _anthropic
@@ -194,7 +195,7 @@ class AnthropicBackend(LLMBackend):
         stream_kwargs = dict(
             model=self.model,
             max_tokens=64000,
-            temperature=0.6,
+            temperature=self.temperature,
             system=system_value,
             messages=context,
         )

@@ -74,11 +74,13 @@ class LLMBackend(ABC):
         model: str,
         base_url: str | None = None,
         stream_handler: StreamHandler | None = None,
+        temperature: float = 1.0,
     ):
         self.model: str = model
         self.base_url: str | None = base_url
         self.is_local: bool = base_url is not None
         self.stream_handler: StreamHandler = stream_handler or NullStreamHandler()
+        self.temperature: float = temperature
 
         # Running totals
         self.cost: float = 0.0
