@@ -382,12 +382,15 @@ class Agent:
         self._iterate()
         return True
 
-    def save_context(self, filename='context.pkl'):
+    def save_context(self, filename=None):
         """Save conversation context and token state to a pickle file.
         
         Args:
-            filename: Path to save the pickle file
+            filename: Path to save the pickle file (defaults to context.pkl
+                      in the package directory)
         """
+        if filename is None:
+            filename = pickle_path
         state = {
             'context': self.context,
             'system_prompt': self.system_prompt,
@@ -402,12 +405,15 @@ class Agent:
         with open(filename, 'wb') as file:
             pickle.dump(state, file)
 
-    def load_context(self, filename='context.pkl'):
+    def load_context(self, filename=None):
         """Load conversation context and token state from a pickle file.
         
         Args:
-            filename: Path to the pickle file
+            filename: Path to the pickle file (defaults to context.pkl
+                      in the package directory)
         """
+        if filename is None:
+            filename = pickle_path
         with open(filename, 'rb') as file:
             data = pickle.load(file)
 
