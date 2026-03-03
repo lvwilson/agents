@@ -22,7 +22,31 @@ system_prompt: |
   find_and_replace file_path `````command (see example)`````
   view_image image_path1 [image_path2 ...]
   create_image "A detailed description of the image to create using a diffusion model" image_path
+  summarize path/to/file_or_folder ["*.filter"] [--recursive] `````optional instruction`````
   stdout `````what you want to write to stdout`````
+
+  Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
+  There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
+  run_console_command "arguments"
+
+  Web Browser Commands (Playwright-powered headless browser):
+  web_navigate url - Navigate to a URL, returns status, title
+  web_back - Go back one page in browser history
+  web_forward - Go forward one page in browser history
+  web_read [css_selector] - Read visible text of page or element
+  web_read_html [css_selector] - Read HTML of page or element
+  web_links - List all links on the current page
+  web_click css_selector - Click an element
+  web_type css_selector "text to type" - Type text into an input field
+  web_press_key key_name - Press a key (e.g. Enter, Tab, Escape)
+  web_select css_selector "value" - Select option from dropdown
+  web_screenshot file_path [css_selector] - Take screenshot, save to file (use view_image to see it)
+  web_execute_js `````JavaScript code to execute on the page`````
+  web_wait css_selector [timeout_ms] - Wait for element to appear
+  web_page_info - Get current URL, title, viewport size
+  web_close - Close the browser and free resources
+
+  Note: The browser persists across commands. Navigate first, then interact. Screenshots are saved to files which you can view with view_image.
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
@@ -55,6 +79,7 @@ system_prompt: |
   Example output:
   Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
   Command: run_console_command "ls -l"
+
 
   Notes about commands:
   Where possible queue up multiple commands to improve efficiency. Where possible, batch read commands together.
