@@ -20,6 +20,7 @@ import yaml
 # llmide
 from llmide.llmide import process_content, filter_content, terminate_process
 from llmide.llmide_functions import get_default_shell
+from llmide.summarize import register_llm as _register_summarize_llm
 
 # Local imports
 from .backends import create_backend
@@ -200,9 +201,29 @@ class Agent:
         self.iterations = 0
         self.start_time = None
 
+        # Register the LLM backend for the summarize tool so that
+        # llmide can make one-shot LLM calls without a circular import.
+        self._register_summarize_backend()
+
         # Display startup banner
         print_banner(self.client.display_name, self.compute_budget, platform.platform(),
                      self.client.context_window_size)
+
+    def _register_summarize_backend(self):
+        """Wire the agent's LLM backend into llmide's summarize module.
+
+        Creates a thin wrapper that converts the ``(system_prompt, user_message)``
+        signature expected by :func:`llmide.summarize.register_llm` into a
+        single-turn conversation call through the agent's backend.  This avoids
+        any circular dependency between ``agents`` and ``llmide``.
+        """
+        client = self.client  # capture for the closure
+
+        def _generate(system_prompt: str, user_message: str) -> str:
+            context = [Agent._form_message("user", user_message)]
+            return client.generate_response(system_prompt, context)
+
+        _register_summarize_llm(_generate)
 
     @staticmethod
     def _form_message(role, content):
