@@ -6,13 +6,12 @@ Agent - An autonomous AI agent with pluggable LLM backends.
 import argparse
 import logging
 import os
-import pickle
 import platform
+import re
 import signal
 import sys
-import traceback
 import time
-import re
+import traceback
 
 # Third-party imports
 import yaml
@@ -25,6 +24,13 @@ from llmide.summarize import register_llm as _register_summarize_llm
 # Local imports
 from .backends import create_backend
 from .ai_client import convert_string_to_dict
+from .session import (
+    generate_session_id,
+    validate_session_id,
+    get_latest_session_for_dir,
+    save_session,
+    load_session,
+)
 from .ui import (
     RichStreamHandler,
     print_banner,
@@ -40,34 +46,32 @@ from .ui import (
     safe_console_print,
 )
 
-# Global state
+# ── Global state ─────────────────────────────────────────────────────
 script_dir = os.path.dirname(os.path.realpath(__file__))
-pickle_path = os.path.join(script_dir, 'context.pkl')
 
 
 def extract_completion(text, backticks=5):
-    """
-    Extract the completion section from the given text.
-    
+    """Extract the completion section from the given text.
+
     Args:
         text (str): The text to extract the completion from.
         backticks (int): The number of backticks used to wrap the YAML section (default: 5).
-    
+
     Returns:
         dict: A dictionary containing the completion information, or None if no completion was found.
     """
     # Create the pattern for matching the backtick-wrapped YAML section
     backtick_pattern = '`' * backticks
     pattern = rf"{backtick_pattern}(Completion:[\s\S]*?){backtick_pattern}"
-    
+
     # Search for the pattern in the text
     match = re.search(pattern, text, re.DOTALL)
     if not match:
         return None
-    
+
     # Extract the YAML content
     yaml_content = match.group(1).strip()
-    
+
     try:
         # Parse the YAML content using PyYAML
         completion_data = yaml.safe_load(yaml_content)
@@ -88,10 +92,10 @@ def sigterm_handler(_signo, _stack_frame):
 
 def read_yaml_file(file_path):
     """Read and parse a YAML file.
-    
+
     Args:
         file_path: Path to the YAML file
-        
+
     Returns:
         dict: Parsed YAML content
     """
@@ -102,10 +106,10 @@ def read_yaml_file(file_path):
 
 def read_configuration(configuration_name):
     """Read agent configuration from a YAML file.
-    
+
     Args:
         configuration_name: Name of the configuration file
-        
+
     Returns:
         dict: Configuration data
     """
@@ -116,7 +120,7 @@ def read_configuration(configuration_name):
 
 class Agent:
     """An autonomous agent powered by an LLM backend.
-    
+
     This agent can execute tasks, maintain context, and manage compute budget.
     """
 
@@ -126,9 +130,9 @@ class Agent:
     LARGE_MESSAGE_CACHE_THRESHOLD = 10_000
 
     def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
-                 local_model=None, local_port=8000):
+                 local_model=None, local_port=8000, session_id=None):
         """Initialize the Agent.
-        
+
         Args:
             configuration_name: Name of the YAML configuration file
             task: The task to be performed
@@ -136,16 +140,21 @@ class Agent:
             context: Optional list of previous conversation messages
             local_model: If set, use a local Anthropic-compatible API with this model name
             local_port: Port for the local API server (default 8000)
+            session_id: Optional session ID for saving/restoring context
         """
         if context is None:
             context = []
-            
+
+        # Session management
+        self.session_id = session_id or generate_session_id()
+        self.working_dir = os.getcwd()
+
         # Load configuration
         configuration = read_configuration(configuration_name)
-        
+
         # Determine provider from environment variable or config
         provider = os.environ.get("AGENT_MODEL_PROVIDER", configuration.get("provider", "anthropic"))
-        
+
         # Determine model from environment variable with provider-specific defaults
         model_env = os.environ.get("AGENT_MODEL")
         if local_model:
@@ -178,7 +187,7 @@ class Agent:
             stream_handler=RichStreamHandler(),
             **backend_kwargs,
         )
-        
+
         # Set up system prompt with environment information.
         # NOTE: This prompt is persisted in save_context() and restored on
         # resume so that the prompt-cache prefix stays identical.  Any
@@ -191,7 +200,7 @@ class Agent:
         self.system_prompt += f"\nSystem Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
         self.system_prompt += f"\nWorking Directory: {os.getcwd()}"
         self.system_prompt += f"\nUser: {os.environ.get('USER', 'unknown')}"
-        
+
         # Set remaining attributes
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
@@ -228,11 +237,11 @@ class Agent:
     @staticmethod
     def _form_message(role, content):
         """Create a message dictionary in the internal format.
-        
+
         Args:
             role: Either "user" or "assistant"
             content: The message content
-            
+
         Returns:
             dict: Formatted message
         """
@@ -245,12 +254,12 @@ class Agent:
     @staticmethod
     def _form_message_with_images(role, content, image_media_type_tuple_array):
         """Create a message dictionary that includes images for Claude API.
-        
+
         Args:
             role: Either "user" or "assistant"
             content: The text content
             image_media_type_tuple_array: List of (image_base64, media_type) tuples
-            
+
         Returns:
             dict: Formatted message with images
         """
@@ -277,10 +286,10 @@ class Agent:
             "role": role,
             "content": combined_content
         }
-    
+
     def _iterate(self):
         """Perform one iteration of the conversation with Claude.
-        
+
         Returns:
             bool: True if the agent should continue running, False otherwise
         """
@@ -292,10 +301,10 @@ class Agent:
             context_window_tokens=self.client.context_window_size,
         )
         self.iterations += 1
-        
+
         # Generate response from Claude
         response = self.client.generate_response(self.system_prompt, self.context)
-        
+
         if not response:
             return False
 
@@ -303,11 +312,11 @@ class Agent:
         response_length = len(response)
         response = filter_content(response)
         filtered_length = len(response)
-        
+
         if response_length > filtered_length:
             clipped = response_length - filtered_length
             print_clipped(clipped, response)
-        
+
         # Add response to context and process it
         self.context.append(Agent._form_message("assistant", response))
         command_response, image_media_tuple_array = process_content(response)
@@ -338,7 +347,7 @@ class Agent:
             self.client.trim_cache_blocks(self.context)
 
         return command_called
-    
+
     def run(self):
         """Run the agent until completion or interruption."""
         self.start_time = time.time()
@@ -353,7 +362,7 @@ class Agent:
             print_interrupted()
         except Exception as e:
             print_error(e, traceback.format_exc())
-        
+
         # Print final summary
         elapsed = time.time() - self.start_time
         print_summary(self.client.cost, self.iterations, elapsed, self.compute_budget,
@@ -382,15 +391,12 @@ class Agent:
         self._iterate()
         return True
 
-    def save_context(self, filename=None):
-        """Save conversation context and token state to a pickle file.
-        
-        Args:
-            filename: Path to save the pickle file (defaults to context.pkl
-                      in the package directory)
+    def save_context(self):
+        """Save conversation context and token state to a JSON session file.
+
+        Delegates to :func:`.session.save_session` which handles atomic
+        writes, file permissions, index updates, and stale-session pruning.
         """
-        if filename is None:
-            filename = pickle_path
         state = {
             'context': self.context,
             'system_prompt': self.system_prompt,
@@ -402,38 +408,33 @@ class Agent:
             'cost_without_cache': self.client.cost_without_cache,
             'call_count': self.client.call_count,
         }
-        with open(filename, 'wb') as file:
-            pickle.dump(state, file)
+        save_session(self.session_id, self.working_dir, state)
 
-    def load_context(self, filename=None):
-        """Load conversation context and token state from a pickle file.
-        
+    def load_context(self, session_id=None):
+        """Load conversation context and token state from a JSON session file.
+
         Args:
-            filename: Path to the pickle file (defaults to context.pkl
-                      in the package directory)
+            session_id: Session ID to load.  If None, uses self.session_id.
         """
-        if filename is None:
-            filename = pickle_path
-        with open(filename, 'rb') as file:
-            data = pickle.load(file)
+        sid = session_id or self.session_id
+        data = load_session(sid)
 
-        # Support both old format (bare list) and new format (dict with state)
-        if isinstance(data, dict):
-            self.context = data['context']
-            # Restore the original system prompt so the prompt cache
-            # remains valid across resumed sessions.
-            if 'system_prompt' in data:
-                self.system_prompt = data['system_prompt']
-            self.client.last_total_context_tokens = data.get('total_context_tokens', 0)
-            self.client.peak_context_tokens = data.get('peak_context_tokens', 0)
-            self.client.last_input_tokens = data.get('last_input_tokens', 0)
-            self.client.last_output_tokens = data.get('last_output_tokens', 0)
-            self.client.cost = data.get('cost', 0.0)
-            self.client.cost_without_cache = data.get('cost_without_cache', 0.0)
-            self.client.call_count = data.get('call_count', 0)
-        else:
-            # Legacy format: data is just the context list
-            self.context = data
+        self.context = data['context']
+        # Restore the original system prompt so the prompt cache
+        # remains valid across resumed sessions.
+        if 'system_prompt' in data:
+            self.system_prompt = data['system_prompt']
+        self.client.last_total_context_tokens = data.get('total_context_tokens', 0)
+        self.client.peak_context_tokens = data.get('peak_context_tokens', 0)
+        self.client.last_input_tokens = data.get('last_input_tokens', 0)
+        self.client.last_output_tokens = data.get('last_output_tokens', 0)
+        self.client.cost = data.get('cost', 0.0)
+        self.client.cost_without_cache = data.get('cost_without_cache', 0.0)
+        self.client.call_count = data.get('call_count', 0)
+
+        # Adopt the loaded session's ID so subsequent saves go to the
+        # same file.
+        self.session_id = sid
 
         # Remove the last user message and replace with current task
         if self.context and self.context[-1]["role"] == "user":
@@ -452,12 +453,54 @@ class Agent:
         self.client.trim_cache_blocks(self.context)
 
 
+class SessionNotFoundError(Exception):
+    """Raised when no restorable session can be found."""
+
+
 def run_agent(agent_definition, command, budget, save=True, restore=False,
-              local_model=None, local_port=8000):
-    agent = Agent(agent_definition, command, budget,
-                  local_model=local_model, local_port=local_port)
+              session_id=None, local_model=None, local_port=8000):
+    """Create and run an agent, optionally restoring a previous session.
+
+    Args:
+        agent_definition: YAML config filename
+        command: The task string
+        budget: Compute budget in dollars
+        save: Whether to save context after running
+        restore: Whether to restore a previous session
+        session_id: Explicit session ID to use/restore.  When restoring
+                    without a session ID, the latest session for the
+                    current working directory is used.
+        local_model: Local model name (if using local API)
+        local_port: Port for local API server
+
+    Returns:
+        tuple: (completion_text, success_bool, session_id)
+
+    Raises:
+        SessionNotFoundError: When restoring and no session can be found.
+    """
+    # Resolve which session to restore
+    restore_sid = None
     if restore:
-        agent.load_context()
+        if session_id:
+            restore_sid = session_id
+        else:
+            restore_sid = get_latest_session_for_dir(os.getcwd())
+            if restore_sid is None:
+                raise SessionNotFoundError(
+                    "No previous session found for this directory."
+                )
+
+    # Use the restore session ID if we have one, otherwise use provided
+    effective_sid = restore_sid or session_id
+
+    agent = Agent(agent_definition, command, budget,
+                  local_model=local_model, local_port=local_port,
+                  session_id=effective_sid)
+
+    if restore and restore_sid:
+        agent.load_context(restore_sid)
+
     agent.run()
     completion = "Error"
     success = False
@@ -479,8 +522,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
     if save:
         agent.save_context()
-    
-    return completion, success
+
+    return completion, success, agent.session_id
 
 
 def main():
@@ -492,13 +535,23 @@ def main():
     parser = argparse.ArgumentParser(description="Autonomous AI agent")
     parser.add_argument('command', type=str, help='A command string like "update my system"')
     parser.add_argument('-b', '--compute-budget', type=float, default=1.0, help='Compute budget in dollars')
-    parser.add_argument('-r', '--restore', action='store_true', help='Restore previous context')
+    parser.add_argument('-r', '--restore', action='store_true',
+                        help='Restore the latest session for the current directory')
+    parser.add_argument('-s', '--session', type=str, default=None,
+                        help='Session ID to use or resume (max 10 alphanumeric chars)')
     parser.add_argument('-l', '--local', action='store_true',
                         help='Use a local Anthropic-compatible API (requires LOCAL_MODEL environment variable)')
     parser.add_argument('-p', '--port', type=int, default=8000,
                         help='Port for the local API server (default: 8000)')
 
     args = parser.parse_args()
+
+    # Validate session ID if provided
+    if args.session:
+        try:
+            validate_session_id(args.session)
+        except ValueError as e:
+            parser.error(str(e))
 
     command = args.command
     if not sys.stdin.isatty():
@@ -514,9 +567,21 @@ def main():
         if not local_model:
             parser.error('--local requires the LOCAL_MODEL environment variable to be set')
 
-    completion, success = run_agent('basic_agent.yaml', command, args.compute_budget,
-                                    restore=args.restore, local_model=local_model,
-                                    local_port=args.port)
+    try:
+        completion, success, sid = run_agent(
+            'basic_agent.yaml', command, args.compute_budget,
+            restore=args.restore, session_id=args.session,
+            local_model=local_model, local_port=args.port)
+    except SessionNotFoundError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    # Display session info
+    if args.restore:
+        safe_console_print(f"  ↻  Resumed session [bright_cyan]{sid}[/]", style="info")
+    else:
+        safe_console_print(f"  ◈  Session [bright_cyan]{sid}[/]", style="info")
+
     print_completion_result(completion, success)
 
 
