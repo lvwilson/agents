@@ -27,7 +27,7 @@ This is the entire integration surface. `llmide` knows nothing about Claude, con
 - **Model Agnostic** — Supports multiple LLM providers (Anthropic, OpenAI, Gemini) and local models out of the box. Providers are lazy-loaded, so you only need the SDKs for the models you actually use.
 - **Configuration Over Code** — Agent behavior is defined in YAML files, not Python. Each config specifies a provider, model, system prompt, and an over-budget warning. New agent archetypes are created by writing prose, not code.
 - **The LLM as the Only Moving Part** — No hardcoded task decomposition, no retry logic, no verification beyond what the LLM chooses to do. The infrastructure faithfully executes commands and stays out of the way.
-- **Context as Conversation** — All state lives in the message history. No external database, no structured memory. Context can be serialized to disk and restored for pause/resume.
+- **Context as Conversation** — All state lives in the message history. No external database, no structured memory. Sessions are persisted as JSON files and can be resumed across invocations.
 - **Cost Awareness** — Token usage and dollar cost are tracked in real time, including prompt caching discounts. The agent is warned at 75% budget and terminated at 100%, making autonomous operation safe and bounded.
 
 ### Available Tools (via llmide)
@@ -74,6 +74,31 @@ Add the relevant keys for the providers you intend to use to your `.bashrc` (Lin
 Agents are configured via YAML files (e.g., `basic_agent.yaml`). You can override the provider and model using environment variables:
 
     AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-4o python agents.py "Write a python script to calculate fibonacci numbers"
+
+### Session Management
+
+Every invocation is assigned a short session ID (e.g. `a7x2`). The full conversation context, system prompt, and token/cost accounting are saved as a JSON file under `/tmp/agents-<username>/` when the agent finishes.
+
+To resume the most recent session for the current working directory:
+
+    python -m agents -r "Continue where you left off"
+
+To resume a specific session by ID:
+
+    python -m agents -r -s a7x2 "Fix the remaining test failures"
+
+To start a new session with a chosen ID:
+
+    python -m agents -s mysession "Refactor the parser module"
+
+**How it works:**
+
+- Sessions are stored at `/tmp/agents-<username>/<session_id>.json` with `0600` permissions.
+- An index file maps each working directory to its most recently used session, so `-r` works without specifying an ID.
+- Sessions older than 7 days are automatically pruned on each save.
+- `/tmp` is cleared on reboot, so sessions are inherently ephemeral. For long-lived persistence, copy the JSON file elsewhere.
+
+When a session is restored, the original system prompt is reused verbatim so that provider-side prompt caches (e.g. Anthropic's cache) remain valid.
 
 ### Local Models
 
