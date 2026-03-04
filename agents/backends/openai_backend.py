@@ -69,18 +69,6 @@ class OpenAIBackend(LLMBackend):
 
         self._client = _openai.OpenAI(**client_kwargs)
 
-    # ── Display name ─────────────────────────────────────────────────
-
-    @property
-    def display_name(self) -> str:
-        if self.is_local:
-            return f"{self.model} (local)"
-        return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
-
-    @property
-    def context_window_size(self) -> int:
-        return self.MODEL_CONTEXT_WINDOWS.get(self.model, 256_000)
-
     # ── Message format translation ───────────────────────────────────
 
     @staticmethod
@@ -101,9 +89,8 @@ class OpenAIBackend(LLMBackend):
                     if text:
                         items.append({"type": "input_text", "text": text})
                 elif ptype == "image":
-                    source = part.get("source", {}) or {}
-                    media_type = source.get("media_type", "image/png")
-                    data = source.get("data", "")
+                    media_type = part.get("media_type", "image/png")
+                    data = part.get("data", "")
                     if data:
                         items.append(
                             {

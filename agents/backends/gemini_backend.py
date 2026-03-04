@@ -48,6 +48,8 @@ class GeminiBackend(LLMBackend):
         "gemini-3-flash-preview":             1_000_000,
     }
 
+    DEFAULT_CONTEXT_WINDOW: int = 1_000_000
+
     def __init__(
         self,
         model: str = "gemini-3.1-pro-preview",
@@ -85,18 +87,6 @@ class GeminiBackend(LLMBackend):
         self._cached_msg_count: int = 0            # Number of context messages in the cache
         self._cached_system_prompt: str | None = None  # System prompt stored in cache
 
-    # ── Display name ─────────────────────────────────────────────────
-
-    @property
-    def display_name(self) -> str:
-        if self.is_local:
-            return f"{self.model} (local)"
-        return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
-
-    @property
-    def context_window_size(self) -> int:
-        return self.MODEL_CONTEXT_WINDOWS.get(self.model, 1_000_000)
-
     # ── Message format translation ───────────────────────────────────
 
     def _translate_messages(self, context: list[dict]) -> list:
@@ -122,9 +112,8 @@ class GeminiBackend(LLMBackend):
                 if part.get("type") == "text" and part.get("text"):
                     parts.append(types.Part(text=part["text"]))
                 elif part.get("type") == "image":
-                    source = part.get("source", {})
-                    media_type = source.get("media_type", "image/png")
-                    data = source.get("data", "")
+                    media_type = part.get("media_type", "image/png")
+                    data = part.get("data", "")
                     parts.append(types.Part(
                         inline_data=types.Blob(
                             mime_type=media_type,

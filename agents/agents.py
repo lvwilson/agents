@@ -23,7 +23,6 @@ from llmide.summarize import register_llm as _register_summarize_llm
 
 # Local imports
 from .backends import create_backend
-from .ai_client import convert_string_to_dict
 from .session import (
     generate_session_id,
     validate_session_id,
@@ -48,6 +47,49 @@ from .ui import (
 
 # ── Global state ─────────────────────────────────────────────────────
 script_dir = os.path.dirname(os.path.realpath(__file__))
+
+
+# ── Message helpers ──────────────────────────────────────────────────
+
+def _text_block(text):
+    """Wrap *text* in the internal content-block format."""
+    return [{"type": "text", "text": text}]
+
+
+def _form_message(role, content):
+    """Create a message dict in the internal format.
+
+    Args:
+        role: ``"user"`` or ``"assistant"``
+        content: Plain text string
+
+    Returns:
+        dict with ``role`` and ``content`` keys.
+    """
+    return {"role": role, "content": _text_block(content)}
+
+
+def _form_message_with_images(role, content, image_media_type_tuple_array):
+    """Create a message dict that includes images.
+
+    Args:
+        role: ``"user"`` or ``"assistant"``
+        content: Plain text string
+        image_media_type_tuple_array: List of ``(image_base64, media_type)`` tuples
+
+    Returns:
+        dict with ``role`` and ``content`` keys.
+    """
+    images = [
+        {
+            "type": "image",
+            "media_type": media_type,
+            "data": image_base64,
+        }
+        for image_base64, media_type in image_media_type_tuple_array
+    ]
+    text_content = {"type": "text", "text": content}
+    return {"role": role, "content": images + [text_content]}
 
 
 def extract_completion(text, backticks=5):
@@ -205,7 +247,7 @@ class Agent:
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
-        self.context.append(Agent._form_message("user", self.task))
+        self.context.append(_form_message("user", self.task))
         self.compute_budget = compute_budget
         self.iterations = 0
         self.start_time = None
@@ -229,63 +271,10 @@ class Agent:
         client = self.client  # capture for the closure
 
         def _generate(system_prompt: str, user_message: str) -> str:
-            context = [Agent._form_message("user", user_message)]
+            context = [_form_message("user", user_message)]
             return client.generate_response(system_prompt, context)
 
         _register_summarize_llm(_generate)
-
-    @staticmethod
-    def _form_message(role, content):
-        """Create a message dictionary in the internal format.
-
-        Args:
-            role: Either "user" or "assistant"
-            content: The message content
-
-        Returns:
-            dict: Formatted message
-        """
-        message = {
-            "role": role,
-            "content": convert_string_to_dict(content)
-        }
-        return message
-
-    @staticmethod
-    def _form_message_with_images(role, content, image_media_type_tuple_array):
-        """Create a message dictionary that includes images for Claude API.
-
-        Args:
-            role: Either "user" or "assistant"
-            content: The text content
-            image_media_type_tuple_array: List of (image_base64, media_type) tuples
-
-        Returns:
-            dict: Formatted message with images
-        """
-        images = [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": image_base64,
-                },
-            }
-            for image_base64, media_type in image_media_type_tuple_array
-        ]
-
-        text_content = {
-            "type": "text",
-            "text": content
-        }
-
-        combined_content = images + [text_content]
-
-        return {
-            "role": role,
-            "content": combined_content
-        }
 
     def _iterate(self):
         """Perform one iteration of the conversation with Claude.
@@ -318,7 +307,7 @@ class Agent:
             print_clipped(clipped, response)
 
         # Add response to context and process it
-        self.context.append(Agent._form_message("assistant", response))
+        self.context.append(_form_message("assistant", response))
         command_response, image_media_tuple_array = process_content(response)
 
         # Determine if we should continue running.  This must be checked
@@ -334,9 +323,9 @@ class Agent:
 
         # Add user message to context (with or without images)
         if len(image_media_tuple_array) == 0:
-            message = Agent._form_message("user", command_response)
+            message = _form_message("user", command_response)
         else:
-            message = Agent._form_message_with_images("user", command_response, image_media_tuple_array)
+            message = _form_message_with_images("user", command_response, image_media_tuple_array)
         self.context.append(message)
 
         # Large command outputs (e.g. file reads) are expensive to
@@ -387,7 +376,7 @@ class Agent:
             "'Completion: <description>' and 'Success: True/False' "
             "at the end of your response."
         )
-        self.context.append(Agent._form_message("user", feedback))
+        self.context.append(_form_message("user", feedback))
         self._iterate()
         return True
 
@@ -445,7 +434,7 @@ class Agent:
                 "Appending new task without removing last message.",
                 self.context[-1]["role"] if self.context else "<empty>",
             )
-        new_message = Agent._form_message("user", self.task)
+        new_message = _form_message("user", self.task)
         self.context.append(new_message)
         # Let the backend annotate the new message for caching (e.g.
         # Anthropic adds cache_control blocks) and trim stale markers.

@@ -3,8 +3,7 @@
 UI module — all Rich-based display logic for the agent system.
 
 This module owns the console instance, theme, and every function that
-renders styled output.  Neither agents.py nor ai_client.py should
-import Rich directly.
+renders styled output.  Other modules should not import Rich directly.
 """
 
 import sys

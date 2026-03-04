@@ -86,18 +86,6 @@ class AnthropicBackend(LLMBackend):
 
         self.cache_step = cache_step
 
-    # ── Display name ─────────────────────────────────────────────────
-
-    @property
-    def display_name(self) -> str:
-        if self.is_local:
-            return f"{self.model} (local)"
-        return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
-
-    @property
-    def context_window_size(self) -> int:
-        return self.MODEL_CONTEXT_WINDOWS.get(self.model, 256_000)
-
     # ── Prompt-cache helpers ─────────────────────────────────────────
 
     @staticmethod
@@ -154,6 +142,41 @@ class AnthropicBackend(LLMBackend):
             return RATE_LIMIT
         return TRANSIENT
 
+    # ── Message format translation ───────────────────────────────────
+
+    @staticmethod
+    def _format_messages(context: list[dict]) -> list[dict]:
+        """Convert internal flat image format to Anthropic's nested format.
+
+        The internal format stores images as::
+
+            {"type": "image", "media_type": "image/png", "data": "…"}
+
+        Anthropic expects::
+
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "…"}}
+
+        Text blocks and cache_control annotations are passed through unchanged.
+        """
+        messages = []
+        for msg in context:
+            parts = msg.get("content", [])
+            translated = []
+            for part in parts:
+                if part.get("type") == "image" and "source" not in part:
+                    translated.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": part.get("media_type", "image/png"),
+                            "data": part.get("data", ""),
+                        },
+                    })
+                else:
+                    translated.append(part)
+            messages.append({"role": msg["role"], "content": translated})
+        return messages
+
     # ── Core: get raw API response with retries ──────────────────────
 
     def _get_response(self, system_prompt: str, context: list[dict]):
@@ -190,6 +213,9 @@ class AnthropicBackend(LLMBackend):
                 }
             ]
 
+        # Translate flat image format → Anthropic nested source format.
+        api_messages = self._format_messages(context)
+
         # TODO: max_tokens varies by backend (64K here, 16K for OpenAI/Gemini).
         # Consider making this configurable via the backend or constructor.
         stream_kwargs = dict(
@@ -197,7 +223,7 @@ class AnthropicBackend(LLMBackend):
             max_tokens=64000,
             temperature=self.temperature,
             system=system_value,
-            messages=context,
+            messages=api_messages,
         )
         if not self.is_local:
             stream_kwargs["extra_headers"] = {

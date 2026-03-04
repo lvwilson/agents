@@ -52,7 +52,12 @@ TRANSIENT = "transient"
 class LLMBackend(ABC):
     """Unified interface for large-language-model providers.
 
-    Subclasses must implement ``generate_response`` and ``display_name``.
+    Subclasses must implement ``generate_response``.  They should also
+    populate the class-level ``MODEL_DISPLAY_NAMES`` and
+    ``MODEL_CONTEXT_WINDOWS`` dicts; the base class provides default
+    ``display_name`` and ``context_window_size`` implementations that
+    look up the current model in those dicts.
+
     Token-tracking and cost attributes have sensible defaults so that
     backends which don't support them still satisfy the interface.
 
@@ -60,6 +65,14 @@ class LLMBackend(ABC):
     back-off logic.  Backends customise behaviour by overriding
     ``_classify_error`` and optionally ``_extract_retry_after``.
     """
+
+    # Subclasses should populate these — the base class uses them for
+    # display_name and context_window_size lookups.
+    MODEL_DISPLAY_NAMES: dict[str, str] = {}
+    MODEL_CONTEXT_WINDOWS: dict[str, int] = {}
+
+    # Default context window when the model isn't in MODEL_CONTEXT_WINDOWS.
+    DEFAULT_CONTEXT_WINDOW: int = 256_000
 
     # Retry configuration — shared defaults for all backends
     RETRY_TIMEOUT = 300        # 5 minutes overall timeout for rate-limit retries
@@ -223,18 +236,25 @@ class LLMBackend(ABC):
         """
 
     @property
-    @abstractmethod
     def display_name(self) -> str:
-        """Human-readable model name shown in the UI banner."""
+        """Human-readable model name shown in the UI banner.
+
+        Looks up ``self.model`` in the subclass's ``MODEL_DISPLAY_NAMES``
+        dict, falling back to the raw model string.  Local models get a
+        ``(local)`` suffix.
+        """
+        if self.is_local:
+            return f"{self.model} (local)"
+        return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
 
     @property
     def context_window_size(self) -> int:
         """Maximum context window size in tokens for the current model.
 
-        Subclasses should override this to return the correct value for
-        their model.  The default is 256 000 tokens.
+        Looks up ``self.model`` in the subclass's ``MODEL_CONTEXT_WINDOWS``
+        dict, falling back to ``DEFAULT_CONTEXT_WINDOW``.
         """
-        return 256_000
+        return self.MODEL_CONTEXT_WINDOWS.get(self.model, self.DEFAULT_CONTEXT_WINDOW)
 
     # ── Optional overrides ───────────────────────────────────────────
 
