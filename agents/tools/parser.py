@@ -78,7 +78,7 @@ def concise_representation(input_string, max_chars):
 
 
 # Commands that can be stacked (queued together like read_file)
-STACKABLE_READ_COMMANDS = {'read_file', 'read_page', 'read_page_html', 'page_links', 'view_page'}
+STACKABLE_READ_COMMANDS = {'read_file', 'read_page', 'read_page_html', 'page_links', 'view_page', 'web_search'}
 
 
 def filter_content(content):

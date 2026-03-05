@@ -20,7 +20,8 @@ images = ["requests"]
 openai = ["openai"]
 gemini = ["google-genai"]
 browser = ["playwright"]
-all = ["black>=24.0", "requests", "openai", "google-genai", "playwright"]
+search = ["ddgs"]
+all = ["black>=24.0", "requests", "openai", "google-genai", "playwright", "ddgs"]
 
 [project.scripts]
 agents = "agents.agents:main"

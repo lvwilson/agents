@@ -6,3 +6,4 @@ pillow
 # black>=24.0       — needed for AST code formatting (codemanipulator)
 # requests          — needed for image generation (create_image)
 # playwright        — needed for web browser tools (install via: pip install -e '.[browser]')
+# ddgs              — needed for web search tool (install via: pip install -e '.[search]')

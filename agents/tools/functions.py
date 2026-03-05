@@ -440,6 +440,44 @@ def summarize(*args):
         return f"Error during summarization: {e}"
 
 
+# ── Web search (DuckDuckGo) ────────────────────────────────────────
+
+def web_search(query, max_results=None):
+    """Search the web using DuckDuckGo and return formatted results.
+
+    :param query: Search query string.
+    :param max_results: Maximum number of results (default 5).
+    :return: Formatted search results with title, URL, and snippet.
+    """
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        return "Error: ddgs package not installed. Run: pip install ddgs"
+
+    n = int(max_results) if max_results else 5
+    n = max(1, min(n, 20))
+
+    try:
+        results = list(DDGS().text(query, max_results=n))
+    except Exception as e:
+        return f"Search error: {e}"
+
+    if not results:
+        return f"No results found for: {query}"
+
+    lines = [f"Search results for: {query}\n"]
+    for i, r in enumerate(results, 1):
+        title = r.get("title", "No title")
+        href = r.get("href", "")
+        body = r.get("body", "")
+        lines.append(f"  {i}. {title}")
+        lines.append(f"     {href}")
+        if body:
+            lines.append(f"     {body}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 # ── Web browser tools (Playwright) ─────────────────────────────────
 
 from .web_browser import get_browser, close_browser

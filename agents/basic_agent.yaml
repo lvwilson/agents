@@ -28,6 +28,9 @@ system_prompt: |
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
   run_console_command "arguments"
+  
+  Web Search Command:
+  web_search "query" [max_results] - Search the web using DuckDuckGo, returns titles, URLs, and snippets
 
   Web Reading Commands (stateless -- each takes a URL, like read_file):
   read_page url [css_selector] - Navigate to URL, return visible text (optionally scoped)
