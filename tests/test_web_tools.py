@@ -85,11 +85,12 @@ class TestReadPageHtml(unittest.TestCase):
 
     def test_read_page_html_returns_error_on_navigation_failure(self):
         browser, mock_page = _make_browser_with_mocks()
-        mock_page.goto.return_value = MagicMock(status=200)
-        # Simulate navigate returning an error string
-        with patch.object(browser, 'navigate', return_value="Navigation error: connection refused"):
-            result = browser.read_page_html("https://bad-site.com")
-        self.assertIn("error", result.lower())
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+        mock_page.goto.side_effect = PlaywrightTimeout("Timeout")
+
+        result = browser.read_page_html("https://slow-site.com")
+
+        self.assertIn("Timeout", result)
 
 
 class TestPageLinks(unittest.TestCase):
