@@ -77,19 +77,23 @@ def concise_representation(input_string, max_chars):
     return f"{first_part}...{last_part}"
 
 
+# Commands that can be stacked (queued together like read_file)
+STACKABLE_READ_COMMANDS = {'read_file', 'read_page', 'read_page_html', 'page_links', 'view_page'}
+
+
 def filter_content(content):
     """Cut output at the final read command or first non-read command after a read command."""
     read_command_encountered = False
     command, arguments, backtick_content, remaining_content = process_slice(content)
     if command:
         command = CommandInfo(command, arguments, backtick_content)
-        if command == 'read_file':
+        if command.command in STACKABLE_READ_COMMANDS:  # FIX: was `command == 'read_file'`
             read_command_encountered = True
     previous_remaining_content = remaining_content
     while command:
         command, arguments, backtick_content, remaining_content = process_slice(remaining_content)
         if command:
-            if command == 'read_file':
+            if command in STACKABLE_READ_COMMANDS:  # `command` is a raw string here
                 read_command_encountered = True
             elif read_command_encountered:
                 n_to_copy = len(content) - len(previous_remaining_content)
@@ -128,6 +132,17 @@ def process_content(content):
         elif command.command == "create_image":
             args = split_preserving_quotes(command.arguments)
             command_response, image_array = _create_image(*args)
+        elif command.command == "view_page":
+            result = _execute_command(command.command, command.arguments, command.backtick_content)
+            if isinstance(result, tuple):
+                command_response, screenshot_path = result
+                if screenshot_path and os.path.exists(screenshot_path):
+                    image_base64, media_type = _load_and_resize_image(screenshot_path)
+                    if media_type:
+                        image_data_tuple_array.append((image_base64, media_type))
+                command_response = (command_response or "ok") + "\n"
+            else:
+                command_response = (result or "ok") + "\n"
         else:
             command_response = (_execute_command(command.command, command.arguments, command.backtick_content) or "ok") + "\n"
             if command.command == "run_console_command":

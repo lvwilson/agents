@@ -445,87 +445,60 @@ def summarize(*args):
 from .web_browser import get_browser, close_browser
 
 
-def web_navigate(url):
-    """Navigate the browser to *url*."""
-    return get_browser().navigate(url)
+# ── New core tools (stateless reading) ──────────────────────────────
 
-
-def web_back():
-    """Go back one page in browser history."""
-    return get_browser().back()
-
-
-def web_forward():
-    """Go forward one page in browser history."""
-    return get_browser().forward()
-
-
-def web_read(*args):
-    """Read the visible text of the current page or a CSS-selected element."""
+def read_page(url, *args):
+    """Navigate to *url* and return visible text. Optional CSS selector."""
     selector = args[0] if args else None
-    return get_browser().read_text(selector)
+    return get_browser().read_page(url, selector)
 
 
-def web_read_html(*args):
-    """Read the HTML of the current page or a CSS-selected element."""
+def read_page_html(url, *args):
+    """Navigate to *url* and return HTML. Optional CSS selector."""
     selector = args[0] if args else None
-    return get_browser().read_html(selector)
+    return get_browser().read_page_html(url, selector)
 
 
-def web_links():
-    """List all links on the current page."""
-    return get_browser().get_links()
+def page_links(url):
+    """Navigate to *url* and return all links."""
+    return get_browser().page_links(url)
 
 
-def web_click(selector):
-    """Click the element matching *selector*."""
-    return get_browser().click(selector)
+def view_page(url, *args):
+    """Navigate to *url*, screenshot + text + interactive elements.
+
+    Returns ``(rich_text_response, file_path)`` tuple for parser.
+    """
+    file_path = args[0] if args else None
+    return get_browser().view_page(url, file_path)
 
 
-def web_type(selector, text):
-    """Type *text* into the input matching *selector*."""
-    return get_browser().type_text(selector, text)
+# ── New interactive tools (stateful browsing) ───────────────────────
+
+def browse_open(url):
+    """Open URL in browser session, auto-reads page content."""
+    return get_browser().browse_open(url)
 
 
-def web_press_key(key):
-    """Press a keyboard key (e.g. ``Enter``, ``Tab``, ``Escape``)."""
-    return get_browser().press_key(key)
+def browse_read(*args):
+    """Read current page text, optionally scoped by CSS selector."""
+    selector = args[0] if args else None
+    return get_browser().browse_read(selector)
 
 
-def web_select(selector, value):
-    """Select *value* from the ``<select>`` matching *selector*."""
-    return get_browser().select_option(selector, value)
+def browse_click(selector):
+    """Click element (auto-waits), returns resulting page content."""
+    return get_browser().browse_click(selector)
 
 
-def web_screenshot(*args):
-    """Take a screenshot.  Args: ``file_path [css_selector]``."""
-    if not args:
-        return "Error: web_screenshot requires at least a file path."
-    file_path = args[0]
-    selector = args[1] if len(args) > 1 else None
-    return get_browser().screenshot(file_path, selector=selector)
+def browse_type(selector, text):
+    """Type text into element. Supports [Enter], [Tab], [Escape] inline."""
+    return get_browser().browse_type(selector, text)
 
 
-def web_execute_js(*args):
+def browse_js(*args):
     """Execute JavaScript on the current page (code via backtick block)."""
     script = args[-1] if args else None
     if not script:
-        return "Error: web_execute_js requires JavaScript code in a backtick block."
+        return "Error: browse_js requires JavaScript code in a backtick block."
     return get_browser().execute_js(script)
-
-
-def web_wait(selector, *args):
-    """Wait for *selector* to appear.  Optional timeout in ms (default 10 000)."""
-    timeout = int(args[0]) if args else 10000
-    return get_browser().wait_for_selector(selector, timeout=timeout)
-
-
-def web_page_info():
-    """Return the current URL, title, and viewport size."""
-    return get_browser().get_page_info()
-
-
-def web_close():
-    """Close the browser and free resources."""
-    close_browser()
-    return "Browser closed."

@@ -29,24 +29,25 @@ system_prompt: |
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
   run_console_command "arguments"
 
-  Web Browser Commands (Playwright-powered headless browser):
-  web_navigate url - Navigate to a URL, returns status, title
-  web_back - Go back one page in browser history
-  web_forward - Go forward one page in browser history
-  web_read [css_selector] - Read visible text of page or element
-  web_read_html [css_selector] - Read HTML of page or element
-  web_links - List all links on the current page
-  web_click css_selector - Click an element
-  web_type css_selector "text to type" - Type text into an input field
-  web_press_key key_name - Press a key (e.g. Enter, Tab, Escape)
-  web_select css_selector "value" - Select option from dropdown
-  web_screenshot file_path [css_selector] - Take screenshot, save to file (use view_image to see it)
-  web_execute_js `````JavaScript code to execute on the page`````
-  web_wait css_selector [timeout_ms] - Wait for element to appear
-  web_page_info - Get current URL, title, viewport size
-  web_close - Close the browser and free resources
+  Web Reading Commands (stateless -- each takes a URL, like read_file):
+  read_page url [css_selector] - Navigate to URL, return visible text (optionally scoped)
+  read_page_html url [css_selector] - Navigate to URL, return HTML (optionally scoped)
+  page_links url - Navigate to URL, return all links
+  view_page url - Navigate to URL, take screenshot + return text content and interactive elements map
 
-  Note: The browser persists across commands. Navigate first, then interact. Screenshots are saved to files which you can view with view_image.
+  Note: These are stateless and can be queued like read_file:
+    read_page "https://site1.com"
+    read_page "https://site2.com"
+
+  Interactive Browser Commands (stateful session -- for forms, logins, SPAs):
+  browse_open url - Open URL, returns page content (auto-reads)
+  browse_read [css_selector] - Read current page (auto-waits for selector)
+  browse_click css_selector - Click element (auto-waits), returns resulting page
+  browse_type css_selector "text" - Type into input. Supports [Enter], [Tab], [Escape] inline. Auto-reads on [Enter].
+  browse_js `````JavaScript code to execute on the page`````
+
+  Note: Interactive commands auto-read -- you see the result without a separate read step.
+  Example login: browse_open "https://app.com/login" then browse_type "#user" "me@x.com[Tab]" then browse_type "#pass" "secret[Enter]"
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.

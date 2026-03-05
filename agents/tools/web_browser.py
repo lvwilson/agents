@@ -242,6 +242,291 @@ class WebBrowser:
             f"Viewport: {viewport['width']}x{viewport['height']}"
         )
 
+    # ── Core tools (stateless reading) ──────────────────────────────
+
+    def read_page(self, url, selector=None, timeout=30000):
+        """Navigate to *url* and return visible text (optionally scoped by *selector*)."""
+        nav_result = self.navigate(url, timeout)
+        if "Timeout" in nav_result or "error" in nav_result.lower():
+            return nav_result
+        return self.read_text(selector)
+
+    def read_page_html(self, url, selector=None, timeout=30000):
+        """Navigate to *url* and return HTML (optionally scoped by *selector*)."""
+        nav_result = self.navigate(url, timeout)
+        if "Timeout" in nav_result or "error" in nav_result.lower():
+            return nav_result
+        return self.read_html(selector)
+
+    def page_links(self, url, timeout=30000):
+        """Navigate to *url* and return all links."""
+        nav_result = self.navigate(url, timeout)
+        if "Timeout" in nav_result or "error" in nav_result.lower():
+            return nav_result
+        return self.get_links()
+
+    def view_page(self, url, file_path=None, timeout=30000):
+        """Navigate to *url*, screenshot, extract text + interactive elements.
+
+        Returns ``(rich_text_response, file_path)`` tuple.
+        """
+        nav_result = self.navigate(url, timeout)
+        if "Timeout" in nav_result or "error" in nav_result.lower():
+            return (nav_result, None)
+
+        # Generate file path if not provided
+        if not file_path:
+            import hashlib
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+            file_path = f"/tmp/web_screenshot_{url_hash}.png"
+
+        self.screenshot(file_path)
+        text_content = self.read_text()
+        interactive = self.get_interactive_elements()
+
+        rich_text = text_content
+        if interactive:
+            rich_text += f"\n{'─' * 60}\n{interactive}"
+
+        return (rich_text, file_path)
+
+    def get_interactive_elements(self):
+        """Extract all interactive elements with their selectors and metadata."""
+        self._ensure_running()
+        try:
+            elements = self.page.evaluate("""() => {
+                function bestSelector(el) {
+                    if (el.id) return '#' + CSS.escape(el.id);
+                    if (el.name) return el.tagName.toLowerCase() + '[name="' + el.name + '"]';
+                    // Try class-based selector
+                    if (el.className && typeof el.className === 'string') {
+                        const cls = el.className.trim().split(/\\s+/).filter(c => c.length > 0);
+                        if (cls.length > 0) {
+                            const sel = el.tagName.toLowerCase() + '.' + cls.join('.');
+                            if (document.querySelectorAll(sel).length === 1) return sel;
+                        }
+                    }
+                    // Fallback: nth-child
+                    const parent = el.parentElement;
+                    if (parent) {
+                        const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+                        const idx = siblings.indexOf(el) + 1;
+                        return bestSelector(parent) + ' > ' + el.tagName.toLowerCase() + ':nth-child(' + idx + ')';
+                    }
+                    return el.tagName.toLowerCase();
+                }
+
+                const MAX = 100;
+                const result = { links: [], buttons: [], inputs: [], selects: [], textareas: [] };
+
+                // Links
+                const links = Array.from(document.querySelectorAll('a[href]')).slice(0, MAX);
+                for (const el of links) {
+                    result.links.push({
+                        text: (el.innerText || '').trim().substring(0, 60),
+                        href: el.href,
+                        selector: bestSelector(el)
+                    });
+                }
+
+                // Buttons
+                const buttons = Array.from(document.querySelectorAll('button, input[type="button"], input[type="submit"]')).slice(0, MAX);
+                for (const el of buttons) {
+                    result.buttons.push({
+                        text: (el.innerText || el.value || '').trim().substring(0, 60),
+                        selector: bestSelector(el)
+                    });
+                }
+
+                // Inputs (not buttons)
+                const inputs = Array.from(document.querySelectorAll('input:not([type="button"]):not([type="submit"]):not([type="hidden"])')).slice(0, MAX);
+                for (const el of inputs) {
+                    result.inputs.push({
+                        type: el.type || 'text',
+                        name: el.name || '',
+                        placeholder: el.placeholder || '',
+                        value: el.value || '',
+                        selector: bestSelector(el)
+                    });
+                }
+
+                // Selects
+                const selects = Array.from(document.querySelectorAll('select')).slice(0, MAX);
+                for (const el of selects) {
+                    result.selects.push({
+                        name: el.name || '',
+                        value: el.value || '',
+                        optionCount: el.options.length,
+                        selector: bestSelector(el)
+                    });
+                }
+
+                // Textareas
+                const textareas = Array.from(document.querySelectorAll('textarea')).slice(0, MAX);
+                for (const el of textareas) {
+                    result.textareas.push({
+                        name: el.name || '',
+                        placeholder: el.placeholder || '',
+                        selector: bestSelector(el)
+                    });
+                }
+
+                return result;
+            }""")
+        except Exception as e:
+            return f"Error extracting interactive elements: {e}"
+
+        lines = ["Interactive Elements:"]
+
+        if elements.get("links"):
+            lines.append(f"  Links ({len(elements['links'])}):")
+            for i, el in enumerate(elements["links"], 1):
+                text = el.get("text", "")
+                href = el.get("href", "")
+                sel = el.get("selector", "")
+                lines.append(f"    {i}. [{text}] -> {href} -- {sel}")
+
+        if elements.get("buttons"):
+            lines.append(f"  Buttons ({len(elements['buttons'])}):")
+            for i, el in enumerate(elements["buttons"], 1):
+                text = el.get("text", "")
+                sel = el.get("selector", "")
+                lines.append(f"    {i}. [{text}] -- {sel}")
+
+        if elements.get("inputs"):
+            lines.append(f"  Inputs ({len(elements['inputs'])}):")
+            for i, el in enumerate(elements["inputs"], 1):
+                typ = el.get("type", "text")
+                name = el.get("name", "")
+                placeholder = el.get("placeholder", "")
+                sel = el.get("selector", "")
+                parts = [typ]
+                if name:
+                    parts.append(f'name="{name}"')
+                if placeholder:
+                    parts.append(f'placeholder="{placeholder}"')
+                lines.append(f"    {i}. {' '.join(parts)} -- {sel}")
+
+        if elements.get("selects"):
+            lines.append(f"  Selects ({len(elements['selects'])}):")
+            for i, el in enumerate(elements["selects"], 1):
+                name = el.get("name", "")
+                value = el.get("value", "")
+                count = el.get("optionCount", 0)
+                sel = el.get("selector", "")
+                lines.append(f"    {i}. name=\"{name}\" value=\"{value}\" ({count} options) -- {sel}")
+
+        if elements.get("textareas"):
+            lines.append(f"  Textareas ({len(elements['textareas'])}):")
+            for i, el in enumerate(elements["textareas"], 1):
+                name = el.get("name", "")
+                placeholder = el.get("placeholder", "")
+                sel = el.get("selector", "")
+                parts = []
+                if name:
+                    parts.append(f'name="{name}"')
+                if placeholder:
+                    parts.append(f'placeholder="{placeholder}"')
+                lines.append(f"    {i}. {' '.join(parts)} -- {sel}")
+
+        # If no interactive elements found at all
+        if len(lines) == 1:
+            return ""
+
+        return "\n".join(lines)
+
+    # ── Interactive tools (stateful browsing) ───────────────────────
+
+    def browse_open(self, url, timeout=30000):
+        """Navigate to *url* and auto-read: return page text."""
+        nav_result = self.navigate(url, timeout)
+        if "Timeout" in nav_result or "error" in nav_result.lower():
+            return nav_result
+        return self.read_text()
+
+    def browse_read(self, selector=None):
+        """Read current page, optionally scoped by *selector*. Auto-waits for selector."""
+        if selector:
+            wait_result = self.wait_for_selector(selector, timeout=10000)
+            if "Timeout" in wait_result or "error" in wait_result.lower():
+                return wait_result
+        return self.read_text(selector)
+
+    def browse_click(self, selector, timeout=5000):
+        """Click element, auto-wait, then auto-read resulting page."""
+        self._ensure_running()
+        try:
+            self.page.click(selector, timeout=timeout)
+        except PlaywrightTimeout:
+            return f"Timeout clicking selector: {selector}"
+        except Exception as e:
+            return f"Click error: {e}"
+        try:
+            self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except PlaywrightTimeout:
+            pass  # Page may not navigate; still read what we have
+        return self.read_text()
+
+    def browse_type(self, selector, text, timeout=5000):
+        """Type text into element. Supports [Enter], [Tab], [Escape] inline.
+
+        Auto-reads if text ends with [Enter].
+        """
+        import re as _re
+        self._ensure_running()
+
+        # Split text on inline key tokens
+        tokens = _re.split(r'(\[Enter\]|\[Tab\]|\[Escape\])', text)
+        ends_with_enter = text.rstrip().endswith('[Enter]')
+
+        # Collect the pure text portion (everything before the first key token)
+        pure_text_parts = []
+        key_sequence_started = False
+
+        for token in tokens:
+            if not token:
+                continue
+            if token in ('[Enter]', '[Tab]', '[Escape]'):
+                key_sequence_started = True
+                # First fill any accumulated text
+                if pure_text_parts:
+                    fill_text = ''.join(pure_text_parts)
+                    try:
+                        self.page.fill(selector, fill_text, timeout=timeout)
+                    except PlaywrightTimeout:
+                        return f"Timeout typing into selector: {selector}"
+                    except Exception as e:
+                        return f"Type error: {e}"
+                    pure_text_parts = []
+
+                # Press the key
+                key_name = token[1:-1]  # Strip [ and ]
+                try:
+                    self.page.keyboard.press(key_name)
+                except Exception as e:
+                    return f"Key press error ({key_name}): {e}"
+            else:
+                pure_text_parts.append(token)
+
+        # Fill any remaining text that wasn't followed by a key
+        if pure_text_parts:
+            fill_text = ''.join(pure_text_parts)
+            try:
+                self.page.fill(selector, fill_text, timeout=timeout)
+            except PlaywrightTimeout:
+                return f"Timeout typing into selector: {selector}"
+            except Exception as e:
+                return f"Type error: {e}"
+
+        if ends_with_enter:
+            try:
+                self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except PlaywrightTimeout:
+                pass  # May not navigate
+            return self.read_text()
+
+        return f"Typed into: {selector}"
+
     # ── Lifecycle ───────────────────────────────────────────────────
 
     def close(self):
