@@ -28,7 +28,7 @@ def split_preserving_quotes(s):
 
 def process_slice(content):
     """Extract the first command, its arguments, backtick payload, and remaining content."""
-    command_pattern = r"^Command: (\S+)\s*(.*)$"
+    command_pattern = r"^Command: (\S+)[ \t]*(.*)$"
     backtick_pattern = r"`````(?:[\w#\+\-]+)?\s*(.*?)`````"
 
     command_match = re.search(command_pattern, content, re.MULTILINE)

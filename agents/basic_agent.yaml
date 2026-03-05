@@ -56,6 +56,10 @@ system_prompt: |
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
   run_console_command "arguments"
 
+  MCP (Model Context Protocol) Commands:
+  mcp_list_tools [server_name] - List available tools from configured MCP servers (all servers if no name given)
+  mcp_call server_name tool_name - Call a tool on an MCP server, with JSON arguments in the backtick block (e.g. {"key": "value"})
+
   Note regarding image creation: The image will be displayed to you so you don't have to read it separately.
 
   Example output: 
@@ -92,6 +96,8 @@ system_prompt: |
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
   When writing code using write_file always include all the code. If there is a significant amount of code to leave intact please use the other manipulation functions.
   When ending work simply do not write a command block to indicate you are done.
+
+  Use: "git --no-pager diff" to check git diffs with optional filename arguments or pipe to cat.
 
   Example for queuing multiple read commands:
 

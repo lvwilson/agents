@@ -540,3 +540,76 @@ def browse_js(*args):
     if not script:
         return "Error: browse_js requires JavaScript code in a backtick block."
     return get_browser().execute_js(script)
+
+
+# ── MCP (Model Context Protocol) tools ─────────────────────────────
+
+def mcp_list_tools(*args):
+    """List available tools from configured MCP servers.
+
+    Usage: mcp_list_tools [server_name]
+
+    With no arguments, lists tools from all configured servers.
+    With a server name, lists tools from that server only.
+
+    Servers are configured in ~/.config/agents/mcp_servers.json
+    """
+    from .mcp_client import get_manager
+
+    server_name = args[0] if args else None
+    try:
+        tools = get_manager().list_tools(server_name)
+    except Exception as e:
+        return f"Error: {e}"
+
+    if not tools:
+        return "No MCP tools found. Configure servers in ~/.config/agents/mcp_servers.json"
+
+    lines = []
+    current_server = None
+    for t in tools:
+        if t["server"] != current_server:
+            current_server = t["server"]
+            lines.append(f"\n[{current_server}]")
+        desc = t["description"][:100] if t["description"] else "(no description)"
+        lines.append(f"  {t['name']} -- {desc}")
+        if t.get("schema", {}).get("properties"):
+            props = t["schema"]["properties"]
+            params = ", ".join(
+                f"{k}: {v.get('type', '?')}" for k, v in props.items()
+            )
+            lines.append(f"    params: {params}")
+    return "\n".join(lines)
+
+
+def mcp_call(*args):
+    """Call a tool on an MCP server.
+
+    Usage: mcp_call server_name tool_name [JSON args in backtick block]
+
+    The backtick block contains JSON arguments for the tool.
+    If the tool takes no arguments, the backtick block can be omitted.
+    """
+    import json as _json
+    from .mcp_client import get_manager
+
+    if len(args) < 2:
+        return "Error: mcp_call requires server_name and tool_name arguments."
+
+    server_name = args[0]
+    tool_name = args[1]
+
+    # Parse JSON arguments from backtick block (last arg if present)
+    arguments = {}
+    if len(args) >= 3:
+        json_str = args[-1]
+        try:
+            arguments = _json.loads(json_str)
+        except _json.JSONDecodeError as e:
+            return f"Error parsing JSON arguments: {e}\nReceived: {json_str[:200]}"
+
+    try:
+        return get_manager().call_tool(server_name, tool_name, arguments)
+    except Exception as e:
+        return f"Error calling {server_name}/{tool_name}: {e}"
+
