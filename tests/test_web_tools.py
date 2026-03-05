@@ -596,7 +596,7 @@ class TestStackableCommands(unittest.TestCase):
     """Verify the STACKABLE_READ_COMMANDS set is correct."""
 
     def test_contains_expected_commands(self):
-        expected = {'read_file', 'read_page', 'read_page_html', 'page_links', 'view_page'}
+        expected = {'read_file', 'read_page', 'read_page_html', 'page_links', 'view_page', 'web_search'}
         self.assertEqual(STACKABLE_READ_COMMANDS, expected)
 
     def test_non_read_commands_not_stackable(self):
