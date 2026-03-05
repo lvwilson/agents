@@ -1,0 +1,285 @@
+"""
+Anthropic (Claude) backend.
+
+Implements :class:`LLMBackend` using the ``anthropic`` Python SDK.
+"""
+
+from __future__ import annotations
+
+import os
+
+from ..llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
+
+
+class AnthropicBackend(LLMBackend):
+    """Claude backend with streaming, prompt caching, and retry logic."""
+
+    MODEL_PRICING = {
+        "claude-3-5-sonnet-20240620":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-3-5-sonnet-20241022":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-3-7-sonnet-20250219":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-sonnet-4-20250514":    {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00},
+        "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00},
+        "MiniMax-M2.5" :               {"input_token_cost": 0.3,  "output_token_cost": 1.2},
+    }
+
+    MODEL_DISPLAY_NAMES = {
+        "claude-3-5-sonnet-20240620":  "Claude 3.5 Sonnet",
+        "claude-3-5-sonnet-20241022":  "Claude 3.5 Sonnet v2",
+        "claude-3-7-sonnet-20250219":  "Claude 3.7 Sonnet",
+        "claude-sonnet-4-20250514":    "Claude Sonnet 4",
+        "claude-sonnet-4-5-20250929":  "Claude Sonnet 4.5",
+        "claude-sonnet-4-6":           "Claude Sonnet 4.6",
+        "claude-opus-4-6":             "Claude Opus 4.6",
+    }
+
+    MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+        "claude-3-5-sonnet-20240620":  200_000,
+        "claude-3-5-sonnet-20241022":  200_000,
+        "claude-3-7-sonnet-20250219":  200_000,
+        "claude-sonnet-4-20250514":    200_000,
+        "claude-sonnet-4-5-20250929":  200_000,
+        "claude-sonnet-4-6":           200_000,
+        "claude-opus-4-6":             200_000,
+        "MiniMax-M2.5":                200_000,
+    }
+
+    # Models that route to MiniMax (require special API key validation)
+    MINIMAX_MODELS = {"MiniMax-M2.5"}
+
+    def __init__(
+        self,
+        model: str = "claude-opus-4-6",
+        base_url: str | None = None,
+        cache_step: int = 2,
+        stream_handler: StreamHandler | None = None,
+        temperature: float = 0.6,
+        **_kwargs,
+    ):
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature)
+
+        # Lazy import — only pull in anthropic when this backend is used
+        import anthropic as _anthropic
+        self._anthropic = _anthropic
+
+        api_key = os.getenv("CLAUDE_API_KEY")
+
+        if base_url:
+            # Defensive check: MiniMax models require specific API key prefix
+            # to prevent credential leaks. Only allow keys starting with "sk-api-kt"
+            if model in self.MINIMAX_MODELS:
+                if not api_key or not api_key.startswith("sk-api-kt"):
+                    raise ValueError(
+                        f"Invalid API key for MiniMax model '{model}'. "
+                        "API key must begin with 'sk-api-kt' to prevent credential leakage. "
+                        "Please use a valid MiniMax API key."
+                    )
+            if not api_key:
+                api_key = "local"
+            self._client = _anthropic.Anthropic(api_key=api_key, base_url=base_url)
+        else:
+            if not api_key:
+                raise Exception("CLAUDE_API_KEY Environment Variable Unset")
+            self._client = _anthropic.Anthropic(api_key=api_key)
+
+        self.cache_step = cache_step
+
+    # ── Prompt-cache helpers ─────────────────────────────────────────
+
+    @staticmethod
+    def _has_cache_block(message: dict) -> bool:
+        return any("cache_control" in item for item in message.get("content", []))
+
+    @staticmethod
+    def _add_cache_block(message: dict) -> None:
+        for content_item in message.get("content", []):
+            if content_item["type"] == "text":
+                content_item["cache_control"] = {"type": "ephemeral"}
+                break
+
+    @staticmethod
+    def _remove_cache_block(message: dict) -> None:
+        for content_item in message.get("content", []):
+            content_item.pop("cache_control", None)
+
+    def mark_for_caching(self, message: dict) -> None:
+        """Add an Anthropic ``cache_control`` annotation to *message*."""
+        self._add_cache_block(message)
+
+    def trim_cache_blocks(self, context: list[dict], max_blocks: int = 2) -> None:
+        cached = [m for m in context if m["role"] == "user" and self._has_cache_block(m)]
+        while len(cached) > max_blocks:
+            self._remove_cache_block(cached.pop(0))
+
+    # ── Cost calculation ─────────────────────────────────────────────
+
+    def calculate_cost(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
+    ) -> float:
+        pricing = self.MODEL_PRICING.get(self.model)
+        if pricing is None:
+            return 0.0
+        input_cost = pricing["input_token_cost"]
+        output_cost = pricing["output_token_cost"]
+        cost = (
+            input_tokens * input_cost
+            + cache_creation_tokens * input_cost * 1.25
+            + cache_read_tokens * input_cost * 0.10
+            + output_tokens * output_cost
+        ) / 1_000_000
+        return cost
+
+    # ── Error classification ─────────────────────────────────────────
+
+    def _classify_error(self, error: Exception) -> str:
+        if isinstance(error, self._anthropic.RateLimitError):
+            return RATE_LIMIT
+        return TRANSIENT
+
+    # ── Message format translation ───────────────────────────────────
+
+    @staticmethod
+    def _format_messages(context: list[dict]) -> list[dict]:
+        """Convert internal flat image format to Anthropic's nested format.
+
+        The internal format stores images as::
+
+            {"type": "image", "media_type": "image/png", "data": "…"}
+
+        Anthropic expects::
+
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "…"}}
+
+        Text blocks and cache_control annotations are passed through unchanged.
+        """
+        messages = []
+        for msg in context:
+            parts = msg.get("content", [])
+            translated = []
+            for part in parts:
+                if part.get("type") == "image" and "source" not in part:
+                    translated.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": part.get("media_type", "image/png"),
+                            "data": part.get("data", ""),
+                        },
+                    })
+                else:
+                    translated.append(part)
+            messages.append({"role": msg["role"], "content": translated})
+        return messages
+
+    # ── Core: get raw API response with retries ──────────────────────
+
+    def _get_response(self, system_prompt: str, context: list[dict]):
+        self.call_count += 1
+        sh = self.stream_handler
+
+        # Place a new cache block periodically.
+        # Always cache on the first call so the initial task message is
+        # written to the prompt cache immediately — without this, call 1
+        # sends all message tokens as uncached input and the cache block
+        # is only created on call 2 (at 1.25× cost), with reads not
+        # benefiting until call 3.
+        should_cache = (not self.is_local) and (
+            self.call_count == 1 or self.call_count % self.cache_step == 0
+        )
+        if should_cache:
+            for message in reversed(context):
+                if message["role"] == "user" and not self._has_cache_block(message):
+                    self._add_cache_block(message)
+                    break
+            self.trim_cache_blocks(context)
+
+        # Pass system prompt as a cacheable content block so it is
+        # written to the prompt cache on the first call and read from
+        # cache on every subsequent call.
+        if self.is_local:
+            system_value = system_prompt
+        else:
+            system_value = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+
+        # Translate flat image format → Anthropic nested source format.
+        api_messages = self._format_messages(context)
+
+        # TODO: max_tokens varies by backend (64K here, 16K for OpenAI/Gemini).
+        # Consider making this configurable via the backend or constructor.
+        stream_kwargs = dict(
+            model=self.model,
+            max_tokens=64000,
+            temperature=self.temperature,
+            system=system_value,
+            messages=api_messages,
+        )
+        if not self.is_local:
+            stream_kwargs["extra_headers"] = {
+                "anthropic-beta": "output-128k-2025-02-19, prompt-caching-2024-07-31"
+            }
+
+        def attempt():
+            with self._client.messages.stream(**stream_kwargs) as stream:
+                for text in stream.text_stream:
+                    sh.on_stream_token(text)
+                response = stream.get_final_message()
+            if response:
+                return response
+            raise Exception("No response received from Anthropic API")
+
+        return self._run_with_retries(attempt)
+
+    # ── Public interface ─────────────────────────────────────────────
+
+    def generate_response(self, system_prompt: str, context: list[dict]) -> str:
+        response = self._get_response(system_prompt, context)
+
+        self.last_input_tokens = response.usage.input_tokens
+        self.last_output_tokens = response.usage.output_tokens
+
+        cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+        cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        total_input = self.last_input_tokens + cache_creation + cache_read
+
+        self.last_total_context_tokens = total_input + self.last_output_tokens
+        self.peak_context_tokens = max(self.peak_context_tokens, self.last_total_context_tokens)
+
+        self.cost += self.calculate_cost(
+            self.last_input_tokens,
+            self.last_output_tokens,
+            cache_creation,
+            cache_read,
+        )
+
+        # Track what this call would have cost without caching
+        self.cost_without_cache += self.calculate_cost(
+            self.last_input_tokens + cache_creation + cache_read,
+            self.last_output_tokens,
+        )
+
+        # Find the first TextBlock, skipping ThinkingBlock objects
+        for block in response.content:
+            if hasattr(block, "text") and block.text:
+                return block.text
+
+        # Model returned no text content - this happens when the model calls
+        # tools but doesn't provide a text response. We must provide feedback
+        # to the agent that it must complete its response block.
+        content_types = [type(block).__name__ for block in response.content]
+        return ("You must include a text response with your response block. "
+                "After calling any tools, you must provide a text response explaining "
+                "what you did and the results. Include your Completion: and Success: "
+                "fields at the end when the task is complete. "
+                f"(Debug: response contained blocks: {content_types})")

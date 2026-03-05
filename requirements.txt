@@ -1,4 +1,8 @@
-anthropic==0.55.0
-PyYAML==6.0.2
-rich==13.8.1
+anthropic>=0.55.0
+PyYAML>=6.0.2
+rich>=13.8.1
 pillow
+# Optional dependencies (install via: pip install -e '.[all]')
+# black>=24.0       — needed for AST code formatting (codemanipulator)
+# requests          — needed for image generation (create_image)
+# playwright        — needed for web browser tools (install via: pip install -e '.[browser]')

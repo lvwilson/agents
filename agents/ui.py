@@ -3,9 +3,10 @@
 UI module — all Rich-based display logic for the agent system.
 
 This module owns the console instance, theme, and every function that
-renders styled output.  Neither agents.py nor ai_client.py should
-import Rich directly.
+renders styled output.  Other modules should not import Rich directly.
 """
+
+import sys
 
 from rich.console import Console
 from rich.panel import Panel
@@ -25,16 +26,50 @@ agent_theme = Theme({
 })
 
 # ── Console (writes to /dev/tty so stdout stays clean) ───────────────
-_tty = open("/dev/tty", "w")
-console = Console(file=_tty, theme=agent_theme)
+_tty = None
+
+
+def _get_tty():
+    """Return a writable file for /dev/tty, falling back to stderr."""
+    global _tty
+    if _tty is None:
+        try:
+            _tty = open("/dev/tty", "w")
+        except OSError:
+            _tty = sys.stderr
+    return _tty
+
+
+# Lazy console singleton — initialised on first access so that the
+# /dev/tty open is deferred until the module is actually *used*.
+_console = None
+
+
+def _get_console():
+    """Return the module-level Rich Console, creating it on first use."""
+    global _console
+    if _console is None:
+        _console = Console(file=_get_tty(), theme=agent_theme)
+    return _console
+
+
+# Keep a module-level ``console`` property-like accessor.  Existing code
+# references ``console`` directly (e.g. ``console.print(…)``), so we
+# replace the module attribute with a lazy wrapper.
+class _LazyConsole:
+    """Proxy that forwards attribute access to the real Console."""
+    def __getattr__(self, name):
+        return getattr(_get_console(), name)
+
+console = _LazyConsole()
 
 
 def safe_console_print(text, style="default", end="\n"):
     """Print to the console, falling back to plain write on error."""
     try:
-        console.print(text, style=style, end=end)
+        _get_console().print(text, style=style, end=end)
     except Exception:
-        print(text, file=_tty)
+        print(text, file=_get_tty())
 
 
 # ── Formatting helpers ───────────────────────────────────────────────
@@ -57,6 +92,26 @@ def build_budget_bar(spent, budget, width=20):
     return f"{bar} {pct}"
 
 
+def build_context_bar(used_tokens, max_tokens, width=20):
+    """Return a Rich-markup progress bar for context window usage."""
+    ratio = min(used_tokens / max_tokens, 1.0) if max_tokens > 0 else 0
+    filled = int(ratio * width)
+    empty = width - filled
+
+    if ratio < 0.5:
+        color = "bright_green"
+    elif ratio < 0.75:
+        color = "bright_yellow"
+    elif ratio < 0.9:
+        color = "bright_red"
+    else:
+        color = "bold bright_red"
+
+    bar = f"[{color}]{'━' * filled}[/][dim]{'─' * empty}[/]"
+    pct = f"{ratio * 100:.0f}%"
+    return f"{bar} {pct}"
+
+
 def format_tokens(n):
     """Format a token count with K/M suffix."""
     if n >= 1_000_000:
@@ -68,12 +123,13 @@ def format_tokens(n):
 
 # ── Display functions ────────────────────────────────────────────────
 
-def print_banner(display_name, compute_budget, platform_str):
+def print_banner(display_name, compute_budget, platform_str, context_window_tokens):
     """Display the startup banner."""
     info_line = (
         f"[muted]Model:[/] [bright_cyan]{display_name}[/]  "
         f"[muted]Budget:[/] [bright_green]${compute_budget:.2f}[/]  "
-        f"[muted]System:[/] {platform_str}"
+        f"[muted]System:[/] {platform_str}  "
+        f"[muted]Context window:[/] {format_tokens(context_window_tokens)}"
     )
     console.print(Panel(
         info_line,
@@ -83,10 +139,22 @@ def print_banner(display_name, compute_budget, platform_str):
     ))
 
 
+def _format_cache_savings(cost, cost_without_cache):
+    """Return a Rich-markup string showing cache savings, or empty string."""
+    if cost_without_cache > 0 and cost_without_cache > cost:
+        pct = (cost_without_cache - cost) / cost_without_cache * 100
+        return f" [success]({pct:.0f}% saved)[/]"
+    return ""
+
+
 def print_iteration_header(step, cost, compute_budget,
-                           last_input_tokens=0, last_output_tokens=0):
-    """Display the iteration header with cost and budget info."""
+                           last_input_tokens=0, last_output_tokens=0,
+                           last_total_context_tokens=0,
+                           cost_without_cache=0.0,
+                           context_window_tokens=256_000):
+    """Display the iteration header with cost, budget, and context window info."""
     cost_str = f"${cost:.4f}"
+    savings_str = _format_cache_savings(cost, cost_without_cache)
     budget_bar = build_budget_bar(cost, compute_budget)
 
     token_info = ""
@@ -96,8 +164,14 @@ def print_iteration_header(step, cost, compute_budget,
             f"  [muted]out:[/] {format_tokens(last_output_tokens)}"
         )
 
+    context_bar = build_context_bar(last_total_context_tokens, context_window_tokens)
+    context_info = (
+        f"  [muted]Context:[/] {format_tokens(last_total_context_tokens)}"
+        f"/{format_tokens(context_window_tokens)}  {context_bar}"
+    )
+
     header_left = f"[bold bright_white]Step {step}[/]"
-    header_right = f"[cost]{cost_str}[/]  {budget_bar}{token_info}"
+    header_right = f"[cost]{cost_str}[/]{savings_str}  {budget_bar}{token_info}{context_info}"
 
     console.print()
     console.print(Rule(style="dim bright_blue"))
@@ -105,18 +179,29 @@ def print_iteration_header(step, cost, compute_budget,
     console.print(Rule(style="dim bright_blue"))
 
 
-def print_summary(cost, steps, elapsed, compute_budget):
+def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0,
+                  cost_without_cache=0.0, context_window_tokens=256_000):
     """Display the final session summary panel."""
     console.print()
     minutes, seconds = divmod(int(elapsed), 60)
     time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
 
+    savings_str = _format_cache_savings(cost, cost_without_cache)
     summary_line = (
-        f"[muted]Cost:[/] [cost]${cost:.4f}[/]  "
+        f"[muted]Cost:[/] [cost]${cost:.4f}[/]{savings_str}  "
         f"[muted]Steps:[/] {steps}  "
         f"[muted]Duration:[/] {time_str}  "
         f"[muted]Budget:[/] {build_budget_bar(cost, compute_budget)}"
     )
+
+    if peak_context_tokens > 0:
+        context_bar = build_context_bar(peak_context_tokens, context_window_tokens)
+        summary_line += (
+            f"  [muted]Peak context:[/] "
+            f"{format_tokens(peak_context_tokens)}/{format_tokens(context_window_tokens)}"
+            f"  {context_bar}"
+        )
+
     console.print(Panel(
         summary_line,
         title="[bold bright_white]◈  Session Complete  ◈[/]",
@@ -198,3 +283,44 @@ def create_spinner(message="  ◌  Waiting for response…"):
     with .stop().
     """
     return console.status(message, spinner="dots", spinner_style="bright_cyan")
+
+
+# ── Stream handler (decouples backends from Rich) ────────────────────
+
+from .llm_backend import StreamHandler
+
+
+class RichStreamHandler(StreamHandler):
+    """StreamHandler that renders to the Rich console.
+
+    This is the interactive-terminal implementation.  Pass an instance to
+    ``create_backend(…, stream_handler=RichStreamHandler())`` to get the
+    same streaming UX the backends previously hard-coded.
+    """
+
+    def __init__(self):
+        self._spinner = None
+        self._first_chunk = True
+
+    def on_stream_start(self) -> None:
+        self._spinner = create_spinner()
+        self._spinner.start()
+        self._first_chunk = True
+
+    def on_stream_token(self, token: str) -> None:
+        if self._first_chunk:
+            if self._spinner is not None:
+                self._spinner.stop()
+            self._first_chunk = False
+        safe_console_print(token, style="stream", end="")
+
+    def on_stream_end(self) -> None:
+        if self._first_chunk and self._spinner is not None:
+            self._spinner.stop()
+        self._spinner = None
+
+    def on_retry(self, message: str) -> None:
+        safe_console_print(f"\n  ⏳ {message}", style="warning")
+
+    def on_error(self, message: str) -> None:
+        safe_console_print(f"\n  ✗ {message}", style="error")

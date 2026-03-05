@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agents"
+version = "0.1.0"
+description = "Autonomous AI agent with pluggable LLM backends"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.55.0",
+    "PyYAML>=6.0.2",
+    "rich>=13.8.1",
+    "pillow",
+]
+
+[project.optional-dependencies]
+formatting = ["black>=24.0"]
+images = ["requests"]
+openai = ["openai"]
+gemini = ["google-genai"]
+browser = ["playwright"]
+all = ["black>=24.0", "requests", "openai", "google-genai", "playwright"]
+
+[project.scripts]
+agents = "agents.agents:main"
+
+[tool.setuptools.packages.find]
+include = ["agents*"]
+
+[tool.setuptools.package-data]
+agents = ["*.yaml"]

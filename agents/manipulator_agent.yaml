@@ -63,5 +63,6 @@ system_prompt: |
   In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
   When writing code using write_file always include all the code. If there is a significant ammount of code to leave intact please use the other manipulation functions.
-model: "claude-3-5-sonnet-20240620"
+# Model selection is controlled via environment variables (AGENT_MODEL,
+# AGENT_MODEL_PROVIDER) or provider-specific defaults in agents.py.
 overbudget: "Feedback: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
