@@ -6,7 +6,7 @@
 
 ## Overview
 
-`agents` is the **reasoning layer** of a two-layer autonomous AI software engineering system. It owns the conversation loop, LLM client management, cost tracking, and start/stop decisions. It pairs with [`llmide`](https://github.com/lvwilson/llmide) (installed separately), which is the **tooling layer** handling command parsing and execution against the filesystem, shell, and image tools.
+`agents` is an autonomous AI software engineering system organized in two layers within a single package. The **reasoning layer** (`agents.agents`) owns the conversation loop, LLM client management, cost tracking, and start/stop decisions. The **tooling layer** (`agents.tools`) handles command parsing and execution against the filesystem, shell, image tools, and web browser.
 
 **Core loop:** `generate → parse → execute → feed back`. The LLM's own reasoning (guided by the system prompt) *is* the control flow — there is no planner, task graph, or state machine.
 
@@ -18,26 +18,40 @@
 agents/                          ← repo root
 ├── structure.md                 ← THIS FILE
 ├── README.md                    ← User-facing docs, installation, usage
-├── issues.md                    ← Known architectural issues & proposed fixes
-├── requirements.txt             ← Python dependencies (anthropic, PyYAML, rich, pillow)
+├── pyproject.toml               ← Package config & dependencies
+├── requirements.txt             ← Pinned dependencies (mirrors pyproject.toml)
 ├── LICENSE
-├── .gitignore
 │
-└── agents/                      ← Python source package
-    ├── agents.py                ← ENTRY POINT — Agent class, main(), CLI arg parsing
-    ├── ai_client.py             ← Message format helper (convert_string_to_dict)
-    ├── llm_backend.py           ← Abstract base class: LLMBackend, StreamHandler, retry logic
-    ├── ui.py                    ← All Rich console output (banners, headers, spinners, RichStreamHandler)
-    │
-    ├── backends/                ← Provider-specific LLM implementations (lazy-loaded)
-    │   ├── __init__.py          ← Backend registry & factory: create_backend()
-    │   ├── anthropic_backend.py ← AnthropicBackend — Claude models, prompt caching
-    │   ├── openai_backend.py    ← OpenAIBackend — GPT models, Responses API
-    │   └── gemini_backend.py    ← GeminiBackend — Gemini models, server-side context caching
-    │
-    ├── basic_agent.yaml         ← DEFAULT config — file I/O, find-and-replace, shell, images
-    ├── manipulator_agent.yaml   ← ALT config — AST-based Python code manipulation commands
-    └── context.pkl              ← Serialized conversation state (auto-generated, gitignored)
+├── agents/                      ← Python source package (reasoning layer)
+│   ├── agents.py                ← ENTRY POINT — Agent class, main(), CLI arg parsing
+│   ├── llm_backend.py           ← Abstract base class: LLMBackend, StreamHandler, retry logic
+│   ├── ui.py                    ← All Rich console output (banners, headers, spinners, RichStreamHandler)
+│   ├── session.py               ← Session persistence (JSON files in /tmp)
+│   │
+│   ├── backends/                ← Provider-specific LLM implementations (lazy-loaded)
+│   │   ├── __init__.py          ← Backend registry & factory: create_backend()
+│   │   ├── anthropic_backend.py ← AnthropicBackend — Claude models, prompt caching
+│   │   ├── openai_backend.py    ← OpenAIBackend — GPT models, Responses API
+│   │   └── gemini_backend.py    ← GeminiBackend — Gemini models, server-side context caching
+│   │
+│   ├── tools/                   ← Tooling layer (command parsing & execution)
+│   │   ├── __init__.py          ← Public API: process_content, filter_content, terminate_process
+│   │   ├── parser.py            ← Command parser — extracts commands from LLM output
+│   │   ├── functions.py         ← Tool implementations (file I/O, shell, code manipulation, web)
+│   │   ├── codemanipulator.py   ← AST-based Python code manipulation
+│   │   ├── code_scissors.py     ← Line-based text cutting operations
+│   │   ├── findreplace.py       ← Search/replace block parsing
+│   │   ├── web_browser.py       ← Playwright headless browser singleton
+│   │   └── summarize.py         ← LLM-powered file/folder summarization with caching
+│   │
+│   ├── basic_agent.yaml         ← DEFAULT config — file I/O, find-and-replace, shell, images
+│   └── manipulator_agent.yaml   ← ALT config — AST-based Python code manipulation commands
+│
+└── tests/                       ← Test suite
+    ├── test_code_scissors.py
+    ├── test_code_scissors_extended.py
+    ├── test_find_replace.py
+    └── test_manipulator.py
 ```
 
 ---
@@ -48,7 +62,7 @@ agents/                          ← repo root
 
 - **`Agent` class** — The central orchestrator. Holds conversation context, system prompt, LLM backend, and budget.
   - `__init__()` — Loads YAML config, resolves provider/model (env vars override config), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
-  - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, runs `filter_content()` and `process_content()` (from llmide), appends results, checks budget, marks large messages for caching.
+  - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
   - `run()` — Loops `_iterate()` until no commands returned, budget exceeded, KeyboardInterrupt, or error.
   - `save_context()` / `load_context()` — Pickle-based pause/resume of full conversation state including token counts and costs.
   - `LARGE_MESSAGE_CACHE_THRESHOLD = 10_000` — Character threshold for requesting backend caching of a user message.
@@ -56,16 +70,11 @@ agents/                          ← repo root
 - **`extract_completion()`** — Parses the YAML completion block from the LLM's final response (wrapped in 5 backticks).
 - **`main()`** — CLI entry point with argparse. Supports `-b` budget, `-r` restore, `-l` local mode, `-p` port. Reads piped stdin.
 
-**Integration with llmide** (the entire boundary):
+**Integration with tools subpackage** (the internal boundary):
 - `process_content(response)` → parses commands from LLM output, executes them, returns `(text_result, image_tuples)`
 - `filter_content(response)` → trims output when LLM queues multiple read commands
 - `terminate_process()` → kills any running subprocess (used in SIGTERM handler)
 - `get_default_shell()` → used in system prompt construction
-
-### `agents/ai_client.py` — Message Format Helper
-
-- **`convert_string_to_dict(string)`** — Wraps a plain string into the internal content-block format: `[{"type": "text", "text": string}]`. This is the canonical internal message format used throughout the system.
-- Formerly contained `ClaudeClient` — now replaced by the backend system.
 
 ### `agents/llm_backend.py` — Abstract Base Class
 
@@ -127,9 +136,22 @@ agents/                          ← repo root
 - **Streaming:** Uses `generate_content_stream()`.
 - **max_tokens:** 16384.
 
+### `agents/tools/` — Tooling Layer
+
+The `tools` subpackage handles all command parsing and execution. It knows nothing about LLM providers, conversation history, or budgets.
+
+- **`__init__.py`** — Public API: re-exports `process_content`, `filter_content`, `terminate_process`, `get_default_shell`, `register_llm`.
+- **`parser.py`** — Command parser. Extracts `Command:` directives and backtick-delimited payloads from LLM output. `process_content()` dispatches to tool functions. `filter_content()` trims output when multiple read commands are queued.
+- **`functions.py`** — All tool implementations: file I/O (`read_file`, `write_file`, `append_to_file`), find-and-replace, line-based text operations (code scissors wrappers), AST code manipulation wrappers, shell execution (`run_console_command` with PTY), `stdout`, `summarize`, and all web browser command wrappers.
+- **`codemanipulator.py`** — AST-based Python code manipulation. Uses `ast.NodeTransformer` to read/replace/insert/remove code at dot-separated addresses (e.g. `ClassName.method_name`). Formats output with `black`.
+- **`code_scissors.py`** — Line-based text cutting operations: `insert_before`, `insert_after`, `replace_before`, `replace_after`, `replace_between`.
+- **`findreplace.py`** — Parses SEARCH/REPLACE blocks and performs string replacement.
+- **`web_browser.py`** — Playwright-powered headless browser singleton. Provides navigation, text/HTML reading, clicking, typing, screenshots, JavaScript execution, and element waiting.
+- **`summarize.py`** — LLM-powered file/folder summarization with mtime-based caching. The LLM backend is injected via `register_llm()` (called by `Agent.__init__`).
+
 ### `agents/basic_agent.yaml` — Default Agent Configuration
 
-- System prompt defines the agent's persona, response format, available commands (read_file, write_file, append_to_file, find_and_replace, view_image, create_image, stdout, run_console_command), examples, and completion protocol.
+- System prompt defines the agent persona, response format, available commands, examples, and completion protocol.
 - `overbudget` message injected at 80% budget.
 - **This is the config used by `main()` via `run_agent('basic_agent.yaml', ...)`.**
 
@@ -163,9 +185,9 @@ Agent.run() loop:
     │       │
     │       └─► Returns response text + updates cost/token tracking
     │
-    ├─► filter_content(response)         [llmide — trim multi-read]
+    ├─► filter_content(response)         [tools — trim multi-read]
     │
-    ├─► process_content(response)        [llmide — parse & execute commands]
+    ├─► process_content(response)        [tools — parse & execute commands]
     │       │
     │       └─► Returns (command_output, image_tuples)
     │
@@ -254,4 +276,6 @@ Documented in `issues.md`. Summary:
 - **`pillow`** — Image handling
 - **`openai`** — OpenAI SDK (optional, install for OpenAI provider)
 - **`google-genai`** — Google Gemini SDK (optional, install for Gemini provider)
-- **`llmide`** — Tooling layer (installed separately from [llmide repo](https://github.com/lvwilson/llmide))
+- **`black`** — Code formatting (used by AST code manipulator)
+- **`requests`** — HTTP requests (used by image generation)
+- **`playwright`** — Headless browser (optional, install with `pip install -e '.[browser]'`)

@@ -12,13 +12,15 @@ dependencies = [
     "PyYAML>=6.0.2",
     "rich>=13.8.1",
     "pillow",
-    "llmide",
 ]
 
 [project.optional-dependencies]
+formatting = ["black>=24.0"]
+images = ["requests"]
 openai = ["openai"]
 gemini = ["google-genai"]
-all = ["openai", "google-genai"]
+browser = ["playwright"]
+all = ["black>=24.0", "requests", "openai", "google-genai", "playwright"]
 
 [project.scripts]
 agents = "agents.agents:main"

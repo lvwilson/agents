@@ -1,26 +1,30 @@
 # agents
 
-Autonomous AI software engineering agents powered by LLMs. This is the **reasoning layer** of a two-layer system — it owns the conversation loop, the LLM client, and the decision of when to start and stop. It pairs with [llmide](https://github.com/lvwilson/llmide), the **tooling layer**, which handles command parsing and execution.
+Autonomous AI software engineering agents powered by LLMs. The system is organized in two layers within a single package:
+
+- **Reasoning layer** (`agents.agents`) — owns the conversation loop, the LLM client, and the decision of when to start and stop.
+- **Tooling layer** (`agents.tools`) — handles command parsing and execution against the filesystem, shell, images, and web browser.
 
 ## Architecture
 
 The core loop is deliberately minimal: **generate → parse → execute → feed back**.
 
 1. The LLM produces text containing embedded `Command:` directives with optional backtick-delimited payloads.
-2. Commands are parsed and executed by `llmide` against the real filesystem, shell, and image tools.
+2. Commands are parsed and executed by `agents.tools` against the real filesystem, shell, and image tools.
 3. Results become the next user message in the conversation.
 4. If no commands are found, the agent is finished.
 
 There is no planner, no task graph, no state machine — the LLM's own reasoning, guided by the system prompt, *is* the control flow.
 
-### Integration Surface
+### Internal Boundary
 
-The boundary between `agents` and `llmide` is two functions:
+The boundary between the reasoning and tooling layers is three functions:
 
 - `process_content()` — parse and execute commands from LLM output
 - `filter_content()` — trim output when the LLM queues multiple read commands
+- `terminate_process()` — terminate any running subprocess
 
-This is the entire integration surface. `llmide` knows nothing about Claude, conversation history, or budgets.
+The tooling layer knows nothing about Claude, conversation history, or budgets.
 
 ## Design Philosophy
 
@@ -30,7 +34,7 @@ This is the entire integration surface. `llmide` knows nothing about Claude, con
 - **Context as Conversation** — All state lives in the message history. No external database, no structured memory. Sessions are persisted as JSON files and can be resumed across invocations.
 - **Cost Awareness** — Token usage and dollar cost are tracked in real time, including prompt caching discounts. The agent is warned at 75% budget and terminated at 100%, making autonomous operation safe and bounded.
 
-### Available Tools (via llmide)
+### Available Tools
 
 | Category | Capabilities |
 |---|---|
@@ -39,27 +43,23 @@ This is the entire integration surface. `llmide` knows nothing about Claude, con
 | **Text Code Manipulation** | Find-and-replace blocks, line-based cut/insert operations |
 | **Shell Access** | Full pseudo-terminal command execution with output capture |
 | **Image Handling** | Load, resize, encode images for vision LLMs; generate via external API |
+| **Web Browser** | Playwright-powered headless browser for navigation, reading, clicking, screenshots |
+| **Summarization** | LLM-powered file and folder summarization with caching |
 
 ## Installation
 
-### Prerequisites
-
-Clone and install llmide:
-
-    git clone https://github.com/lvwilson/llmide
-    cd llmide
-    pip install -e .
-
 ### Setup
 
-The base requirements support Anthropic models. Install them with:
+Install the package with all dependencies:
 
-    pip install -r requirements.txt
+    pip install -e .
 
-If you plan to use OpenAI or Gemini models, install their respective SDKs:
+For optional provider support:
 
-    pip install openai
-    pip install google-genai
+    pip install -e '.[openai]'     # OpenAI models
+    pip install -e '.[gemini]'     # Google Gemini models
+    pip install -e '.[browser]'    # Playwright web browser
+    pip install -e '.[all]'        # Everything
 
 ### API Keys
 
@@ -73,7 +73,7 @@ Add the relevant keys for the providers you intend to use to your `.bashrc` (Lin
 
 Agents are configured via YAML files (e.g., `basic_agent.yaml`). You can override the provider and model using environment variables:
 
-    AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-4o python agents.py "Write a python script to calculate fibonacci numbers"
+    AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-4o agents "Write a python script to calculate fibonacci numbers"
 
 ### Session Management
 
@@ -81,15 +81,15 @@ Every invocation is assigned a short session ID (e.g. `a7x2`). The full conversa
 
 To resume the most recent session for the current working directory:
 
-    python -m agents -r "Continue where you left off"
+    agents -r "Continue where you left off"
 
 To resume a specific session by ID:
 
-    python -m agents -r -s a7x2 "Fix the remaining test failures"
+    agents -r -s a7x2 "Fix the remaining test failures"
 
 To start a new session with a chosen ID:
 
-    python -m agents -s mysession "Refactor the parser module"
+    agents -s mysession "Refactor the parser module"
 
 **How it works:**
 
@@ -104,8 +104,8 @@ When a session is restored, the original system prompt is reused verbatim so tha
 
 You can run against local OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000`.
 
-    LOCAL_MODEL=llama3.1 python agents.py --local "Explain quantum mechanics"
+    LOCAL_MODEL=llama3.1 agents --local "Explain quantum mechanics"
 
 You can change the port using the `-p` or `--port` flag:
 
-    LOCAL_MODEL=qwen2.5 python agents.py --local -p 11434 "Write a haiku"
+    LOCAL_MODEL=qwen2.5 agents --local -p 11434 "Write a haiku"
