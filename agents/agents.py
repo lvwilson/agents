@@ -30,6 +30,7 @@ from .session import (
     save_session,
     load_session,
 )
+from .llm_backend import InterruptedResponse
 from .ui import (
     RichStreamHandler,
     print_banner,
@@ -40,6 +41,8 @@ from .ui import (
     print_budget_exceeded,
     print_error,
     print_interrupted,
+    print_interrupt_feedback,
+    get_user_feedback,
     print_sigterm,
     print_clipped,
     safe_console_print,
@@ -336,20 +339,118 @@ class Agent:
 
         return command_called
 
+    def _enter_feedback_mode(self, partial_response=None):
+        """Pause the agent and wait for user feedback.
+
+        If *partial_response* is provided it is added to the context as
+        an assistant message so the conversation remains coherent.
+
+        Returns
+        -------
+        str | None
+            The user's feedback text, or ``None`` if the user chose to
+            exit (Ctrl+C in feedback mode).
+        """
+        if partial_response:
+            self.context.append(_form_message("assistant", partial_response))
+        print_interrupt_feedback()
+        return get_user_feedback()
+
     def run(self):
-        """Run the agent until completion or interruption."""
+        """Run the agent until completion or interruption.
+
+        Ctrl+C behaviour
+        -----------------
+        * **First Ctrl+C** — the current iteration finishes normally,
+          then the agent pauses and waits for user feedback.
+        * **Second Ctrl+C** — any running subprocess is terminated,
+          output is suspended immediately, partial output is captured,
+          and the agent waits for user feedback.
+        * **Third Ctrl+C** (or Ctrl+C in feedback mode) — the agent
+          exits immediately.
+        """
         self.start_time = time.time()
+        self._interrupt_requested = False
+        original_sigint = signal.getsignal(signal.SIGINT)
+
+        def _tty_msg(text):
+            """Write a bright-yellow message directly to the terminal."""
+            try:
+                with open("/dev/tty", "w") as tty:
+                    tty.write(f"\n\033[93m  ⚠  {text}\033[0m\n")
+            except OSError:
+                pass
+
+        def _hard_interrupt(signum, frame):
+            """Second Ctrl+C: stop current work immediately."""
+            terminate_process()
+            _tty_msg("Stopping current work…")
+            # Restore original handler so a third Ctrl+C kills the agent.
+            signal.signal(signal.SIGINT, original_sigint)
+            raise KeyboardInterrupt
+
+        def _soft_interrupt(signum, frame):
+            """First Ctrl+C: set flag so the loop pauses after the current iteration."""
+            self._interrupt_requested = True
+            _tty_msg("Interrupt received — will pause after current step. Press Ctrl+C again to stop immediately.")
+            # Install hard-interrupt so the next Ctrl+C escalates.
+            signal.signal(signal.SIGINT, _hard_interrupt)
+
         try:
-            running = self._iterate()
+            running = True
             while running:
-                running = self._iterate()
+                # Arm the soft-interrupt handler before each iteration
+                self._interrupt_requested = False
+                signal.signal(signal.SIGINT, _soft_interrupt)
+
+                try:
+                    running = self._iterate()
+                except InterruptedResponse as ir:
+                    # Hard interrupt during streaming — partial output captured
+                    signal.signal(signal.SIGINT, original_sigint)
+                    feedback = self._enter_feedback_mode(ir.partial_text)
+                    if feedback is None:
+                        print_interrupted()
+                        break
+                    self.context.append(_form_message("user", feedback))
+                    running = True
+                    continue
+                except KeyboardInterrupt:
+                    # Hard interrupt outside of streaming (e.g. during
+                    # command execution).  The response was already fully
+                    # streamed and added to context so we do not pass
+                    # partial text to avoid duplication.
+                    signal.signal(signal.SIGINT, original_sigint)
+                    feedback = self._enter_feedback_mode()
+                    if feedback is None:
+                        print_interrupted()
+                        break
+                    self.context.append(_form_message("user", feedback))
+                    running = True
+                    continue
+
+                # Restore default handler while checking flags / feedback
+                signal.signal(signal.SIGINT, original_sigint)
+
                 if self.client.cost > self.compute_budget:
                     print_budget_exceeded(self.client.cost, self.compute_budget)
                     break
-        except KeyboardInterrupt:
-            print_interrupted()
+
+                # First Ctrl+C was pressed — iteration finished normally,
+                # now pause for user feedback.
+                if self._interrupt_requested:
+                    self._interrupt_requested = False
+                    feedback = self._enter_feedback_mode()
+                    if feedback is None:
+                        print_interrupted()
+                        break
+                    self.context.append(_form_message("user", feedback))
+                    running = True
+
         except Exception as e:
             print_error(e, traceback.format_exc())
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
 
         # Print final summary
         elapsed = time.time() - self.start_time

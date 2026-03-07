@@ -254,6 +254,50 @@ def _create_image(prompt, output_file, width=1024, height=1024):
         return f"Image generation request failed: {e}", []
 
 
+# ── Output safety truncation ───────────────────────────────────────
+
+_TRUNCATE_THRESHOLD = 60_000
+_TRUNCATE_KEEP = 30_000
+
+
+def truncate_output(text):
+    """Truncate tool output that exceeds the safety threshold.
+
+    If *text* is longer than 60,000 characters, return the first 30,000
+    and last 30,000 characters with a notification in the middle and at
+    the end indicating that content was clipped.
+
+    Parameters
+    ----------
+    text : str
+        The raw tool output.
+
+    Returns
+    -------
+    str
+        The original text if within limits, or a truncated version.
+    """
+    if not isinstance(text, str) or len(text) <= _TRUNCATE_THRESHOLD:
+        return text
+
+    total = len(text)
+    clipped = total - (_TRUNCATE_KEEP * 2)
+
+    head = text[:_TRUNCATE_KEEP]
+    tail = text[-_TRUNCATE_KEEP:]
+
+    middle_notice = (
+        f"\n\n... [OUTPUT TRUNCATED — {clipped:,} characters clipped from middle "
+        f"({total:,} total characters)] ...\n\n"
+    )
+    end_notice = (
+        f"\n\n[END OF TRUNCATED OUTPUT — Showed first {_TRUNCATE_KEEP:,} and "
+        f"last {_TRUNCATE_KEEP:,} of {total:,} total characters]"
+    )
+
+    return head + middle_notice + tail + end_notice
+
+
 # ── Command dispatch ────────────────────────────────────────────────
 
 def _execute_command(command, arguments, backticks):
@@ -274,7 +318,13 @@ def _execute_command(command, arguments, backticks):
         return "Error: Command not found"
     try:
         result = function(*args) if args else function()
-        return result if result is not None else "ok"
+        if result is None:
+            return "ok"
+        # Handle tuple results (e.g. view_page returns (text, path))
+        if isinstance(result, tuple):
+            truncated_first = truncate_output(result[0]) if isinstance(result[0], str) else result[0]
+            return (truncated_first,) + result[1:]
+        return truncate_output(result)
     except Exception as e:
         return f"Error executing command: {e}\n {command}, {arguments}, {backticks}"
 

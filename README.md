@@ -100,6 +100,18 @@ To start a new session with a chosen ID:
 
 When a session is restored, the original system prompt is reused verbatim so that provider-side prompt caches (e.g. Anthropic's cache) remain valid.
 
+### Interrupt Behaviour (Ctrl+C)
+
+The agent supports a three-tier interrupt system so you can pause, redirect, or stop work without losing context:
+
+| Press | Effect |
+|---|---|
+| **First Ctrl+C** | The current step finishes normally, then the agent pauses and prompts for feedback. |
+| **Second Ctrl+C** | Current work is stopped immediately and the agent prompts for feedback. |
+| **Third Ctrl+C** | The agent exits. |
+
+In feedback mode you can type new instructions to redirect the agent, or press Ctrl+C to exit. Partial LLM output from an interrupted stream is preserved in the conversation context so nothing is lost.
+
 ### Local Models
 
 You can run against local OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000`.

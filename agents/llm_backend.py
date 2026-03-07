@@ -22,13 +22,21 @@ class StreamHandler:
     implementation is a silent no-op so that backends work headlessly
     without any UI dependency.  Pass a ``RichStreamHandler`` (from ``ui``)
     for interactive terminal output.
+
+    The handler also accumulates streamed tokens in an internal buffer so
+    that partial output can be recovered after a ``KeyboardInterrupt``.
     """
+
+    def __init__(self):
+        self._buffer: list[str] = []
 
     def on_stream_start(self) -> None:
         """Called once before the first token of a new API call."""
+        self._buffer = []
 
     def on_stream_token(self, token: str) -> None:
         """Called for each streamed token/chunk of text."""
+        self._buffer.append(token)
 
     def on_stream_end(self) -> None:
         """Called after the last token (or if no tokens were received)."""
@@ -39,6 +47,10 @@ class StreamHandler:
     def on_error(self, message: str) -> None:
         """Called when a non-retryable attempt fails."""
 
+    def get_buffered_text(self) -> str:
+        """Return all tokens accumulated since the last ``on_stream_start``."""
+        return "".join(self._buffer)
+
 
 # Convenience alias — a handler that does nothing.
 NullStreamHandler = StreamHandler
@@ -47,6 +59,18 @@ NullStreamHandler = StreamHandler
 # ── Error classification constants ───────────────────────────────────
 RATE_LIMIT = "rate_limit"
 TRANSIENT = "transient"
+
+
+class InterruptedResponse(Exception):
+    """Raised when a streaming response is interrupted by the user.
+
+    Carries the partial text that was streamed before the interruption
+    so the caller can still make use of it.
+    """
+
+    def __init__(self, partial_text: str):
+        self.partial_text = partial_text
+        super().__init__(f"Response interrupted ({len(partial_text)} chars received)")
 
 
 class LLMBackend(ABC):
@@ -139,6 +163,11 @@ class LLMBackend(ABC):
                 result = attempt_fn()
                 sh.on_stream_end()
                 return result
+
+            except KeyboardInterrupt:
+                sh.on_stream_end()
+                partial = sh.get_buffered_text()
+                raise InterruptedResponse(partial)
 
             except Exception as e:
                 sh.on_stream_end()

@@ -265,6 +265,42 @@ def print_interrupted():
     console.print("\n  ⚠  Interrupted by user", style="warning")
 
 
+def print_interrupt_feedback():
+    """Display a notice that the agent is waiting for user feedback after interrupt."""
+    console.print()
+    console.print(Panel(
+        "[warning]Agent paused. Enter feedback to continue, or press Ctrl+C to exit.[/]",
+        title="[bold warning]⚠  Interrupted[/]",
+        border_style="bright_yellow",
+        padding=(0, 1),
+    ))
+
+
+def get_user_feedback() -> str | None:
+    """Prompt the user for feedback input.
+
+    Returns the user's input string, or ``None`` if the user presses
+    Ctrl+C to exit.
+    """
+    try:
+        tty_in = open("/dev/tty", "r")
+    except OSError:
+        tty_in = sys.stdin
+
+    try:
+        safe_console_print("[bright_yellow]Feedback:[/] ", end="")
+        _get_tty().flush()
+        line = tty_in.readline()
+        if not line:
+            return None
+        return line.rstrip("\n")
+    except (KeyboardInterrupt, EOFError):
+        return None
+    finally:
+        if tty_in is not sys.stdin:
+            tty_in.close()
+
+
 def print_sigterm():
     """Display a SIGTERM notice."""
     console.print("\n  ⚠  SIGTERM received — terminating subprocess…", style="warning")
@@ -299,15 +335,18 @@ class RichStreamHandler(StreamHandler):
     """
 
     def __init__(self):
+        super().__init__()
         self._spinner = None
         self._first_chunk = True
 
     def on_stream_start(self) -> None:
+        super().on_stream_start()
         self._spinner = create_spinner()
         self._spinner.start()
         self._first_chunk = True
 
     def on_stream_token(self, token: str) -> None:
+        super().on_stream_token(token)
         if self._first_chunk:
             if self._spinner is not None:
                 self._spinner.stop()
