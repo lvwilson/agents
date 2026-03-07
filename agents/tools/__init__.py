@@ -15,5 +15,5 @@ Public API
 """
 
 from .parser import process_content, filter_content, terminate_process
-from .functions import get_default_shell
+from .functions import get_default_shell, register_pool
 from .summarize import register_llm

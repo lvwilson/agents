@@ -121,7 +121,7 @@ system_prompt: |
   Worklog: "What I did this step."
 
   When your task is complete (i.e you are not waiting for any commands to execute and intend to issue no further commands), please respond with a yaml formatted completion message in exactly the following form:
-  `````Completion: |
+  `````stdout: |
     A an accurate but concise description of what you did.
   Success: True or False
   `````

@@ -20,6 +20,7 @@ import yaml
 from .tools import process_content, filter_content, terminate_process
 from .tools import get_default_shell
 from .tools import register_llm as _register_summarize_llm
+from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
@@ -259,6 +260,9 @@ class Agent:
         # the tools layer can make one-shot LLM calls without a circular import.
         self._register_summarize_backend()
 
+        # Create and register the sub-agent pool.
+        self._init_agent_pool()
+
         # Display startup banner
         print_banner(self.client.display_name, self.compute_budget, platform.platform(),
                      self.client.context_window_size)
@@ -277,6 +281,13 @@ class Agent:
             return client.generate_response(system_prompt, context)
 
         _register_summarize_llm(_generate)
+
+    def _init_agent_pool(self):
+        """Create the sub-agent pool and register it with the tools layer."""
+        from .agent_pool import AgentPool
+
+        self._agent_pool = AgentPool()
+        _register_pool(self._agent_pool)
 
     def _iterate(self):
         """Perform one iteration of the conversation with Claude.
@@ -632,6 +643,8 @@ def main():
                         help='Use a local Anthropic-compatible API (requires LOCAL_MODEL environment variable)')
     parser.add_argument('-p', '--port', type=int, default=8000,
                         help='Port for the local API server (default: 8000)')
+    parser.add_argument('-a', '--agent', type=str, default='basic_agent.yaml',
+                        help='Agent definition YAML file (default: basic_agent.yaml)')
 
     args = parser.parse_args()
 
@@ -658,7 +671,7 @@ def main():
 
     try:
         completion, success, sid = run_agent(
-            'basic_agent.yaml', command, args.compute_budget,
+            args.agent, command, args.compute_budget,
             restore=args.restore, session_id=args.session,
             local_model=local_model, local_port=args.port)
     except SessionNotFoundError as e:

@@ -21,6 +21,19 @@ from . import codemanipulator
 from . import findreplace
 
 
+# ── Agent pool (sub-agents) ────────────────────────────────────────
+#
+# The pool is injected at runtime by Agent.__init__() via register_pool().
+
+_agent_pool = None
+
+
+def register_pool(pool):
+    """Register the agent pool for sub-agent tools."""
+    global _agent_pool
+    _agent_pool = pool
+
+
 # ── TTY management ──────────────────────────────────────────────────
 #
 # All feedback output goes to /dev/tty so that stdout is reserved
@@ -540,6 +553,79 @@ def browse_js(*args):
     if not script:
         return "Error: browse_js requires JavaScript code in a backtick block."
     return get_browser().execute_js(script)
+
+
+# ── Sub-agent tools ────────────────────────────────────────────────
+
+def create_agent(*args):
+    """Create a sub-agent with a given name and role.
+
+    Usage: create_agent name ["description"]
+    Backtick block: The role/persona instructions for the sub-agent.
+    """
+    if _agent_pool is None:
+        return "Error: agent pool not initialized."
+
+    if not args:
+        return "Error: create_agent requires a name argument."
+
+    name = args[0]
+
+    # The backtick block (role prompt) is always the last arg when present.
+    # We need at least 2 args (name + backtick block) for a valid call.
+    if len(args) < 2:
+        return "Error: create_agent requires a role description in a backtick block."
+
+    role_prompt = args[-1]
+
+    # Optional description between name and backtick block.
+    description = args[1] if len(args) >= 3 else ""
+
+    return _agent_pool.create(name, role_prompt, description)
+
+
+def list_agents(*args):
+    """List all registered sub-agents."""
+    if _agent_pool is None:
+        return "Error: agent pool not initialized."
+    return _agent_pool.list()
+
+
+def run_agent(*args):
+    """Run a sub-agent on a task.
+
+    Usage: run_agent name [budget] [timeout]
+    Backtick block: The task description for the sub-agent.
+    """
+    if _agent_pool is None:
+        return "Error: agent pool not initialized."
+
+    if not args:
+        return "Error: run_agent requires a name argument."
+
+    name = args[0]
+    task = args[-1] if len(args) >= 2 else None
+
+    if task is None or task == name:
+        return "Error: run_agent requires a task in a backtick block."
+
+    # Parse optional numeric arguments between name and backtick block.
+    # First numeric arg is budget, second is timeout.
+    budget = 1.00
+    timeout = 300
+    numeric_args = []
+    for arg in args[1:-1]:
+        try:
+            numeric_args.append(float(arg))
+        except ValueError:
+            pass
+
+    if len(numeric_args) >= 1:
+        budget = numeric_args[0]
+    if len(numeric_args) >= 2:
+        timeout = int(numeric_args[1])
+
+    return _agent_pool.run(name, task, budget, timeout)
 
 
 # ── MCP (Model Context Protocol) tools ─────────────────────────────
