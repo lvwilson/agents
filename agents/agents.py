@@ -136,6 +136,32 @@ def sigterm_handler(_signo, _stack_frame):
     terminate_process()
 
 
+def _format_host_for_url(host):
+    """Wrap an IPv6 address in brackets for use in URLs.
+
+    IPv6 addresses contain colons which conflict with the host:port
+    separator, so they must be enclosed in square brackets per RFC 2732.
+    IPv4 addresses and hostnames are returned unchanged.
+
+    Examples:
+        >>> _format_host_for_url("localhost")
+        'localhost'
+        >>> _format_host_for_url("::1")
+        '[::1]'
+        >>> _format_host_for_url("[::1]")
+        '[::1]'
+        >>> _format_host_for_url("192.168.1.50")
+        '192.168.1.50'
+    """
+    # Already bracketed
+    if host.startswith('[') and host.endswith(']'):
+        return host
+    # Contains a colon → IPv6 address, needs brackets
+    if ':' in host:
+        return f'[{host}]'
+    return host
+
+
 def read_yaml_file(file_path):
     """Read and parse a YAML file.
 
@@ -176,7 +202,8 @@ class Agent:
     LARGE_MESSAGE_CACHE_THRESHOLD = 10_000
 
     def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
-                 local_model=None, local_port=8000, session_id=None):
+                 local_model=None, local_port=8000, local_host="localhost",
+                 session_id=None):
         """Initialize the Agent.
 
         Args:
@@ -186,6 +213,7 @@ class Agent:
             context: Optional list of previous conversation messages
             local_model: If set, use a local Anthropic-compatible API with this model name
             local_port: Port for the local API server (default 8000)
+            local_host: Hostname for the local API server (default "localhost")
             session_id: Optional session ID for saving/restoring context
         """
         if context is None:
@@ -205,7 +233,7 @@ class Agent:
         model_env = os.environ.get("AGENT_MODEL")
         if local_model:
             self.model_name = local_model
-            base_url = f"http://localhost:{local_port}"
+            base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
         elif model_env:
             self.model_name = model_env
             base_url = configuration.get("base_url", None)
@@ -558,7 +586,8 @@ class SessionNotFoundError(Exception):
 
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,
-              session_id=None, local_model=None, local_port=8000):
+              session_id=None, local_model=None, local_port=8000,
+              local_host="localhost"):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -572,6 +601,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                     current working directory is used.
         local_model: Local model name (if using local API)
         local_port: Port for local API server
+        local_host: Hostname for local API server (default "localhost")
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -596,7 +626,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
     agent = Agent(agent_definition, command, budget,
                   local_model=local_model, local_port=local_port,
-                  session_id=effective_sid)
+                  local_host=local_host, session_id=effective_sid)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -641,12 +671,29 @@ def main():
                         help='Session ID to use or resume (max 10 alphanumeric chars)')
     parser.add_argument('-l', '--local', action='store_true',
                         help='Use a local Anthropic-compatible API (requires LOCAL_MODEL environment variable)')
-    parser.add_argument('-p', '--port', type=int, default=8000,
-                        help='Port for the local API server (default: 8000)')
+    parser.add_argument('-p', '--port', type=int, default=None,
+                        help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
+    parser.add_argument('-H', '--host', type=str, default=None,
+                        help='Hostname for the LLM API server (default: LOCAL_LLM_HOST or localhost)')
     parser.add_argument('-a', '--agent', type=str, default='basic_agent.yaml',
                         help='Agent definition YAML file (default: basic_agent.yaml)')
 
     args = parser.parse_args()
+
+    # Resolve --port default: CLI flag > LOCAL_LLM_PORT env var > 8000
+    if args.port is None:
+        port_env = os.environ.get('LOCAL_LLM_PORT')
+        if port_env is not None:
+            try:
+                args.port = int(port_env)
+            except ValueError:
+                parser.error(f'LOCAL_LLM_PORT must be a valid integer, got: {port_env!r}')
+        else:
+            args.port = 8000
+
+    # Resolve --host default: CLI flag > LOCAL_LLM_HOST env var > localhost
+    if args.host is None:
+        args.host = os.environ.get('LOCAL_LLM_HOST', 'localhost')
 
     # Validate session ID if provided
     if args.session:
@@ -673,7 +720,8 @@ def main():
         completion, success, sid = run_agent(
             args.agent, command, args.compute_budget,
             restore=args.restore, session_id=args.session,
-            local_model=local_model, local_port=args.port)
+            local_model=local_model, local_port=args.port,
+            local_host=args.host)
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

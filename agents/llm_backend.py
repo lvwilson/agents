@@ -269,10 +269,25 @@ class LLMBackend(ABC):
         """Human-readable model name shown in the UI banner.
 
         Looks up ``self.model`` in the subclass's ``MODEL_DISPLAY_NAMES``
-        dict, falling back to the raw model string.  Local models get a
-        ``(local)`` suffix.
+        dict, falling back to the raw model string.  Local/remote models
+        get a suffix showing the server location.
         """
         if self.is_local:
+            # Show the host:port for remote servers, just "(local)" for localhost
+            if self.base_url:
+                # Strip protocol prefix for display
+                host_display = self.base_url
+                for prefix in ("http://", "https://"):
+                    if host_display.startswith(prefix):
+                        host_display = host_display[len(prefix):]
+                        break
+                # Recognise all common localhost representations
+                _local_prefixes = (
+                    "localhost:", "127.0.0.1:", "[::1]:", "[0:0:0:0:0:0:0:1]:",
+                )
+                if any(host_display.startswith(p) for p in _local_prefixes):
+                    return f"{self.model} (local)"
+                return f"{self.model} ({host_display})"
             return f"{self.model} (local)"
         return self.MODEL_DISPLAY_NAMES.get(self.model, self.model)
 
