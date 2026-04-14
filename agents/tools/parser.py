@@ -132,6 +132,8 @@ def process_content(content):
         elif command.command == "create_image":
             args = split_preserving_quotes(command.arguments)
             command_response, image_array = _create_image(*args)
+            for image_mediatype_tuple in image_array:
+                image_data_tuple_array.append(image_mediatype_tuple)
         elif command.command == "view_page":
             result = _execute_command(command.command, command.arguments, command.backtick_content)
             if isinstance(result, tuple):
@@ -140,6 +142,9 @@ def process_content(content):
                     image_base64, media_type = _load_and_resize_image(screenshot_path)
                     if media_type:
                         image_data_tuple_array.append((image_base64, media_type))
+                    else:
+                        # image_base64 contains the error message when media_type is None
+                        command_response = (command_response or "") + f"\n[Screenshot load failed: {image_base64}]"
                 command_response = (command_response or "ok") + "\n"
             else:
                 command_response = (result or "ok") + "\n"
@@ -199,15 +204,26 @@ def _load_and_resize_image(image_path):
 def _view_images(arguments):
     """Load and encode one or more images for the LLM."""
     image_data_tuple_array = []
-    command_response = "Image(s) loaded successfully"
+    errors = []
     args = split_preserving_quotes(arguments)
     try:
         for argument in args:
             image_base64, media_type = _load_and_resize_image(argument)
-            image_data_tuple_array.append((image_base64, media_type))
+            if media_type:
+                image_data_tuple_array.append((image_base64, media_type))
+            else:
+                # image_base64 contains the error message when media_type is None
+                errors.append(f"{argument}: {image_base64}")
     except Exception as e:
-        command_response = f"An error occured loading image(s): {e}"
+        errors.append(f"An error occurred loading image(s): {e}")
         image_data_tuple_array = []
+
+    if errors:
+        command_response = "Image loading error(s):\n" + "\n".join(errors)
+        if image_data_tuple_array:
+            command_response += "\nOther image(s) loaded successfully."
+    else:
+        command_response = "Image(s) loaded successfully"
     return command_response, image_data_tuple_array
 
 
