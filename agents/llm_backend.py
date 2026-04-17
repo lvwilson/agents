@@ -29,10 +29,12 @@ class StreamHandler:
 
     def __init__(self):
         self._buffer: list[str] = []
+        self._reasoning_buffer: list[str] = []
 
     def on_stream_start(self) -> None:
         """Called once before the first token of a new API call."""
         self._buffer = []
+        self._reasoning_buffer = []
 
     def on_stream_token(self, token: str) -> None:
         """Called for each streamed token/chunk of text."""
@@ -40,6 +42,18 @@ class StreamHandler:
 
     def on_stream_end(self) -> None:
         """Called after the last token (or if no tokens were received)."""
+
+    # ── Reasoning token streaming ────────────────────────────────────
+
+    def on_stream_reasoning_start(self) -> None:
+        """Called once before the first reasoning token of a new API call."""
+
+    def on_stream_reasoning_token(self, token: str) -> None:
+        """Called for each streamed reasoning/thinking token chunk."""
+        self._reasoning_buffer.append(token)
+
+    def on_stream_reasoning_end(self) -> None:
+        """Called after the last reasoning token (or if no reasoning tokens)."""
 
     def on_retry(self, message: str) -> None:
         """Called when a retryable error occurs (rate-limit or transient)."""
@@ -50,6 +64,10 @@ class StreamHandler:
     def get_buffered_text(self) -> str:
         """Return all tokens accumulated since the last ``on_stream_start``."""
         return "".join(self._buffer)
+
+    def get_buffered_reasoning(self) -> str:
+        """Return all reasoning tokens accumulated since the last start."""
+        return "".join(self._reasoning_buffer)
 
 
 # Convenience alias — a handler that does nothing.

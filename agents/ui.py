@@ -337,26 +337,48 @@ class RichStreamHandler(StreamHandler):
     def __init__(self):
         super().__init__()
         self._spinner = None
-        self._first_chunk = True
+
+    def _stop_spinner(self) -> None:
+        """Stop and clear the spinner if it is running."""
+        if self._spinner is not None:
+            self._spinner.stop()
+            self._spinner = None
+
+    def _start_spinner(self) -> None:
+        """Create and start a fresh spinner."""
+        self._stop_spinner()
+        self._spinner = create_spinner()
+        self._spinner.start()
 
     def on_stream_start(self) -> None:
         super().on_stream_start()
-        self._spinner = create_spinner()
-        self._spinner.start()
-        self._first_chunk = True
+        self._start_spinner()
 
     def on_stream_token(self, token: str) -> None:
         super().on_stream_token(token)
-        if self._first_chunk:
-            if self._spinner is not None:
-                self._spinner.stop()
-            self._first_chunk = False
+        self._stop_spinner()
         safe_console_print(token, style="stream", end="")
 
     def on_stream_end(self) -> None:
-        if self._first_chunk and self._spinner is not None:
-            self._spinner.stop()
-        self._spinner = None
+        self._stop_spinner()
+
+    # ── Reasoning token streaming ────────────────────────────────────
+
+    def on_stream_reasoning_start(self) -> None:
+        super().on_stream_reasoning_start()
+        self._stop_spinner()
+        safe_console_print("\n[dim]# Reasoning[/dim]\n", end="")
+
+    def on_stream_reasoning_token(self, token: str) -> None:
+        super().on_stream_reasoning_token(token)
+        self._stop_spinner()
+        safe_console_print(token, style="dim", end="")
+
+    def on_stream_reasoning_end(self) -> None:
+        super().on_stream_reasoning_end()
+        safe_console_print("\n", end="")
+        # Restart spinner while waiting for text content
+        self._start_spinner()
 
     def on_retry(self, message: str) -> None:
         safe_console_print(f"\n  ⏳ {message}", style="warning")
