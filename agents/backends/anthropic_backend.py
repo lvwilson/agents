@@ -141,7 +141,14 @@ class AnthropicBackend(LLMBackend):
         # thinking, regardless of model name.  This lets local models
         # that emit thinking blocks surface them in the UI without
         # requiring the model name to be in THINKING_MODELS.
-        self._use_thinking_stream = self._thinking_enabled
+        #
+        # For local models, always use event-based streaming: we cannot
+        # know in advance whether the server will emit thinking blocks,
+        # and the event-based path handles both thinking and plain-text
+        # responses correctly.  Without this, thinking tokens from a
+        # local model are silently discarded by ``stream.text_stream``
+        # and the UI appears to hang.
+        self._use_thinking_stream = self._thinking_enabled or self.is_local
 
         # Validate thinking budget against context window and max_tokens
         if self._supports_thinking_api and self._thinking_enabled:
