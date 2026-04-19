@@ -4,6 +4,7 @@ Agent - An autonomous AI agent with pluggable LLM backends.
 """
 # Standard library imports
 import argparse
+from dataclasses import dataclass
 import logging
 import os
 import platform
@@ -12,6 +13,7 @@ import signal
 import sys
 import time
 import traceback
+from typing import Optional
 
 # Third-party imports
 import yaml
@@ -96,38 +98,44 @@ def _form_message_with_images(role, content, image_media_type_tuple_array):
     return {"role": role, "content": images + [text_content]}
 
 
-def extract_completion(text, backticks=5):
+@dataclass
+class CompletionResult:
+    """Represents the result of an agent's task execution."""
+    text: str
+    success: bool
+
+def extract_completion(text, backticks=5) -> Optional[CompletionResult]:
     """Extract the completion section from the given text.
 
     Args:
         text (str): The text to extract the completion from.
-        backticks (int): The number of backticks used to wrap the YAML section (default: 5).
+        backticks (int): The number of backticks used to wrap the section (default: 5).
 
     Returns:
-        dict: A dictionary containing the completion information, or None if no completion was found.
+        CompletionResult: The completion result, or None if no completion was found.
     """
-    # Create the pattern for matching the backtick-wrapped YAML section
+    # Create the pattern for matching the backtick-wrapped section
     backtick_pattern = '`' * backticks
-    pattern = rf"{backtick_pattern}(Completion:[\s\S]*?){backtick_pattern}"
+    pattern = rf"{backtick_pattern}(Completion:[\s\S]*?Success:\s*(True|False)[\s\S]*?){backtick_pattern}"
 
     # Search for the pattern in the text
     match = re.search(pattern, text, re.DOTALL)
     if not match:
         return None
 
-    # Extract the YAML content
-    yaml_content = match.group(1).strip()
+    # Extract the content
+    content = match.group(1).strip()
 
-    try:
-        # Parse the YAML content using PyYAML
-        completion_data = yaml.safe_load(yaml_content)
-        completion_text = completion_data['Completion']
-        if isinstance(completion_text, str):
-            completion_text = completion_text.strip()
-        return completion_text, completion_data['Success']
-    except yaml.YAMLError as e:
-        print(f"Error parsing YAML: {e}", file=sys.stderr)
-        return "Task could not be verified.", False
+    # Parse using simple regex (no YAML)
+    completion_match = re.search(r'Completion:\s*(.+)', content)
+    success_match = re.search(r'Success:\s*(True|False)', content)
+
+    if completion_match and success_match:
+        completion_text = completion_match.group(1).strip()
+        success = success_match.group(1) == 'True'
+        return CompletionResult(text=completion_text, success=success)
+
+    return CompletionResult(text="Task could not be verified.", success=False)
 
 
 def sigterm_handler(_signo, _stack_frame):
@@ -283,6 +291,8 @@ class Agent:
         self.compute_budget = compute_budget
         self.iterations = 0
         self.start_time = None
+        self._last_assistant_response = None
+        self._loop_count = 0
 
         # Register the LLM backend for the summarize tool so that
         # the tools layer can make one-shot LLM calls without a circular import.
@@ -347,8 +357,32 @@ class Agent:
             clipped = response_length - filtered_length
             print_clipped(clipped, response)
 
+        # Anti-looping check: detect if the LLM produced the exact same output twice in a row
+        if self._last_assistant_response is not None and response == self._last_assistant_response:
+            self._loop_count += 1
+            if self._loop_count >= 3:
+                raise RuntimeError("Looping error: LLM produced identical response 3 times in a row.")
+
+            print_error(f"Loop detected (attempt {self._loop_count}/3): LLM produced identical response. Injecting feedback.", None)
+            # Remove the previous identical assistant message (the new
+            # duplicate has not been appended to context yet).
+            if self.context and self.context[-1]["role"] == "assistant":
+                self.context.pop()
+            # Remove the command-result user message that preceded it,
+            # so the injected feedback replaces the stale exchange.
+            if self.context and self.context[-1]["role"] == "user":
+                self.context.pop()
+            # Inject feedback to prevent looping
+            loop_feedback = "Feedback: avoid looping and work towards finishing your task."
+            self.context.append(_form_message("user", loop_feedback))
+            # Reset the assistant response tracker to allow recovery
+            self._last_assistant_response = None
+            return True
+
         # Add response to context and process it
         self.context.append(_form_message("assistant", response))
+        self._last_assistant_response = response
+        self._loop_count = 0
         command_response, image_media_tuple_array = process_content(response)
 
         # Determine if we should continue running.  This must be checked
@@ -632,23 +666,21 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         agent.load_context(restore_sid)
 
     agent.run()
-    completion = "Error"
-    success = False
+    completion_result = None
     if len(agent.context) > 2:
         final_content = agent.context[-2]['content'][0]['text']
-        result = extract_completion(final_content)
-        if result is not None:
-            completion, success = result
-        else:
+        completion_result = extract_completion(final_content)
+        if completion_result is None:
             # Give the agent one more chance to provide a completion block.
             try:
                 if agent.request_completion() and len(agent.context) > 2:
                     final_content = agent.context[-2]['content'][0]['text']
-                    result = extract_completion(final_content)
-                    if result is not None:
-                        completion, success = result
+                    completion_result = extract_completion(final_content)
             except Exception as e:
                 logging.warning("Completion-retry iteration failed: %s", e)
+
+    completion = completion_result.text if completion_result else "Error"
+    success = completion_result.success if completion_result else False
 
     if save:
         agent.save_context()

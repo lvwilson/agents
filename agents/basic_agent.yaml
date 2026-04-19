@@ -120,12 +120,11 @@ system_prompt: |
 
   Worklog: "What I did this step."
 
-  When your task is complete (i.e you are not waiting for any commands to execute and intend to issue no further commands), please respond with a yaml formatted completion message in exactly the following form:
-  `````Completion: |
-    A an accurate but concise description of what you did.
+  When your task is complete (i.e you are not waiting for any commands to execute and intend to issue no further commands), please respond with a completion message in exactly the following form:
+  `````Completion: <description>
   Success: True or False
   `````
-  Failure to adhere to this format will result in the task being considered failed.
+  The completion description should be a single line. Use True or False for success.
   You should output nothing more to allow the system to provide you with the content before continuing.
   Remember that reading files is its own step and should not be combined with writing.
   All commands after a read command will be ignored. Remember to stop output after reading.
