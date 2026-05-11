@@ -26,6 +26,7 @@ from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
+from .git_utils import is_git_repo, check_git_clean, get_diff_summary, git_add_and_commit
 from .session import (
     generate_session_id,
     validate_session_id,
@@ -553,6 +554,30 @@ class Agent:
         self._iterate()
         return True
 
+    def request_commit_message(self) -> str | None:
+        """Ask the LLM for a git commit message.
+
+        Appends a feedback message requesting a commit message and
+        runs one more iteration.
+
+        Returns the commit message string, or None if budget was
+        exhausted or no message was produced.
+        """
+        if self.client.cost > self.compute_budget:
+            return None
+        feedback = (
+            "Feedback: Your work has changed files in the repository. "
+            "Please provide a concise git commit message on a single line. "
+            "Do not include any other content or commands — just the commit message."
+        )
+        self.context.append(_form_message("user", feedback))
+        self._iterate()
+        # Extract the last assistant response as the commit message
+        for msg in reversed(self.context):
+            if msg["role"] == "assistant":
+                return msg["content"][0]["text"].strip()
+        return None
+
     def save_context(self):
         """Save conversation context and token state to a JSON session file.
 
@@ -621,7 +646,7 @@ class SessionNotFoundError(Exception):
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
-              local_host="localhost"):
+              local_host="localhost", nogit=False):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -636,6 +661,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         local_model: Local model name (if using local API)
         local_port: Port for local API server
         local_host: Hostname for local API server (default "localhost")
+        nogit: If True, skip git status check and auto-commit
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -685,6 +711,22 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     if save:
         agent.save_context()
 
+    # Auto-commit if there are uncommitted changes and git is enabled
+    if not nogit and is_git_repo():
+        clean, _ = check_git_clean()
+        if not clean:
+            commit_msg = agent.request_commit_message()
+            if commit_msg:
+                # Take only the first line as the commit message
+                first_line = commit_msg.split("\n")[0].strip()
+                author_name = agent.model_name
+                author_email = f"agent@{platform.node()}"
+                ok, err = git_add_and_commit(first_line, author_name=author_name, author_email=author_email)
+                if ok:
+                    safe_console_print(f"  ⚡  Auto-committed: [green]{first_line}[/] [dim]by {author_name} <{author_email}>[/]", style="info")
+                else:
+                    safe_console_print(f"  ⚠  Auto-commit failed: {err}", style="warning")
+
     return completion, success, agent.session_id
 
 
@@ -709,8 +751,17 @@ def main():
                         help='Hostname for the LLM API server (default: LOCAL_LLM_HOST or localhost)')
     parser.add_argument('-a', '--agent', type=str, default='basic_agent.yaml',
                         help='Agent definition YAML file (default: basic_agent.yaml)')
+    parser.add_argument('--nogit', action='store_true',
+                        help='Disable git status check and auto-commit')
 
     args = parser.parse_args()
+
+    # Pre-flight: ensure git working tree is clean (unless --nogit)
+    if not args.nogit and is_git_repo():
+        clean, msg = check_git_clean()
+        if not clean:
+            print_error(msg, None)
+            sys.exit(1)
 
     # Resolve --port default: CLI flag > LOCAL_LLM_PORT env var > 8000
     if args.port is None:
@@ -753,7 +804,7 @@ def main():
             args.agent, command, args.compute_budget,
             restore=args.restore, session_id=args.session,
             local_model=local_model, local_port=args.port,
-            local_host=args.host)
+            local_host=args.host, nogit=args.nogit)
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
