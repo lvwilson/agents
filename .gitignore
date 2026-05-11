@@ -165,3 +165,5 @@ cython_debug/
 *.pkl
 *.summary
 
+# Tasks directory
+tasks/
