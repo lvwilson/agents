@@ -743,8 +743,11 @@ def main():
                         help='Restore the latest session for the current directory')
     parser.add_argument('-s', '--session', type=str, default=None,
                         help='Session ID to use or resume (max 10 alphanumeric chars)')
-    parser.add_argument('-l', '--local', action='store_true',
-                        help='Use a local Anthropic-compatible API (also enabled automatically when LOCAL_MODEL env var is set)')
+    local_group = parser.add_mutually_exclusive_group()
+    local_group.add_argument('-l', '--local', action='store_true',
+                             help='Use a local Anthropic-compatible API (also enabled automatically when LOCAL_MODEL env var is set)')
+    local_group.add_argument('-o', '--online', action='store_true',
+                             help='Use the online model provider (ignores LOCAL_MODEL env var)')
     parser.add_argument('-p', '--port', type=int, default=None,
                         help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
     parser.add_argument('-H', '--host', type=str, default=None,
@@ -792,11 +795,18 @@ def main():
             backticks = '`' * 5
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
-    # Resolve local model: automatically enabled when LOCAL_MODEL is set,
-    # or when -l/--local is explicitly passed.
-    local_model = os.environ.get('LOCAL_MODEL')
-    if args.local and not local_model:
-        parser.error('--local requires the LOCAL_MODEL environment variable to be set')
+    # Resolve local vs online model:
+    # -o/--online forces online (ignores LOCAL_MODEL)
+    # -l/--local forces local (requires LOCAL_MODEL)
+    # If neither, LOCAL_MODEL env var enables local mode automatically.
+    local_model = None
+    if not args.online:
+        if args.local:
+            local_model = os.environ.get('LOCAL_MODEL')
+            if not local_model:
+                parser.error('--local requires the LOCAL_MODEL environment variable to be set')
+        else:
+            local_model = os.environ.get('LOCAL_MODEL')
 
     try:
         completion, success, sid = run_agent(
