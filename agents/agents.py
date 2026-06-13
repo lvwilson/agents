@@ -775,8 +775,6 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
             # After storing, check if we need to squash old episodes.
             if get_episode_count() >= 8:
-                from . import memory as _mem_mod
-
                 squash_prompt = read_configuration("memory.yaml").get(
                     "squash_prompt",
                     "Compress these episode summaries into one concise paragraph.",

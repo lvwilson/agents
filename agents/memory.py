@@ -23,7 +23,6 @@ as the LLM will see it.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import sqlite3
 import time
@@ -206,7 +205,8 @@ def squash_episodes(squash_fn) -> Optional[str]:
     string and returns a compressed summary string).
 
     The squashed episodes are removed from the compressed table and
-    replaced by a single new episode.  The raw table is untouched.
+    replaced by a single new episode.  A ``[SQUASHED]`` entry is added
+    to the raw table for audit purposes.
 
     Returns the new compressed summary, or None if no squash was needed.
     """
@@ -383,7 +383,7 @@ def format_memory_view() -> str:
         parts.append("")
 
     if not parts:
-        return "(No memory stored for this folder.)"
+        return ""
 
     return "\n".join(parts)
 
