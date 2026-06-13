@@ -714,14 +714,15 @@ def note(*args):
         updated = _mem.note_append(text)
         return f"Notes appended. Current notes ({len(updated)} chars):\n{updated}"
     elif subcmd == "replace":
-        block = args[-1].strip() if len(args) >= 2 else ""
+        block = args[-1] if len(args) >= 2 else None
         if not block:
-            return "Error: note replace requires a find/replace block."
-        lines = block.split("\n", 1)
-        if len(lines) < 2:
-            return "Error: note replace requires two lines: find text and replace text."
-        pattern, replacement = lines[0].strip(), lines[1].strip()
-        updated = _mem.note_replace(pattern, replacement)
+            return "Error: note replace requires a SEARCH/REPLACE block."
+        current = _mem.get_notes()
+        try:
+            updated = findreplace.find_replace(current, block)
+        except ValueError as e:
+            return f"Error: {e}"
+        _mem.note_rewrite(updated)
         return f"Notes updated. Current notes ({len(updated)} chars):\n{updated}"
     elif subcmd == "rewrite":
         new_content = args[-1] if len(args) >= 2 else None

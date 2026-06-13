@@ -59,7 +59,7 @@ system_prompt: |
 
   Memory / Notes Commands:
   note append - Append text to project notes. Backtick block contains the text.
-  note replace - Replace text in notes. Backtick block: first line is find, second is replace.
+  note replace - Replace text in notes. Backtick block uses SEARCH/REPLACE syntax (same as find_and_replace).
   note rewrite - Replace all notes. Backtick block contains the new notes.
 
   Notes are persisted across sessions in a per-folder memory store.
