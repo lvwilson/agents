@@ -25,8 +25,8 @@ mcp = ["mcp>=1.0.0"]
 all = ["black>=24.0", "requests", "openai", "google-genai", "playwright", "ddgs", "mcp>=1.0.0"]
 
 [project.scripts]
-agents = "agents.agents:main"
-docs   = "agents.tools.docs:main"
+agents     = "agents.agents:main"
+agent-docs = "agents.tools.docs:main"
 
 [tool.setuptools.packages.find]
 include = ["agents*"]
