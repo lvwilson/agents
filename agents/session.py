@@ -1,14 +1,12 @@
 """
 Session persistence for the agents package.
 
-Sessions are stored as JSON files under a per-user temporary directory
-(``/tmp/agents-<username>/``).  A lightweight index file maps working
-directories to the most-recently-used session ID so that ``-r`` can
-resume without an explicit ID.
+Sessions are stored as JSON files under ``~/.agents/sessions/``.
+A lightweight index file maps working directories to the most-recently-used
+session ID so that ``-r`` can resume without an explicit ID.
 
-Data retention is inherently limited: ``/tmp`` is cleared on reboot,
-and stale sessions older than ``MAX_SESSION_AGE_DAYS`` are pruned on
-every save.
+Sessions persist across reboots.  Stale sessions older than
+``MAX_SESSION_AGE_DAYS`` are pruned on every save.
 """
 
 import json
@@ -29,9 +27,8 @@ _FILE_PERMISSIONS = 0o600
 # ── Paths ────────────────────────────────────────────────────────────
 
 def _sessions_dir():
-    """Return the per-user sessions directory path."""
-    user = os.environ.get("USER", "unknown")
-    return os.path.join("/tmp", f"agents-{user}")
+    """Return the per-user sessions directory path (~/.agents/sessions/)."""
+    return os.path.join(os.path.expanduser("~"), ".agents", "sessions")
 
 
 def _index_path():
