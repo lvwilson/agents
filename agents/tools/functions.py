@@ -19,6 +19,7 @@ import threading
 from . import code_scissors
 from . import codemanipulator
 from . import findreplace
+from .docs import docs
 
 
 # ── Agent pool (sub-agents) ────────────────────────────────────────
