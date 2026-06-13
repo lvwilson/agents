@@ -9,8 +9,12 @@ Two interfaces:
 
 Index storage
 ~~~~~~~~~~~~~
-All indexes are stored in a single JSON file:
-    ``~/.config/agents/docs_indexes.json``
+All indexes are stored in a SQLite database:
+    ``~/.agents/docs_index.db``
+
+Two tables:
+    *sources* — one row per indexed folder (name, path, alias, indexed_at)
+    *files*   — one row per file (source, rel_path, size, content)
 
 Each source maps to a folder on disk.  When indexed, every readable text
 file is stored with its relative path and full content (up to a size
@@ -18,15 +22,15 @@ limit), enabling fast fuzzy search without touching the filesystem.
 """
 
 import argparse
-import json
 import os
+import sqlite3
 import sys
 from datetime import datetime, timezone
 
 # ── Configuration ───────────────────────────────────────────────────
 
-INDEX_DIR = os.path.expanduser("~/.config/agents")
-INDEX_FILE = os.path.join(INDEX_DIR, "docs_indexes.json")
+INDEX_DIR = os.path.expanduser("~/.agents")
+INDEX_FILE = os.path.join(INDEX_DIR, "docs_index.db")
 
 # Maximum file size to index (bytes). Larger files are recorded but
 # their content is not stored to keep the index lean.
@@ -55,24 +59,48 @@ SKIP_DIRS = {
 }
 
 
-# ── Index I/O ───────────────────────────────────────────────────────
+# ── Database helpers ────────────────────────────────────────────────
 
-def _load_indexes() -> dict:
-    """Load the index file, returning an empty dict if it doesn't exist."""
-    if not os.path.exists(INDEX_FILE):
-        return {"sources": {}}
-    try:
-        with open(INDEX_FILE, "r") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return {"sources": {}}
-
-
-def _save_indexes(indexes: dict) -> None:
-    """Persist the index dict to disk."""
+def _get_db() -> sqlite3.Connection:
+    """Return a connection to the index database, creating it if needed."""
     os.makedirs(INDEX_DIR, exist_ok=True)
-    with open(INDEX_FILE, "w") as f:
-        json.dump(indexes, f, indent=2)
+    conn = sqlite3.connect(INDEX_FILE)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    _ensure_schema(conn)
+    return conn
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create tables if they don't exist."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sources (
+            name        TEXT PRIMARY KEY,
+            path        TEXT NOT NULL,
+            alias       TEXT,
+            indexed_at  TEXT NOT NULL,
+            file_count  INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS files (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            source      TEXT NOT NULL,
+            rel_path    TEXT NOT NULL,
+            size        INTEGER DEFAULT 0,
+            content     TEXT,
+            FOREIGN KEY (source) REFERENCES sources(name) ON DELETE CASCADE,
+            UNIQUE(source, rel_path)
+        )
+    """)
+    # Index for fast search and tree queries
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_files_source ON files(source)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path)
+    """)
+    conn.commit()
 
 
 def _is_text_file(filepath: str) -> bool:
@@ -140,27 +168,42 @@ def _get_source_name(folder_path: str, alias: str = None) -> str:
 # ── Core operations ─────────────────────────────────────────────────
 
 def index_folder(folder_path: str, alias: str = None) -> str:
-    """Index a folder and store it in the index file."""
+    """Index a folder and store it in the index database."""
     folder_path = os.path.abspath(folder_path)
     if not os.path.isdir(folder_path):
         return f"Error: '{folder_path}' is not a directory."
 
     source_name = _get_source_name(folder_path, alias)
-    indexes = _load_indexes()
+    conn = _get_db()
 
-    if source_name in indexes["sources"]:
+    # Check if source already exists
+    row = conn.execute("SELECT name FROM sources WHERE name = ?", (source_name,)).fetchone()
+    if row:
+        conn.close()
         return (f"Source '{source_name}' already exists. "
                 f"Use 'refresh' to re-index or 'delete' first.")
 
     files = _scan_folder(folder_path)
-    indexes["sources"][source_name] = {
-        "path": folder_path,
-        "alias": alias,
-        "indexed_at": datetime.now(timezone.utc).isoformat(),
-        "file_count": len(files),
-        "files": files,
-    }
-    _save_indexes(indexes)
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn.execute("BEGIN")
+    conn.execute(
+        "INSERT INTO sources (name, path, alias, indexed_at, file_count) VALUES (?, ?, ?, ?, ?)",
+        (source_name, folder_path, alias, now, len(files)),
+    )
+
+    # Bulk insert files
+    insert_many = """
+        INSERT OR REPLACE INTO files (source, rel_path, size, content)
+        VALUES (?, ?, ?, ?)
+    """
+    file_data = [
+        (source_name, rel_path, info["size"], info["content"])
+        for rel_path, info in files.items()
+    ]
+    conn.executemany(insert_many, file_data)
+    conn.commit()
+    conn.close()
 
     total_size = sum(f.get("size", 0) for f in files.values())
     size_str = f"{total_size / 1024:.1f} KB" if total_size < 1024 * 1024 else f"{total_size / (1024*1024):.1f} MB"
@@ -170,49 +213,76 @@ def index_folder(folder_path: str, alias: str = None) -> str:
 
 def delete_source(source_name: str) -> str:
     """Delete an indexed source."""
-    indexes = _load_indexes()
-    if source_name not in indexes["sources"]:
+    conn = _get_db()
+    row = conn.execute("SELECT name FROM sources WHERE name = ?", (source_name,)).fetchone()
+    if not row:
+        conn.close()
         return f"Error: Source '{source_name}' not found."
-    del indexes["sources"][source_name]
-    _save_indexes(indexes)
+
+    conn.execute("DELETE FROM files WHERE source = ?", (source_name,))
+    conn.execute("DELETE FROM sources WHERE name = ?", (source_name,))
+    conn.commit()
+    conn.close()
     return f"Deleted source '{source_name}'."
 
 
 def rename_source(old_name: str, new_name: str) -> str:
     """Rename an indexed source."""
-    indexes = _load_indexes()
-    if old_name not in indexes["sources"]:
+    conn = _get_db()
+    row = conn.execute("SELECT name FROM sources WHERE name = ?", (old_name,)).fetchone()
+    if not row:
+        conn.close()
         return f"Error: Source '{old_name}' not found."
-    if new_name in indexes["sources"]:
+
+    existing = conn.execute("SELECT name FROM sources WHERE name = ?", (new_name,)).fetchone()
+    if existing:
+        conn.close()
         return f"Error: Source '{new_name}' already exists."
-    indexes["sources"][new_name] = indexes["sources"].pop(old_name)
-    _save_indexes(indexes)
+
+    conn.execute("UPDATE sources SET name = ? WHERE name = ?", (new_name, old_name))
+    conn.execute("UPDATE files SET source = ? WHERE source = ?", (new_name, old_name))
+    conn.commit()
+    conn.close()
     return f"Renamed '{old_name}' to '{new_name}'."
 
 
 def refresh_source(source_name: str) -> str:
     """Re-index a source (delete + re-index)."""
-    indexes = _load_indexes()
-    if source_name not in indexes["sources"]:
+    conn = _get_db()
+    row = conn.execute("SELECT path, alias FROM sources WHERE name = ?", (source_name,)).fetchone()
+    if not row:
+        conn.close()
         return f"Error: Source '{source_name}' not found."
-    folder_path = indexes["sources"][source_name]["path"]
-    alias = indexes["sources"][source_name].get("alias")
 
-    # Remove old entry
-    del indexes["sources"][source_name]
-    _save_indexes(indexes)
+    folder_path = row["path"]
+    alias = row["alias"]
+
+    # Remove old files and source entry
+    conn.execute("DELETE FROM files WHERE source = ?", (source_name,))
+    conn.execute("DELETE FROM sources WHERE name = ?", (source_name,))
+    conn.commit()
+    conn.close()
 
     # Re-index
     files = _scan_folder(folder_path)
-    indexes = _load_indexes()  # Reload to be safe
-    indexes["sources"][source_name] = {
-        "path": folder_path,
-        "alias": alias,
-        "indexed_at": datetime.now(timezone.utc).isoformat(),
-        "file_count": len(files),
-        "files": files,
-    }
-    _save_indexes(indexes)
+    conn = _get_db()
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn.execute("BEGIN")
+    conn.execute(
+        "INSERT INTO sources (name, path, alias, indexed_at, file_count) VALUES (?, ?, ?, ?, ?)",
+        (source_name, folder_path, alias, now, len(files)),
+    )
+    file_data = [
+        (source_name, rel_path, info["size"], info["content"])
+        for rel_path, info in files.items()
+    ]
+    conn.executemany(
+        "INSERT OR REPLACE INTO files (source, rel_path, size, content) VALUES (?, ?, ?, ?)",
+        file_data,
+    )
+    conn.commit()
+    conn.close()
 
     return (f"Refreshed '{source_name}' ({folder_path}).\n"
             f"  {len(files)} files indexed.")
@@ -220,22 +290,22 @@ def refresh_source(source_name: str) -> str:
 
 def list_sources() -> str:
     """List all indexed sources with summary info."""
-    indexes = _load_indexes()
-    sources = indexes.get("sources", {})
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT name, path, alias, file_count, indexed_at FROM sources ORDER BY name"
+    ).fetchall()
+    conn.close()
 
-    if not sources:
+    if not rows:
         return "No indexed sources. Use 'docs index <folder>' to add one."
 
     lines = ["Indexed sources:"]
-    for name, info in sorted(sources.items()):
-        path = info.get("path", "?")
-        count = info.get("file_count", "?")
-        indexed_at = info.get("indexed_at", "?")[:19].replace("T", " ")
-        alias = info.get("alias")
-        alias_str = f" (alias: {alias})" if alias else ""
-        lines.append(f"  {name}{alias_str}")
-        lines.append(f"    path: {path}")
-        lines.append(f"    files: {count}, indexed: {indexed_at}")
+    for row in rows:
+        alias_str = f" (alias: {row['alias']})" if row["alias"] else ""
+        indexed_at = row["indexed_at"][:19].replace("T", " ")
+        lines.append(f"  {row['name']}{alias_str}")
+        lines.append(f"    path: {row['path']}")
+        lines.append(f"    files: {row['file_count']}, indexed: {indexed_at}")
         lines.append("")
     return "\n".join(lines)
 
@@ -246,45 +316,50 @@ def search_sources(query: str) -> str:
     Searches both file paths and file contents.
     Returns matching files with enough context to identify them.
     """
-    indexes = _load_indexes()
-    sources = indexes.get("sources", {})
+    conn = _get_db()
 
-    if not sources:
+    # Check if any sources exist
+    count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+    if count == 0:
+        conn.close()
         return "No indexed sources to search."
 
-    query_lower = query.lower()
-    # Split query into tokens for matching
-    tokens = query_lower.split()
+    tokens = query.lower().split()
+
+    # Fetch all files with content
+    rows = conn.execute(
+        "SELECT f.source, f.rel_path, f.size, f.content FROM files f"
+    ).fetchall()
+    conn.close()
 
     results = []
+    for row in rows:
+        rel_path = row["rel_path"]
+        content = row["content"]
 
-    for source_name, source_info in sources.items():
-        files = source_info.get("files", {})
-        for rel_path, file_info in files.items():
-            path_score = _match_tokens(rel_path.lower(), tokens)
-            content_score = 0
-            content_line = None
+        path_score = _match_tokens(rel_path.lower(), tokens)
+        content_score = 0
+        content_line = None
 
-            content = file_info.get("content")
-            if content:
-                content_lower = content.lower()
-                content_score = _match_tokens(content_lower, tokens)
-                # Find the first line that matches any token
-                for line in content.split("\n"):
-                    if any(t in line.lower() for t in tokens):
-                        content_line = line.strip()
-                        break
+        if content:
+            content_lower = content.lower()
+            content_score = _match_tokens(content_lower, tokens)
+            # Find the first line that matches any token
+            for line in content.split("\n"):
+                if any(t in line.lower() for t in tokens):
+                    content_line = line.strip()
+                    break
 
-            total_score = path_score + content_score
-            if total_score > 0:
-                results.append({
-                    "source": source_name,
-                    "path": rel_path,
-                    "score": total_score,
-                    "size": file_info.get("size", 0),
-                    "content_line": content_line,
-                    "has_content": content is not None,
-                })
+        total_score = path_score + content_score
+        if total_score > 0:
+            results.append({
+                "source": row["source"],
+                "path": rel_path,
+                "score": total_score,
+                "size": row["size"],
+                "content_line": content_line,
+                "has_content": content is not None,
+            })
 
     # Sort by score descending
     results.sort(key=lambda r: r["score"], reverse=True)
@@ -302,7 +377,6 @@ def search_sources(query: str) -> str:
         lines.append(f"  {i}. [{source}] {path}")
         lines.append(f"     size: {size_str}, score: {r['score']}")
         if r["content_line"] and r["has_content"]:
-            # Truncate long lines
             cl = r["content_line"][:200]
             if len(r["content_line"]) > 200:
                 cl += "..."
@@ -323,16 +397,24 @@ def tree_source(source_name: str, scope: str = None, depth: int = None) -> str:
     *scope* limits the tree to a subdirectory prefix.
     *depth* limits the nesting level shown.
     """
-    indexes = _load_indexes()
-    sources = indexes.get("sources", {})
+    conn = _get_db()
+    row = conn.execute("SELECT name FROM sources WHERE name = ?", (source_name,)).fetchone()
+    if not row:
+        available = [r["name"] for r in conn.execute("SELECT name FROM sources ORDER BY name").fetchall()]
+        conn.close()
+        return f"Error: Source '{source_name}' not found.\nAvailable: {', '.join(available)}"
 
-    if source_name not in sources:
-        available = ", ".join(sorted(sources.keys()))
-        return f"Error: Source '{source_name}' not found.\nAvailable: {available}"
+    # Fetch all relative paths for this source
+    rows = conn.execute(
+        "SELECT rel_path FROM files WHERE source = ? ORDER BY rel_path", (source_name,)
+    ).fetchall()
+    conn.close()
 
-    files = sources[source_name].get("files", {})
-    if not files:
+    if not rows:
         return f"Source '{source_name}' has no indexed files."
+
+    # Build a dict of rel_path -> True (content not needed for tree)
+    files = {r["rel_path"]: True for r in rows}
 
     # Build a directory tree from file paths
     tree = _build_tree(files, scope, depth)
@@ -354,36 +436,55 @@ def view_document(source_name: str, file_path: str) -> str:
     *source_name* is the indexed source.
     *file_path* is the relative path within that source.
     """
-    indexes = _load_indexes()
-    sources = indexes.get("sources", {})
+    conn = _get_db()
+    row = conn.execute("SELECT name, path FROM sources WHERE name = ?", (source_name,)).fetchone()
+    if not row:
+        available = [r["name"] for r in conn.execute("SELECT name FROM sources ORDER BY name").fetchall()]
+        conn.close()
+        return f"Error: Source '{source_name}' not found.\nAvailable: {', '.join(available)}"
 
-    if source_name not in sources:
-        available = ", ".join(sorted(sources.keys()))
-        return f"Error: Source '{source_name}' not found.\nAvailable: {available}"
+    source_path = row["path"]
 
-    files = sources[source_name].get("files", {})
+    # Try exact match first
+    file_row = conn.execute(
+        "SELECT rel_path, size, content FROM files WHERE source = ? AND rel_path = ?",
+        (source_name, file_path),
+    ).fetchone()
 
-    # Try exact match first, then fuzzy match
-    if file_path in files:
-        file_info = files[file_path]
-    else:
+    if not file_row:
         # Try partial match
-        matches = [p for p in files if file_path in p or p in file_path]
-        if len(matches) == 1:
-            file_info = files[matches[0]]
-            file_path = matches[0]
-        elif matches:
+        matches = conn.execute(
+            "SELECT rel_path FROM files WHERE source = ? AND (rel_path LIKE ? OR rel_path LIKE ?)",
+            (source_name, f"%{file_path}%", f"%/{file_path}"),
+        ).fetchall()
+        conn.close()
+
+        match_paths = [r["rel_path"] for r in matches]
+        if len(match_paths) == 1:
+            file_path = match_paths[0]
+            # Re-fetch content
+            conn = _get_db()
+            file_row = conn.execute(
+                "SELECT rel_path, size, content FROM files WHERE source = ? AND rel_path = ?",
+                (source_name, file_path),
+            ).fetchone()
+        elif match_paths:
+            conn.close()
             return (f"Multiple matches for '{file_path}':\n"
-                    + "\n".join(f"  - {m}" for m in matches[:10]))
+                    + "\n".join(f"  - {m}" for m in match_paths[:10]))
         else:
+            conn.close()
             return f"Error: File '{file_path}' not found in source '{source_name}'."
 
-    content = file_info.get("content")
+    content = file_row["content"]
+    size = file_row["size"]
+    conn.close()
+
     if content is None:
         return (f"[{source_name}] {file_path}\n"
                 f"(Content not indexed — file too large: "
-                f"{file_info.get('size', '?')} bytes)\n"
-                f"To view: read_file {sources[source_name]['path']}/{file_path}")
+                f"{size} bytes)\n"
+                f"To view: read_file {source_path}/{file_path}")
 
     return f"[{source_name}] {file_path}\n\n{content}"
 
@@ -530,8 +631,8 @@ def main():
     # tree
     tree_parser = subparsers.add_parser("tree", help="View indexed folder tree")
     tree_parser.add_argument("source", help="Source name")
-    tree_parser.add_argument("--scope", "-s", help="Scope to subdirectory")
-    tree_parser.add_argument("--depth", "-d", type=int, help="Max depth")
+    tree_parser.add_argument("scope", nargs="?", default=None, help="Scope to subdirectory")
+    tree_parser.add_argument("--depth", "-d", type=int, default=None, help="Max depth")
 
     # delete
     del_parser = subparsers.add_parser("delete", help="Delete an index")
