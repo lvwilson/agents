@@ -78,7 +78,7 @@ def concise_representation(input_string, max_chars):
 
 
 # Commands that can be stacked (queued together like read_file)
-STACKABLE_READ_COMMANDS = {'read_file', 'read_page', 'read_page_html', 'page_links', 'view_page', 'web_search'}
+STACKABLE_READ_COMMANDS = {'read_file', 'deep_read', 'read_page', 'read_page_html', 'page_links', 'view_page', 'web_search'}
 
 
 def filter_content(content):
@@ -148,6 +148,12 @@ def process_content(content):
                 command_response = (command_response or "ok") + "\n"
             else:
                 command_response = (result or "ok") + "\n"
+        elif command.command == "deep_read":
+            # deep_read wraps another command, bypassing truncation
+            inner_result = _execute_command(
+                command.arguments, None, command.backtick_content, truncate=False
+            )
+            command_response = (inner_result or "ok") + "\n"
         else:
             command_response = (_execute_command(command.command, command.arguments, command.backtick_content) or "ok") + "\n"
             if command.command == "run_console_command":
@@ -316,33 +322,54 @@ def truncate_output(text):
 
 # ── Command dispatch ────────────────────────────────────────────────
 
-def _execute_command(command, arguments, backticks):
-    """Dispatch a parsed command to the appropriate tool function."""
+def _execute_command(command, arguments, backticks, truncate=True):
+    """Dispatch a parsed command to the appropriate tool function.
+
+    When *command* is a string like ``"read_file /path/to/file"`` (as used
+    by ``deep_read``), the first token is taken as the command name and the
+    rest as arguments.
+
+    When *truncate* is ``False``, the output is returned without the
+    60 000-character safety truncation.
+    """
     if command is None:
         return "Error: Command name must be specified correctly."
-    if command != "run_console_command":
-        args = split_preserving_quotes(arguments)
+
+    # deep_read passes the inner command as a single string argument
+    if isinstance(command, str):
+        parts = split_preserving_quotes(command)
+        cmd_name = parts[0].lower()
+        remaining_args = parts[1:] if len(parts) > 1 else []
     else:
-        args = arguments
+        cmd_name = command.lower()
+        remaining_args = []
+
+    if cmd_name != "run_console_command":
+        args = remaining_args + (split_preserving_quotes(arguments) if isinstance(arguments, str) else [])
+    else:
+        args = [arguments] if isinstance(arguments, str) else list(arguments)
+
     if not isinstance(args, list):
         args = [args]
     if backticks is not None:
         args.append(backticks)
     try:
-        function = getattr(functions, command.lower())
+        function = getattr(functions, cmd_name)
     except AttributeError:
-        return "Error: Command not found"
+        return f"Error: Command not found: {cmd_name}"
     try:
         result = function(*args) if args else function()
         if result is None:
             return "ok"
         # Handle tuple results (e.g. view_page returns (text, path))
         if isinstance(result, tuple):
-            truncated_first = truncate_output(result[0]) if isinstance(result[0], str) else result[0]
-            return (truncated_first,) + result[1:]
-        return truncate_output(result)
+            first = truncate_output(result[0]) if truncate and isinstance(result[0], str) else result[0]
+            return (first,) + result[1:]
+        if truncate:
+            return truncate_output(result)
+        return result
     except Exception as e:
-        return f"Error executing command: {e}\n {command}, {arguments}, {backticks}"
+        return f"Error executing command: {e}\n {cmd_name}, {arguments}, {backticks}"
 
 
 def terminate_process():

@@ -17,6 +17,7 @@ system_prompt: |
 
   Commands:
   read_file file_path
+  deep_read command_and_args - Wraps any other command, bypassing the 60K character output truncation. Example: deep_read read_file path/to/large_file.py
   write_file file_path `````text to replace entire file with`````
   append_to_file filepath `````text to append to file - suitable for logging.`````
   find_and_replace file_path `````command (see example)`````
