@@ -700,3 +700,51 @@ def mcp_call(*args):
     except Exception as e:
         return f"Error calling {server_name}/{tool_name}: {e}"
 
+# ── Memory / Notes tools ─────────────────────────────────────────────
+
+def note_append(*args):
+    """Append text to the project notes.
+
+    Usage: note_append with text in a backtick block.
+    """
+    from .. import memory as _mem
+
+    if not args:
+        return "Error: note_append requires text in a backtick block."
+    text = args[-1]
+    updated = _mem.note_append(text)
+    return f"Notes updated. Current notes ({len(updated)} chars):\n{updated}"
+
+
+def note_replace(*args):
+    """Replace text in the project notes using a find/replace pattern.
+
+    Usage: note_replace with two lines in a backtick block:
+    First line is the text to find, second line is the replacement.
+    """
+    from .. import memory as _mem
+
+    if not args:
+        return "Error: note_replace requires a find/replace block."
+    block = args[-1].strip()
+    lines = block.split("\n", 1)
+    if len(lines) < 2:
+        return "Error: note_replace requires two lines: find text and replace text."
+    pattern, replacement = lines[0].strip(), lines[1].strip()
+    updated = _mem.note_replace(pattern, replacement)
+    return f"Notes updated. Current notes ({len(updated)} chars):\n{updated}"
+
+
+def note_rewrite(*args):
+    """Replace the entire project notes with new content.
+
+    Usage: note_rewrite with entirely new notes in a backtick block.
+    """
+    from .. import memory as _mem
+
+    if not args:
+        return "Error: note_rewrite requires new notes in a backtick block."
+    new_content = args[-1]
+    updated = _mem.note_rewrite(new_content)
+    return f"Notes rewritten. Current notes ({len(updated)} chars):\n{updated}"
+

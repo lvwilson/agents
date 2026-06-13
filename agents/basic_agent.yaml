@@ -57,6 +57,14 @@ system_prompt: |
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
   run_console_command "arguments"
 
+  Memory / Notes Commands:
+  note_append - Append text to project notes stored in memory. Backtick block contains the text.
+  note_replace - Replace find-text with replacement in project notes. Backtick block has two lines: find then replace.
+  note_rewrite - Replace all project notes with new content. Backtick block contains the new notes.
+
+  Notes are persisted across sessions in a per-folder memory store.
+  If notes grow too large (>10000 chars) you will be prompted to rewrite them more compactly.
+
   Sub-Agent Commands:
   create_agent name ["description"] - Create a sub-agent. Backtick block: the role/persona instructions (required).
   list_agents - List all registered sub-agents

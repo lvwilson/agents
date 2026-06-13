@@ -1,0 +1,22 @@
+# Memory system configuration
+# These prompts are used by the hierarchical memory system.
+
+# Prompt used to squash multiple old episodes into one compressed summary.
+# The episodes' summaries are concatenated and passed to the LLM with this prompt.
+squash_prompt: |
+  You are given summaries of several past agent episodes.
+  Compress them into a single concise summary that preserves the key
+  information, decisions, and outcomes.  Omit minor details but keep
+  anything that would be useful context for future work in this project.
+
+  Write the compressed summary in plain text, approximately one paragraph.
+
+# Prompt used when notes exceed 10,000 characters and need to be rewritten
+# more compactly (approximately halved).
+notes_compact_prompt: |
+  The following project notes have grown too long. Please rewrite them
+  more compactly, reducing the total length by approximately half while
+  preserving all important information.  Use concise bullet points and
+  remove redundant or outdated details.
+
+  Write only the rewritten notes — no preamble or explanation.

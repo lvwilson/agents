@@ -27,6 +27,15 @@ from .tools import register_pool as _register_pool
 # Local imports
 from .backends import create_backend
 from .git_utils import is_git_repo, check_git_clean, get_diff_summary, git_add_and_commit
+from .memory import (
+    format_memory_view,
+    add_episode,
+    get_episode_count,
+    squash_episodes,
+    notes_need_compact,
+    get_notes,
+    MAX_NOTES_CHARS,
+)
 from .session import (
     generate_session_id,
     validate_session_id,
@@ -296,6 +305,19 @@ class Agent:
         self.system_prompt += f"\nWorking Directory: {os.getcwd()}"
         self.system_prompt += f"\nUser: {os.environ.get('USER', 'unknown')}"
 
+        # Append folder memory (episodes + notes) after the system prompt.
+        # This gives the agent context about previous work in this project.
+        memory_view = format_memory_view()
+        if memory_view:
+            self.system_prompt += f"\n\n{memory_view}"
+
+        # Check if notes need compacting and add a hint to the prompt.
+        if notes_need_compact():
+            self.system_prompt += (
+                f"\n\nNOTE: Your project notes have exceeded {MAX_NOTES_CHARS} characters. "
+                "Please use note_rewrite to make them more compact (approximately half their current size)."
+            )
+
         # Set remaining attributes
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
@@ -545,6 +567,26 @@ class Agent:
                       cost_without_cache=self.client.cost_without_cache,
                       context_window_tokens=self.client.context_window_size)
 
+    def _request_episode_summary(self) -> str | None:
+        """Ask the LLM for a short episode summary of this session.
+
+        Returns the summary string, or None if budget was exhausted.
+        """
+        if self.client.cost > self.compute_budget:
+            return None
+        feedback = (
+            "Feedback: Session complete. Please provide a brief summary "
+            "(2-4 sentences) of what you accomplished in this session. "
+            "Focus on key decisions, changes made, and any outstanding work. "
+            "Do not include any commands — just the summary text."
+        )
+        self.context.append(_form_message("user", feedback))
+        self._iterate()
+        for msg in reversed(self.context):
+            if msg["role"] == "assistant":
+                return msg["content"][0]["text"].strip()
+        return None
+
     def request_completion(self) -> bool:
         """Ask the LLM for a completion block if none was found.
 
@@ -722,6 +764,33 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
     if save:
         agent.save_context()
+
+    # ── Episode memory ──────────────────────────────────────────────
+    # Prompt the agent for a short episode summary, store it, then
+    # squash old episodes if the threshold has been reached.
+    try:
+        episode_summary = agent._request_episode_summary()
+        if episode_summary:
+            add_episode(episode_summary, session_id=agent.session_id)
+
+            # After storing, check if we need to squash old episodes.
+            if get_episode_count() >= 8:
+                from . import memory as _mem_mod
+
+                squash_prompt = read_configuration("memory.yaml").get(
+                    "squash_prompt",
+                    "Compress these episode summaries into one concise paragraph.",
+                )
+
+                def _squash(input_text: str) -> str:
+                    ctx = [_form_message("user", squash_prompt + "\n\n" + input_text)]
+                    return agent.client.generate_response(
+                        "You are a concise summarizer.", ctx
+                    )
+
+                squash_episodes(_squash)
+    except Exception as e:
+        logging.warning("Episode memory update failed: %s", e)
 
     # Auto-commit if there are uncommitted changes and git is enabled
     if not nogit and is_git_repo():
