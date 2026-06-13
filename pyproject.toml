@@ -26,6 +26,7 @@ all = ["black>=24.0", "requests", "openai", "google-genai", "playwright", "ddgs"
 
 [project.scripts]
 agents = "agents.agents:main"
+docs   = "agents.tools.docs:main"
 
 [tool.setuptools.packages.find]
 include = ["agents*"]
