@@ -185,8 +185,14 @@ def read_yaml_file(file_path):
     return data
 
 
+_AGENTS_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".agents")
+
+
 def read_configuration(configuration_name):
     """Read agent configuration from a YAML file.
+
+    Looks for the config in ``~/.agents/`` first, then falls back to
+    the package directory (for backward compatibility).
 
     Args:
         configuration_name: Name of the configuration file
@@ -194,6 +200,12 @@ def read_configuration(configuration_name):
     Returns:
         dict: Configuration data
     """
+    # Prefer user-level config in ~/.agents/
+    user_config = os.path.join(_AGENTS_CONFIG_DIR, configuration_name)
+    if os.path.isfile(user_config):
+        return read_yaml_file(user_config)
+
+    # Fall back to package-level config
     script_dir = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
     config_path = os.path.join(script_dir, configuration_name)
     return read_yaml_file(config_path)
