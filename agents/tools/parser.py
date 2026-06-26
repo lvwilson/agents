@@ -347,7 +347,7 @@ def _execute_command(command, arguments, backticks, truncate=True):
     if cmd_name != "run_console_command":
         args = remaining_args + (split_preserving_quotes(arguments) if isinstance(arguments, str) else [])
     else:
-        args = [arguments] if isinstance(arguments, str) else list(arguments)
+        args = [arguments] if isinstance(arguments, str) else list(arguments or [])
 
     if not isinstance(args, list):
         args = [args]
