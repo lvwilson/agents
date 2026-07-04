@@ -30,14 +30,19 @@ from ..git_utils import (
 
 
 _BACKTICK = "`" * 5
-_CODE_FENCE = "`" * 3
 
 
 def _extract_backtick_block(text: str) -> str | None:
-    """Extract the first 5-backtick-wrapped block from *text*."""
-    match = re.search(rf"{_BACKTICK}([\s\S]*?){_BACKTICK}", text)
-    if match:
-        return match.group(1).strip()
+    """Extract the first backtick-wrapped block from *text*.
+
+    Tries 5 backticks first (agent convention), then falls back to 3
+    backticks (standard markdown) since LLMs often use that format.
+    """
+    for n in (5, 3):
+        fence = "`" * n
+        match = re.search(rf"{fence}([\s\S]*?){fence}", text)
+        if match:
+            return match.group(1).strip()
     return None
 
 
@@ -143,7 +148,7 @@ def _generate_commit_message(
         )
 
     file_list = ", ".join(os.path.basename(f) for f in files)
-    fence = _CODE_FENCE
+    fence = "`" * 3
     user_message = f"Files changed: {file_list}\n\n{fence}\n{diff}\n{fence}"
 
     context = [
