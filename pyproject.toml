@@ -28,6 +28,7 @@ all = ["black>=24.0", "requests", "openai", "google-genai", "playwright", "ddgs"
 agents       = "agents.agents:main"
 agent-docs   = "agents.tools.docs:main"
 agent-memory = "agents.cli.memory_cli:main"
+agent-commit = "agents.cli.commit_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agents*"]

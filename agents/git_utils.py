@@ -115,19 +115,24 @@ def git_add_and_commit(
     path: str = ".",
     author_name: str = "",
     author_email: str = "",
+    files: list[str] | None = None,
 ) -> tuple[bool, str]:
-    """Stage all changes and commit with the given message.
+    """Stage changes and commit with the given message.
 
     Args:
         message: The commit message.
         path: Working directory for git commands.
         author_name: Git author name (uses system default if empty).
         author_email: Git author email (uses system default if empty).
+        files: If given, stage only these specific files.  If None,
+               stage all changes (``git add -A``).
 
     Returns (success, error_message).
     """
-    # Stage everything (modified, deleted, and new files)
-    _, stderr, rc = _run_git("add", "-A", cwd=path)
+    if files:
+        _, stderr, rc = _run_git("add", *files, cwd=path)
+    else:
+        _, stderr, rc = _run_git("add", "-A", cwd=path)
     if rc != 0:
         return False, f"git add failed: {stderr}"
 
@@ -145,3 +150,39 @@ def git_add_and_commit(
         return False, f"git commit failed: {stderr}"
 
     return True, ""
+
+
+def get_tracked_modified_files(path: str = ".") -> list[str]:
+    """Return a list of tracked files that have been modified (not staged).
+
+    Includes modified, deleted, and renamed tracked files.
+    Excludes untracked files.
+    """
+    stdout, _, rc = _run_git("diff", "--name-only", cwd=path)
+    if rc != 0:
+        return []
+    return [f for f in stdout.splitlines() if f]
+
+
+def get_staged_files(path: str = ".") -> list[str]:
+    """Return a list of staged files."""
+    stdout, _, rc = _run_git("diff", "--cached", "--name-only", cwd=path)
+    if rc != 0:
+        return []
+    return [f for f in stdout.splitlines() if f]
+
+
+def get_all_changed_files(path: str = ".") -> list[str]:
+    """Return all changed files: tracked (modified/deleted) + untracked + staged."""
+    tracked_modified = set(get_tracked_modified_files(path))
+    staged = set(get_staged_files(path))
+
+    # Also get untracked files
+    status_out, _, _ = _run_git("status", "--porcelain", cwd=path)
+    untracked = {
+        line[3:].strip()
+        for line in status_out.splitlines()
+        if line.startswith("??")
+    }
+
+    return sorted(tracked_modified | staged | untracked)
