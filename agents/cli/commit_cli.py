@@ -19,7 +19,11 @@ import platform
 import re
 import sys
 
-from ..agents import read_configuration, _format_host_for_url
+from ..agents import (
+    read_configuration,
+    _format_host_for_url,
+    _ONLINE_MODELS,
+)
 from ..backends import create_backend
 from ..git_utils import (
     is_git_repo,
@@ -32,32 +36,6 @@ from ..git_utils import (
 
 
 _BACKTICK = "`" * 5
-
-# Known online models mapped to their provider.
-# When -m specifies one of these, the provider is auto-detected and
-# the -o flag is not required.
-_ONLINE_MODELS: dict[str, str] = {
-    # Anthropic
-    "claude-3-5-sonnet-20240620": "anthropic",
-    "claude-3-5-sonnet-20241022": "anthropic",
-    "claude-3-7-sonnet-20250219": "anthropic",
-    "claude-sonnet-4-20250514": "anthropic",
-    "claude-sonnet-4-5-20250929": "anthropic",
-    "claude-sonnet-4-6": "anthropic",
-    "claude-opus-4-6": "anthropic",
-    "claude-fable-5": "anthropic",
-    "MiniMax-M2.5": "anthropic",
-    # OpenAI
-    "gpt-5.2": "openai",
-    "gpt-5.2-mini": "openai",
-    "gpt-5.3": "openai",
-    "gpt-5.3-mini": "openai",
-    "gpt-5.3-codex": "openai",
-    # Gemini
-    "gemini-3.1-pro-preview": "gemini",
-    "gemini-3.1-pro-preview-customtools": "gemini",
-    "gemini-3-flash-preview": "gemini",
-}
 
 
 def _extract_backtick_block(text: str) -> str | None:

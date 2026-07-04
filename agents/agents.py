@@ -65,6 +65,32 @@ from .ui import (
 script_dir = os.path.dirname(os.path.realpath(__file__))
 
 
+# Known online models mapped to their provider.  When -m specifies one
+# of these, the provider is auto-detected and the -o flag is not required.
+_ONLINE_MODELS: dict[str, str] = {
+    # Anthropic
+    "claude-3-5-sonnet-20240620": "anthropic",
+    "claude-3-5-sonnet-20241022": "anthropic",
+    "claude-3-7-sonnet-20250219": "anthropic",
+    "claude-sonnet-4-20250514": "anthropic",
+    "claude-sonnet-4-5-20250929": "anthropic",
+    "claude-sonnet-4-6": "anthropic",
+    "claude-opus-4-6": "anthropic",
+    "claude-fable-5": "anthropic",
+    "MiniMax-M2.5": "anthropic",
+    # OpenAI
+    "gpt-5.2": "openai",
+    "gpt-5.2-mini": "openai",
+    "gpt-5.3": "openai",
+    "gpt-5.3-mini": "openai",
+    "gpt-5.3-codex": "openai",
+    # Gemini
+    "gemini-3.1-pro-preview": "gemini",
+    "gemini-3.1-pro-preview-customtools": "gemini",
+    "gemini-3-flash-preview": "gemini",
+}
+
+
 # ── Message helpers ──────────────────────────────────────────────────
 
 def _text_block(text):
@@ -233,7 +259,7 @@ class Agent:
 
     def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
-                 session_id=None):
+                 session_id=None, model=None):
         """Initialize the Agent.
 
         Args:
@@ -245,6 +271,8 @@ class Agent:
             local_port: Port for the local API server (default 8000)
             local_host: Hostname for the local API server (default "localhost")
             session_id: Optional session ID for saving/restoring context
+            model: Explicit model name.  Online models are auto-detected
+                   (no -o needed).  Unknown names are treated as local.
         """
         if context is None:
             context = []
@@ -259,13 +287,25 @@ class Agent:
         # Determine provider from environment variable or config
         provider = os.environ.get("AGENT_MODEL_PROVIDER", configuration.get("provider", "anthropic"))
 
-        # Determine model from environment variable with provider-specific defaults
-        model_env = os.environ.get("AGENT_MODEL")
-        if local_model:
+        # ── Resolve model and provider ──────────────────────────────
+        # Priority: explicit -m flag > local_model (env/flag) > AGENT_MODEL > default
+        if model is not None:
+            # Explicit model via -m: auto-detect online vs local
+            detected_provider = _ONLINE_MODELS.get(model)
+            if detected_provider is not None:
+                # Known online model — auto-select provider
+                self.model_name = model
+                provider = detected_provider
+                base_url = configuration.get("base_url", None)
+            else:
+                # Unknown model name — treat as local
+                self.model_name = model
+                base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+        elif local_model:
             self.model_name = local_model
             base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
-        elif model_env:
-            self.model_name = model_env
+        elif os.environ.get("AGENT_MODEL"):
+            self.model_name = os.environ["AGENT_MODEL"]
             base_url = configuration.get("base_url", None)
         else:
             # Provider-specific defaults
@@ -700,7 +740,7 @@ class SessionNotFoundError(Exception):
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
-              local_host="localhost", nogit=False):
+              local_host="localhost", nogit=False, model=None):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -716,6 +756,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         local_port: Port for local API server
         local_host: Hostname for local API server (default "localhost")
         nogit: If True, skip git status check and auto-commit
+        model: Explicit model name.  Online models are auto-detected
+               (no -o needed).  Unknown names are treated as local.
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -740,7 +782,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
     agent = Agent(agent_definition, command, budget,
                   local_model=local_model, local_port=local_port,
-                  local_host=local_host, session_id=effective_sid)
+                  local_host=local_host, session_id=effective_sid,
+                  model=model)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -827,6 +870,10 @@ def main():
                              help='Use a local Anthropic-compatible API (also enabled automatically when LOCAL_MODEL env var is set)')
     local_group.add_argument('-o', '--online', action='store_true',
                              help='Use the online model provider (ignores LOCAL_MODEL env var)')
+    parser.add_argument('-m', '--model', type=str, default=None,
+                        help='Model to use. Online models are auto-detected '
+                             '(no -o needed). Unknown model names are treated '
+                             'as local.')
     parser.add_argument('-p', '--port', type=int, default=None,
                         help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
     parser.add_argument('-H', '--host', type=str, default=None,
@@ -874,12 +921,14 @@ def main():
             backticks = '`' * 5
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
-    # Resolve local vs online model:
+    # Resolve model selection:
+    # -m/--model takes highest priority — auto-detects online vs local
     # -o/--online forces online (ignores LOCAL_MODEL)
     # -l/--local forces local (requires LOCAL_MODEL)
-    # If neither, LOCAL_MODEL env var enables local mode automatically.
+    # If neither -m nor -o nor -l, LOCAL_MODEL env var enables local mode.
+    model_arg = args.model
     local_model = None
-    if not args.online:
+    if model_arg is None and not args.online:
         if args.local:
             local_model = os.environ.get('LOCAL_MODEL')
             if not local_model:
@@ -892,7 +941,8 @@ def main():
             args.agent, command, args.compute_budget,
             restore=args.restore, session_id=args.session,
             local_model=local_model, local_port=args.port,
-            local_host=args.host, nogit=args.nogit)
+            local_host=args.host, nogit=args.nogit,
+            model=model_arg)
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
