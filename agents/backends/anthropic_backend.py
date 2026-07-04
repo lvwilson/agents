@@ -22,7 +22,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00},
-        "claude-fable-5":              {"input_token_cost": 0.00, "output_token_cost": 0.00},
+        "claude-fable-5":              {"input_token_cost": 10.00, "output_token_cost": 50.00},
         "MiniMax-M2.5" :               {"input_token_cost": 0.3,  "output_token_cost": 1.2},
     }
 
