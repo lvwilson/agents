@@ -22,6 +22,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00},
+        "claude-fable-5":              {"input_token_cost": 0.00, "output_token_cost": 0.00},
         "MiniMax-M2.5" :               {"input_token_cost": 0.3,  "output_token_cost": 1.2},
     }
 
@@ -33,6 +34,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  "Claude Sonnet 4.5",
         "claude-sonnet-4-6":           "Claude Sonnet 4.6",
         "claude-opus-4-6":             "Claude Opus 4.6",
+        "claude-fable-5":              "Claude Fable 5",
     }
 
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -43,6 +45,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  200_000,
         "claude-sonnet-4-6":           200_000,
         "claude-opus-4-6":             200_000,
+        "claude-fable-5":              200_000,
         "MiniMax-M2.5":                200_000,
     }
 
