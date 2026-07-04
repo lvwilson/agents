@@ -33,16 +33,10 @@ _BACKTICK = "`" * 5
 
 
 def _extract_backtick_block(text: str) -> str | None:
-    """Extract the first backtick-wrapped block from *text*.
-
-    Tries 5 backticks first (agent convention), then falls back to 3
-    backticks (standard markdown) since LLMs often use that format.
-    """
-    for n in (5, 3):
-        fence = "`" * n
-        match = re.search(rf"{fence}([\s\S]*?){fence}", text)
-        if match:
-            return match.group(1).strip()
+    """Extract the first 5-backtick-wrapped block from *text*."""
+    match = re.search(rf"{_BACKTICK}([\s\S]*?){_BACKTICK}", text)
+    if match:
+        return match.group(1).strip()
     return None
 
 
@@ -89,7 +83,8 @@ def _auto_message(files: list[str]) -> str:
 COMMIT_SYSTEM_PROMPT = (
     "You are a git commit message generator. You receive a unified diff "
     "and must produce a single, concise commit message on one line. "
-    "Wrap the message in five backticks."
+    "Wrap the commit message in five backticks like in the following example."
+    "`````Commit message here`````"
 )
 
 
