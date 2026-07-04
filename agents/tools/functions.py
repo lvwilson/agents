@@ -94,10 +94,15 @@ def get_default_shell():
     return pwd.getpwuid(os.getuid()).pw_shell
 
 
-def run_console_command(command: str) -> str:
+def run_console_command(command: str, backtick_content: str = None) -> str:
     """Execute a console command via the user's shell and return its output.
 
-    :param command: The console command to execute.
+    Supports multi-line commands via the optional backtick_content parameter.
+    When backtick_content is provided, it is used as the command body,
+    allowing multi-line shell scripts to be passed cleanly.
+
+    :param command: The console command to execute (single-line).
+    :param backtick_content: Optional multi-line command from backtick block.
     :return: Combined stdout/stderr output from the command.
     """
     global _process
@@ -123,7 +128,12 @@ def run_console_command(command: str) -> str:
         output = []
         try:
             master_fd, slave_fd = pty.openpty()
-            stripped_command = _strip_quotes(command)
+            # Use backtick content as the command if provided (multi-line support)
+            if backtick_content is not None:
+                raw_command = backtick_content.strip()
+            else:
+                raw_command = command
+            stripped_command = _strip_quotes(raw_command)
             stripped_command = stripped_command.replace('\\"', '"')
 
             shell_path = get_default_shell()
