@@ -135,7 +135,7 @@ def _generate_commit_message(
         return _auto_message(files)
 
     # Truncate diff to avoid overwhelming the context window
-    max_diff = 30_000
+    max_diff = 300_000
     if len(diff) > max_diff:
         diff = (
             diff[:max_diff]
