@@ -9,6 +9,7 @@ Usage
     agent-commit --tracked              Commit tracked modified files
     agent-commit --all                  Commit all changed files (including untracked)
     agent-commit file1.py file2.py      Commit specific files
+    agent-commit -m claude-fable-5 --all  Use a specific model (auto-detects online/local)
     agent-commit -o --all               Use online model for commit message
 """
 
@@ -31,6 +32,32 @@ from ..git_utils import (
 
 
 _BACKTICK = "`" * 5
+
+# Known online models mapped to their provider.
+# When -m specifies one of these, the provider is auto-detected and
+# the -o flag is not required.
+_ONLINE_MODELS: dict[str, str] = {
+    # Anthropic
+    "claude-3-5-sonnet-20240620": "anthropic",
+    "claude-3-5-sonnet-20241022": "anthropic",
+    "claude-3-7-sonnet-20250219": "anthropic",
+    "claude-sonnet-4-20250514": "anthropic",
+    "claude-sonnet-4-5-20250929": "anthropic",
+    "claude-sonnet-4-6": "anthropic",
+    "claude-opus-4-6": "anthropic",
+    "claude-fable-5": "anthropic",
+    "MiniMax-M2.5": "anthropic",
+    # OpenAI
+    "gpt-5.2": "openai",
+    "gpt-5.2-mini": "openai",
+    "gpt-5.3": "openai",
+    "gpt-5.3-mini": "openai",
+    "gpt-5.3-codex": "openai",
+    # Gemini
+    "gemini-3.1-pro-preview": "gemini",
+    "gemini-3.1-pro-preview-customtools": "gemini",
+    "gemini-3-flash-preview": "gemini",
+}
 
 
 def _extract_backtick_block(text: str) -> str | None:
@@ -69,16 +96,37 @@ def _generate_commit_message(
     files: list[str],
     *,
     online: bool = False,
+    model: str | None = None,
     agent_config: str = "basic_agent.yaml",
 ) -> str:
     """Send the diff to the LLM and extract a commit message.
 
     Falls back to ``_auto_message()`` if the LLM is unavailable or
     produces no extractable message.
+
+    Parameters
+    ----------
+    model : str or None
+        If provided, the model name to use.  When the name is recognised
+        as an online model the provider is auto-detected and *online* is
+        ignored.  Otherwise the model is treated as local.
     """
     config = read_configuration(agent_config)
 
-    if online:
+    # ── Resolve model and provider ──────────────────────────────────
+    if model is not None:
+        # Explicit model via -m: auto-detect provider
+        provider = _ONLINE_MODELS.get(model)
+        if provider is not None:
+            # Known online model — use the detected provider
+            base_url = config.get("base_url", None)
+        else:
+            # Unknown model name — treat as local
+            local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
+            local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
+            provider = "anthropic"
+            base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+    elif online:
         provider = os.environ.get(
             "AGENT_MODEL_PROVIDER",
             config.get("provider", "anthropic"),
@@ -163,9 +211,18 @@ def main():
         help="Commit all changed files including untracked ones.",
     )
     parser.add_argument(
+        "-m", "--model",
+        type=str,
+        default=None,
+        help="Model to use for the commit message. Online models are "
+             "auto-detected (no -o needed). Unknown model names are "
+             "treated as local.",
+    )
+    parser.add_argument(
         "-o", "--online",
         action="store_true",
-        help="Use the online model provider for the commit message.",
+        help="Use the online model provider for the commit message "
+             "(ignored when -m specifies an online model).",
     )
     parser.add_argument(
         "files",
@@ -208,7 +265,9 @@ def main():
     diff, _, _ = _run_git("diff", "--cached", cwd=".")
 
     # Generate commit message from the diff
-    message = _generate_commit_message(diff, files, online=args.online)
+    message = _generate_commit_message(
+        diff, files, online=args.online, model=args.model
+    )
 
     # Commit (files are already staged)
     ok, err = git_add_and_commit(
