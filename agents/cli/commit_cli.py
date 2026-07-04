@@ -18,6 +18,7 @@ import platform
 import re
 import sys
 
+from ..agents import read_configuration, _format_host_for_url
 from ..backends import create_backend
 from ..git_utils import (
     is_git_repo,
@@ -38,31 +39,6 @@ def _extract_backtick_block(text: str) -> str | None:
     if match:
         return match.group(1).strip()
     return None
-
-
-_AGENTS_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".agents")
-
-
-def _read_configuration(configuration_name: str) -> dict:
-    """Read agent configuration from a YAML file."""
-    import yaml
-    user_config = os.path.join(_AGENTS_CONFIG_DIR, configuration_name)
-    if os.path.isfile(user_config):
-        with open(user_config, "r") as f:
-            return yaml.safe_load(f)
-    script_dir = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
-    config_path = os.path.join(script_dir, "..", configuration_name)
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
-
-
-def _format_host_for_url(host: str) -> str:
-    """Wrap an IPv6 address in brackets for use in URLs."""
-    if host.startswith("[") and host.endswith("]"):
-        return host
-    if ":" in host:
-        return f"[{host}]"
-    return host
 
 
 def _get_agent_author() -> tuple[str, str]:
@@ -100,7 +76,7 @@ def _generate_commit_message(
     Falls back to ``_auto_message()`` if the LLM is unavailable or
     produces no extractable message.
     """
-    config = _read_configuration(agent_config)
+    config = read_configuration(agent_config)
 
     if online:
         provider = os.environ.get(
