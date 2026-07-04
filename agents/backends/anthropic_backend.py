@@ -67,6 +67,9 @@ class AnthropicBackend(LLMBackend):
         "claude-opus-4-6",
     }
 
+    # Models that do not support the temperature parameter
+    NO_TEMPERATURE_MODELS = {"claude-fable-5"}
+
     # Default thinking configuration
     DEFAULT_THINKING_BUDGET = 8192
     MAX_OUTPUT_TOKENS = 64000
@@ -298,10 +301,11 @@ class AnthropicBackend(LLMBackend):
         stream_kwargs = dict(
             model=self.model,
             max_tokens=self.MAX_OUTPUT_TOKENS,
-            temperature=self.temperature,
             system=system_value,
             messages=api_messages,
         )
+        if self.model not in self.NO_TEMPERATURE_MODELS:
+            stream_kwargs["temperature"] = self.temperature
 
         # Send the thinking API parameter only to servers known to
         # support it (Anthropic API with a recognised model name).
