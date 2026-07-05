@@ -30,10 +30,11 @@ system_prompt: |
 
   Text manipulation Commands:
   read_file file_path
+  deep_read command_and_args - Wraps any other command, bypassing the 60K character output truncation. Example: deep_read read_file path/to/large_file.py
   write_file file_path `````text`````
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
-  run_console_command "arguments"
+  run_console_command "arguments" - Execute a shell command. For multi-line commands, use a backtick block.
 
   Note regarding commands: Only one command at a time can be extracted so only issue one command per response. Avoid queuing multiple commands.
 

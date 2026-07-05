@@ -22,6 +22,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00},
         "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00},
+        "claude-fable-5":              {"input_token_cost": 10.00, "output_token_cost": 50.00},
         "MiniMax-M2.5" :               {"input_token_cost": 0.3,  "output_token_cost": 1.2},
     }
 
@@ -33,6 +34,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  "Claude Sonnet 4.5",
         "claude-sonnet-4-6":           "Claude Sonnet 4.6",
         "claude-opus-4-6":             "Claude Opus 4.6",
+        "claude-fable-5":              "Claude Fable 5",
     }
 
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -43,6 +45,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  200_000,
         "claude-sonnet-4-6":           200_000,
         "claude-opus-4-6":             200_000,
+        "claude-fable-5":              200_000,
         "MiniMax-M2.5":                200_000,
     }
 
@@ -63,6 +66,9 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-6",
         "claude-opus-4-6",
     }
+
+    # Models that do not support the temperature parameter
+    NO_TEMPERATURE_MODELS = {"claude-fable-5"}
 
     # Default thinking configuration
     DEFAULT_THINKING_BUDGET = 8192
@@ -295,10 +301,11 @@ class AnthropicBackend(LLMBackend):
         stream_kwargs = dict(
             model=self.model,
             max_tokens=self.MAX_OUTPUT_TOKENS,
-            temperature=self.temperature,
             system=system_value,
             messages=api_messages,
         )
+        if self.model not in self.NO_TEMPERATURE_MODELS:
+            stream_kwargs["temperature"] = self.temperature
 
         # Send the thinking API parameter only to servers known to
         # support it (Anthropic API with a recognised model name).

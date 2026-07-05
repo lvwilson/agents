@@ -17,6 +17,7 @@ system_prompt: |
 
   Commands:
   read_file file_path
+  deep_read command_and_args - Wraps any other command, bypassing the 60K character output truncation. Example: deep_read read_file path/to/large_file.py
   write_file file_path `````text to replace entire file with`````
   append_to_file filepath `````text to append to file - suitable for logging.`````
   find_and_replace file_path `````command (see example)`````
@@ -27,8 +28,9 @@ system_prompt: |
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
-  run_console_command "arguments"
-  
+  run_console_command "arguments" - Execute a shell command. For multi-line commands, use a backtick block.
+  Example multi-line shell command: run_console_command followed by a backtick block containing the script.
+
   Web Search Command:
   web_search "query" [max_results] - Search the web using DuckDuckGo, returns titles, URLs, and snippets
 
@@ -54,7 +56,15 @@ system_prompt: |
 
   Note regarding backticks: to simplify syntax understanding they are presented on the same line but they must be on a new line under the command as in the examples.
   There must always be 5 backticks surrounding your commands, this is so that normal backticks can also be written as part of your output.
-  run_console_command "arguments"
+  run_console_command "arguments" - Execute a shell command. For multi-line commands, use a backtick block.
+
+  Memory / Notes Commands:
+  note append - Append text to project notes. Backtick block contains the text.
+  note replace - Replace text in notes. Backtick block uses SEARCH/REPLACE syntax (same as find_and_replace).
+  note rewrite - Replace all notes. Backtick block contains the new notes.
+
+  Notes are persisted across sessions in a per-folder memory store.
+  If notes grow too large (>10000 chars) you will be prompted to rewrite them more compactly.
 
   Sub-Agent Commands:
   create_agent name ["description"] - Create a sub-agent. Backtick block: the role/persona instructions (required).

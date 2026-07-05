@@ -26,6 +26,16 @@ from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
+from .git_utils import is_git_repo, check_git_clean, get_diff_summary, git_add_and_commit
+from .memory import (
+    format_memory_view,
+    add_episode,
+    get_episode_count,
+    squash_episodes,
+    notes_need_compact,
+    get_notes,
+    MAX_NOTES_CHARS,
+)
 from .session import (
     generate_session_id,
     validate_session_id,
@@ -53,6 +63,32 @@ from .ui import (
 
 # ── Global state ─────────────────────────────────────────────────────
 script_dir = os.path.dirname(os.path.realpath(__file__))
+
+
+# Known online models mapped to their provider.  When -m specifies one
+# of these, the provider is auto-detected and the -o flag is not required.
+_ONLINE_MODELS: dict[str, str] = {
+    # Anthropic
+    "claude-3-5-sonnet-20240620": "anthropic",
+    "claude-3-5-sonnet-20241022": "anthropic",
+    "claude-3-7-sonnet-20250219": "anthropic",
+    "claude-sonnet-4-20250514": "anthropic",
+    "claude-sonnet-4-5-20250929": "anthropic",
+    "claude-sonnet-4-6": "anthropic",
+    "claude-opus-4-6": "anthropic",
+    "claude-fable-5": "anthropic",
+    "MiniMax-M2.5": "anthropic",
+    # OpenAI
+    "gpt-5.2": "openai",
+    "gpt-5.2-mini": "openai",
+    "gpt-5.3": "openai",
+    "gpt-5.3-mini": "openai",
+    "gpt-5.3-codex": "openai",
+    # Gemini
+    "gemini-3.1-pro-preview": "gemini",
+    "gemini-3.1-pro-preview-customtools": "gemini",
+    "gemini-3-flash-preview": "gemini",
+}
 
 
 # ── Message helpers ──────────────────────────────────────────────────
@@ -184,8 +220,14 @@ def read_yaml_file(file_path):
     return data
 
 
+_AGENTS_CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".agents")
+
+
 def read_configuration(configuration_name):
     """Read agent configuration from a YAML file.
+
+    Looks for the config in ``~/.agents/`` first, then falls back to
+    the package directory (for backward compatibility).
 
     Args:
         configuration_name: Name of the configuration file
@@ -193,6 +235,12 @@ def read_configuration(configuration_name):
     Returns:
         dict: Configuration data
     """
+    # Prefer user-level config in ~/.agents/
+    user_config = os.path.join(_AGENTS_CONFIG_DIR, configuration_name)
+    if os.path.isfile(user_config):
+        return read_yaml_file(user_config)
+
+    # Fall back to package-level config
     script_dir = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
     config_path = os.path.join(script_dir, configuration_name)
     return read_yaml_file(config_path)
@@ -211,7 +259,7 @@ class Agent:
 
     def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
-                 session_id=None):
+                 session_id=None, model=None):
         """Initialize the Agent.
 
         Args:
@@ -223,6 +271,8 @@ class Agent:
             local_port: Port for the local API server (default 8000)
             local_host: Hostname for the local API server (default "localhost")
             session_id: Optional session ID for saving/restoring context
+            model: Explicit model name.  Online models are auto-detected
+                   (no -o needed).  Unknown names are treated as local.
         """
         if context is None:
             context = []
@@ -237,13 +287,25 @@ class Agent:
         # Determine provider from environment variable or config
         provider = os.environ.get("AGENT_MODEL_PROVIDER", configuration.get("provider", "anthropic"))
 
-        # Determine model from environment variable with provider-specific defaults
-        model_env = os.environ.get("AGENT_MODEL")
-        if local_model:
+        # ── Resolve model and provider ──────────────────────────────
+        # Priority: explicit -m flag > local_model (env/flag) > AGENT_MODEL > default
+        if model is not None:
+            # Explicit model via -m: auto-detect online vs local
+            detected_provider = _ONLINE_MODELS.get(model)
+            if detected_provider is not None:
+                # Known online model — auto-select provider
+                self.model_name = model
+                provider = detected_provider
+                base_url = configuration.get("base_url", None)
+            else:
+                # Unknown model name — treat as local
+                self.model_name = model
+                base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+        elif local_model:
             self.model_name = local_model
             base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
-        elif model_env:
-            self.model_name = model_env
+        elif os.environ.get("AGENT_MODEL"):
+            self.model_name = os.environ["AGENT_MODEL"]
             base_url = configuration.get("base_url", None)
         else:
             # Provider-specific defaults
@@ -282,6 +344,19 @@ class Agent:
         self.system_prompt += f"\nSystem Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
         self.system_prompt += f"\nWorking Directory: {os.getcwd()}"
         self.system_prompt += f"\nUser: {os.environ.get('USER', 'unknown')}"
+
+        # Append folder memory (episodes + notes) after the system prompt.
+        # This gives the agent context about previous work in this project.
+        memory_view = format_memory_view()
+        if memory_view:
+            self.system_prompt += f"\n\n{memory_view}"
+
+        # Check if notes need compacting and add a hint to the prompt.
+        if notes_need_compact():
+            self.system_prompt += (
+                f"\n\nNOTE: Your project notes have exceeded {MAX_NOTES_CHARS} characters. "
+                "Please use note_rewrite to make them more compact (approximately half their current size)."
+            )
 
         # Set remaining attributes
         self.overbudget_prompt = configuration["overbudget"]
@@ -532,6 +607,26 @@ class Agent:
                       cost_without_cache=self.client.cost_without_cache,
                       context_window_tokens=self.client.context_window_size)
 
+    def _request_episode_summary(self) -> str | None:
+        """Ask the LLM for a short episode summary of this session.
+
+        Returns the summary string, or None if budget was exhausted.
+        """
+        if self.client.cost > self.compute_budget:
+            return None
+        feedback = (
+            "Feedback: Session complete. Please provide a brief summary "
+            "(2-4 sentences) of what you accomplished in this session. "
+            "Focus on key decisions, changes made, and any outstanding work. "
+            "Do not include any commands — just the summary text."
+        )
+        self.context.append(_form_message("user", feedback))
+        self._iterate()
+        for msg in reversed(self.context):
+            if msg["role"] == "assistant":
+                return msg["content"][0]["text"].strip()
+        return None
+
     def request_completion(self) -> bool:
         """Ask the LLM for a completion block if none was found.
 
@@ -552,6 +647,30 @@ class Agent:
         self.context.append(_form_message("user", feedback))
         self._iterate()
         return True
+
+    def request_commit_message(self) -> str | None:
+        """Ask the LLM for a git commit message.
+
+        Appends a feedback message requesting a commit message and
+        runs one more iteration.
+
+        Returns the commit message string, or None if budget was
+        exhausted or no message was produced.
+        """
+        if self.client.cost > self.compute_budget:
+            return None
+        feedback = (
+            "Feedback: Your work has changed files in the repository. "
+            "Please provide a concise git commit message on a single line. "
+            "Do not include any other content or commands — just the commit message."
+        )
+        self.context.append(_form_message("user", feedback))
+        self._iterate()
+        # Extract the last assistant response as the commit message
+        for msg in reversed(self.context):
+            if msg["role"] == "assistant":
+                return msg["content"][0]["text"].strip()
+        return None
 
     def save_context(self):
         """Save conversation context and token state to a JSON session file.
@@ -621,7 +740,7 @@ class SessionNotFoundError(Exception):
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
-              local_host="localhost"):
+              local_host="localhost", nogit=False, model=None):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -636,6 +755,9 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         local_model: Local model name (if using local API)
         local_port: Port for local API server
         local_host: Hostname for local API server (default "localhost")
+        nogit: If True, skip git status check and auto-commit
+        model: Explicit model name.  Online models are auto-detected
+               (no -o needed).  Unknown names are treated as local.
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -660,7 +782,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
     agent = Agent(agent_definition, command, budget,
                   local_model=local_model, local_port=local_port,
-                  local_host=local_host, session_id=effective_sid)
+                  local_host=local_host, session_id=effective_sid,
+                  model=model)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -685,6 +808,47 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     if save:
         agent.save_context()
 
+    # ── Episode memory ──────────────────────────────────────────────
+    # Prompt the agent for a short episode summary, store it, then
+    # squash old episodes if the threshold has been reached.
+    try:
+        episode_summary = agent._request_episode_summary()
+        if episode_summary:
+            add_episode(episode_summary, session_id=agent.session_id)
+
+            # After storing, check if we need to squash old episodes.
+            if get_episode_count() >= 8:
+                squash_prompt = read_configuration("memory.yaml").get(
+                    "squash_prompt",
+                    "Compress these episode summaries into one concise paragraph.",
+                )
+
+                def _squash(input_text: str) -> str:
+                    ctx = [_form_message("user", squash_prompt + "\n\n" + input_text)]
+                    return agent.client.generate_response(
+                        "You are a concise summarizer.", ctx
+                    )
+
+                squash_episodes(_squash)
+    except Exception as e:
+        logging.warning("Episode memory update failed: %s", e)
+
+    # Auto-commit if there are uncommitted changes and git is enabled
+    if not nogit and is_git_repo():
+        clean, _ = check_git_clean()
+        if not clean:
+            commit_msg = agent.request_commit_message()
+            if commit_msg:
+                # Take only the first line as the commit message
+                first_line = commit_msg.split("\n")[0].strip()
+                author_name = agent.model_name
+                author_email = f"agent@{platform.node()}"
+                ok, err = git_add_and_commit(first_line, author_name=author_name, author_email=author_email)
+                if ok:
+                    safe_console_print(f"  ⚡  Auto-committed: [green]{first_line}[/] [dim]by {author_name} <{author_email}>[/]", style="info")
+                else:
+                    safe_console_print(f"  ⚠  Auto-commit failed: {err}", style="warning")
+
     return completion, success, agent.session_id
 
 
@@ -701,16 +865,32 @@ def main():
                         help='Restore the latest session for the current directory')
     parser.add_argument('-s', '--session', type=str, default=None,
                         help='Session ID to use or resume (max 10 alphanumeric chars)')
-    parser.add_argument('-l', '--local', action='store_true',
-                        help='Use a local Anthropic-compatible API (requires LOCAL_MODEL environment variable)')
+    local_group = parser.add_mutually_exclusive_group()
+    local_group.add_argument('-l', '--local', action='store_true',
+                             help='Use a local Anthropic-compatible API (also enabled automatically when LOCAL_MODEL env var is set)')
+    local_group.add_argument('-o', '--online', action='store_true',
+                             help='Use the online model provider (ignores LOCAL_MODEL env var)')
+    parser.add_argument('-m', '--model', type=str, default=None,
+                        help='Model to use. Online models are auto-detected '
+                             '(no -o needed). Unknown model names are treated '
+                             'as local.')
     parser.add_argument('-p', '--port', type=int, default=None,
                         help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
     parser.add_argument('-H', '--host', type=str, default=None,
                         help='Hostname for the LLM API server (default: LOCAL_LLM_HOST or localhost)')
     parser.add_argument('-a', '--agent', type=str, default='basic_agent.yaml',
                         help='Agent definition YAML file (default: basic_agent.yaml)')
+    parser.add_argument('--nogit', action='store_true',
+                        help='Disable git status check and auto-commit')
 
     args = parser.parse_args()
+
+    # Pre-flight: ensure git working tree is clean (unless --nogit)
+    if not args.nogit and is_git_repo():
+        clean, msg = check_git_clean()
+        if not clean:
+            print_error(msg, None)
+            sys.exit(1)
 
     # Resolve --port default: CLI flag > LOCAL_LLM_PORT env var > 8000
     if args.port is None:
@@ -741,19 +921,28 @@ def main():
             backticks = '`' * 5
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
-    # Resolve local model: only use local mode when -l is explicitly passed
+    # Resolve model selection:
+    # -m/--model takes highest priority — auto-detects online vs local
+    # -o/--online forces online (ignores LOCAL_MODEL)
+    # -l/--local forces local (requires LOCAL_MODEL)
+    # If neither -m nor -o nor -l, LOCAL_MODEL env var enables local mode.
+    model_arg = args.model
     local_model = None
-    if args.local:
-        local_model = os.environ.get('LOCAL_MODEL')
-        if not local_model:
-            parser.error('--local requires the LOCAL_MODEL environment variable to be set')
+    if model_arg is None and not args.online:
+        if args.local:
+            local_model = os.environ.get('LOCAL_MODEL')
+            if not local_model:
+                parser.error('--local requires the LOCAL_MODEL environment variable to be set')
+        else:
+            local_model = os.environ.get('LOCAL_MODEL')
 
     try:
         completion, success, sid = run_agent(
             args.agent, command, args.compute_budget,
             restore=args.restore, session_id=args.session,
             local_model=local_model, local_port=args.port,
-            local_host=args.host)
+            local_host=args.host, nogit=args.nogit,
+            model=model_arg)
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

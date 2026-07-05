@@ -118,6 +118,20 @@ The agent supports a three-tier interrupt system so you can pause, redirect, or 
 
 In feedback mode you can type new instructions to redirect the agent, or press Ctrl+C to exit. Partial LLM output from an interrupted stream is preserved in the conversation context so nothing is lost.
 
+### Git Integration
+
+When the working directory is a Git repository, the harness provides two safety features:
+
+**Pre-flight clean check** — Before the agent starts, the harness runs `git status --porcelain` to verify the working tree is clean. If there are uncommitted changes, the agent is **not started** and a descriptive error is printed. This prevents the agent from running on top of uncommitted work.
+
+**Auto-commit** — When the agent finishes and there are uncommitted changes, the harness automatically asks the LLM for a commit message, stages all changes, and commits them. The agent itself is not made aware of this process — it simply sees a feedback prompt asking for a commit message.
+
+To disable both features, pass `--nogit`:
+
+    agents --nogit "Refactor the parser module"
+
+If the directory is **not** a Git repository, the harness behaves normally with no git operations attempted.
+
 ### Local and Remote Models
 
 You can run against OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000`.

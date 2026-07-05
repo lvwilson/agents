@@ -25,10 +25,13 @@ mcp = ["mcp>=1.0.0"]
 all = ["black>=24.0", "requests", "openai", "google-genai", "playwright", "ddgs", "mcp>=1.0.0"]
 
 [project.scripts]
-agents = "agents.agents:main"
+agents       = "agents.agents:main"
+agent-docs   = "agents.tools.docs:main"
+agent-memory = "agents.cli.memory_cli:main"
+agent-commit = "agents.cli.commit_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agents*"]
 
 [tool.setuptools.package-data]
-agents = ["*.yaml"]
+agents = ["*.yaml", "cli/*.yaml"]

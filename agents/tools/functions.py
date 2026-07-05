@@ -19,6 +19,7 @@ import threading
 from . import code_scissors
 from . import codemanipulator
 from . import findreplace
+from .docs import docs
 
 
 # ── Agent pool (sub-agents) ────────────────────────────────────────
@@ -93,10 +94,15 @@ def get_default_shell():
     return pwd.getpwuid(os.getuid()).pw_shell
 
 
-def run_console_command(command: str) -> str:
+def run_console_command(command: str, backtick_content: str = None) -> str:
     """Execute a console command via the user's shell and return its output.
 
-    :param command: The console command to execute.
+    Supports multi-line commands via the optional backtick_content parameter.
+    When backtick_content is provided, it is used as the command body,
+    allowing multi-line shell scripts to be passed cleanly.
+
+    :param command: The console command to execute (single-line).
+    :param backtick_content: Optional multi-line command from backtick block.
     :return: Combined stdout/stderr output from the command.
     """
     global _process
@@ -122,7 +128,12 @@ def run_console_command(command: str) -> str:
         output = []
         try:
             master_fd, slave_fd = pty.openpty()
-            stripped_command = _strip_quotes(command)
+            # Use backtick content as the command if provided (multi-line support)
+            if backtick_content is not None:
+                raw_command = backtick_content.strip()
+            else:
+                raw_command = command
+            stripped_command = _strip_quotes(raw_command)
             stripped_command = stripped_command.replace('\\"', '"')
 
             shell_path = get_default_shell()
@@ -699,3 +710,35 @@ def mcp_call(*args):
     except Exception as e:
         return f"Error calling {server_name}/{tool_name}: {e}"
 
+# ── Memory / Notes tools ─────────────────────────────────────────────
+
+def note(*args):
+    from .. import memory as _mem
+    if not args:
+        return "Error: note requires a subcommand (append, replace, rewrite)."
+    subcmd = args[0].lower()
+    if subcmd == "append":
+        text = args[-1] if len(args) >= 2 else None
+        if not text:
+            return "Error: note append requires text in a backtick block."
+        updated = _mem.note_append(text)
+        return f"Notes appended. Current notes ({len(updated)} chars):\n{updated}"
+    elif subcmd == "replace":
+        block = args[-1] if len(args) >= 2 else None
+        if not block:
+            return "Error: note replace requires a SEARCH/REPLACE block."
+        current = _mem.get_notes()
+        try:
+            updated = findreplace.find_replace(current, block)
+        except ValueError as e:
+            return f"Error: {e}"
+        _mem.note_rewrite(updated)
+        return f"Notes updated. Current notes ({len(updated)} chars):\n{updated}"
+    elif subcmd == "rewrite":
+        new_content = args[-1] if len(args) >= 2 else None
+        if not new_content:
+            return "Error: note rewrite requires new notes in a backtick block."
+        updated = _mem.note_rewrite(new_content)
+        return f"Notes rewritten. Current notes ({len(updated)} chars):\n{updated}"
+    else:
+        return f"Error: unknown note subcommand '{subcmd}'. Use: append, replace, rewrite."
