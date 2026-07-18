@@ -363,9 +363,11 @@ def notes_need_compact() -> bool:
 # ── View / rendering ────────────────────────────────────────────────
 
 def format_memory_view() -> str:
-    """Return the memory as the LLM will see it (appended to system prompt).
+    """Return the memory as the LLM will see it (inside the context guard).
 
-    This is also what ``agent-memory view`` displays to the human.
+    The context guard is prepended to the first user message at session
+    start (the system prompt is kept immutable for prompt-cache
+    stability).  This is also what ``agent-memory view`` displays.
     """
     parts: list[str] = []
 

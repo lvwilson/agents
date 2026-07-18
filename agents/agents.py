@@ -249,6 +249,51 @@ def read_configuration(configuration_name):
     return read_yaml_file(config_path)
 
 
+# ── Context guard ─────────────────────────────────────────────────────
+
+#: Header line identifying the context-guard block inside the first
+#: user message of a session.
+CONTEXT_GUARD_HEADER = "=== Context Guard (session start) ==="
+
+
+def build_context_guard():
+    """Build the context guard prepended to the first user message.
+
+    The guard carries everything that used to live in the system prompt
+    — timestamp, working directory, platform, shell, user — plus the
+    folder-memory snapshot (episodes + notes) and the notes-compact hint.
+    It is captured exactly once per session: on resume the original
+    guard is kept untouched (see :meth:`Agent.load_context`) so the
+    Anthropic prompt-cache prefix is never invalidated.
+    """
+    lines = [
+        CONTEXT_GUARD_HEADER,
+        f"System Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"Working Directory: {os.getcwd()}",
+        f"Operating System: {platform.platform()}",
+        f"Shell: {get_default_shell()}",
+        f"User: {os.environ.get('USER', 'unknown')}",
+        "Note: these values were captured when this session started and "
+        "may be stale after a resume; re-check them with a console "
+        "command if they matter.",
+    ]
+
+    memory_view = format_memory_view()
+    if memory_view:
+        lines.append("")
+        lines.append(memory_view)
+
+    if notes_need_compact():
+        lines.append("")
+        lines.append(
+            f"NOTE: Your project notes have exceeded {MAX_NOTES_CHARS} characters. "
+            "Please use the `note rewrite` command to make them more compact "
+            "(approximately half their current size)."
+        )
+
+    return "\n".join(lines)
+
+
 class Agent:
     """An autonomous agent powered by an LLM backend.
 
@@ -336,37 +381,28 @@ class Agent:
             **backend_kwargs,
         )
 
-        # Set up system prompt with environment information.
-        # NOTE: This prompt is persisted in save_context() and restored on
-        # resume so that the prompt-cache prefix stays identical.  Any
-        # dynamic content (e.g. the timestamp below) would otherwise
-        # invalidate the entire Anthropic prompt cache on resumption.
+        # Set up the system prompt.  It is intentionally IMMUTABLE: no
+        # timestamps, no working directory, no memory snapshot — nothing
+        # that varies between runs.  Its Anthropic prompt-cache entry
+        # therefore stays valid across every session in every project,
+        # and resume never needs to choose between freshness and cache
+        # validity.  All per-run environment context lives in the
+        # context guard (below) instead.
         self.system_prompt = configuration["system_prompt"]
-        os_info = platform.platform()
-        self.system_prompt += f"\nOperating System: {os_info}"
-        self.system_prompt += f"\nShell: {get_default_shell()}"
-        self.system_prompt += f"\nSystem Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-        self.system_prompt += f"\nWorking Directory: {os.getcwd()}"
-        self.system_prompt += f"\nUser: {os.environ.get('USER', 'unknown')}"
 
-        # Append folder memory (episodes + notes) after the system prompt.
-        # This gives the agent context about previous work in this project.
-        memory_view = format_memory_view()
-        if memory_view:
-            self.system_prompt += f"\n\n{memory_view}"
-
-        # Check if notes need compacting and add a hint to the prompt.
-        if notes_need_compact():
-            self.system_prompt += (
-                f"\n\nNOTE: Your project notes have exceeded {MAX_NOTES_CHARS} characters. "
-                "Please use the `note rewrite` command to make them more compact (approximately half their current size)."
-            )
+        # Build the context guard — a snapshot of the environment and
+        # folder memory captured once, at session start — and prepend it
+        # to the first user message.  Memory is thus loaded on every new
+        # session, while the volatile text sits in the cheap front of
+        # the conversation rather than in the cached system prefix.
+        context_guard = build_context_guard()
 
         # Set remaining attributes
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
-        self.context.append(_form_message("user", self.task))
+        first_message = f"{context_guard}\n\n{task}" if context_guard else task
+        self.context.append(_form_message("user", first_message))
         self.compute_budget = compute_budget
         self.iterations = 0
         self.start_time = None
@@ -735,6 +771,25 @@ class Agent:
         # Adopt the loaded session's ID so subsequent saves go to the
         # same file.
         self.session_id = sid
+
+        # Resume is deliberately cache-pure: the restored context is
+        # only ever appended to, never mutated.  In particular the
+        # original context guard in the first user message (timestamp,
+        # working directory, memory snapshot) is left in place so the
+        # cached prefix stays byte-identical.  Memory is NOT re-loaded
+        # here — only the replaced task message at the tail differs
+        # from the previous run.
+        first = self.context[0] if self.context else None
+        if (
+            first is not None
+            and first["role"] == "user"
+            and first.get("content")
+            and CONTEXT_GUARD_HEADER not in first["content"][0].get("text", "")
+        ):
+            logging.info(
+                "load_context: resumed session predates the context-guard "
+                "format; leaving context untouched (cache-pure resume)."
+            )
 
         # Remove the last user message and replace with current task
         if self.context and self.context[-1]["role"] == "user":
