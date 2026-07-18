@@ -88,6 +88,8 @@ _ONLINE_MODELS: dict[str, str] = {
     "gemini-3.1-pro-preview": "gemini",
     "gemini-3.1-pro-preview-customtools": "gemini",
     "gemini-3-flash-preview": "gemini",
+    # Kimi
+    "kimi-k3": "kimi",
 }
 
 
@@ -313,6 +315,7 @@ class Agent:
                 "anthropic": "claude-opus-4-6",
                 "openai": "gpt-5.3-codex",
                 "gemini": "gemini-3.1-pro-preview",
+                "kimi": "kimi-k3",
             }
             self.model_name = provider_defaults.get(provider, "claude-opus-4-6")
             base_url = configuration.get("base_url", None)

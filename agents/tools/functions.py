@@ -128,13 +128,18 @@ def run_console_command(command: str, backtick_content: str = None) -> str:
         output = []
         try:
             master_fd, slave_fd = pty.openpty()
-            # Use backtick content as the command if provided (multi-line support)
+            # Use backtick content as the command if provided (multi-line
+            # support).  Backtick content is passed to the shell verbatim
+            # (no quote stripping/unescaping) so scripts are not mangled.
             if backtick_content is not None:
-                raw_command = backtick_content.strip()
+                stripped_command = backtick_content.strip()
+            elif "\n" in command:
+                # Multi-line script arrived via the positional argument
+                # (e.g. backtick block with no inline command) — verbatim.
+                stripped_command = command.strip()
             else:
-                raw_command = command
-            stripped_command = _strip_quotes(raw_command)
-            stripped_command = stripped_command.replace('\\"', '"')
+                stripped_command = _strip_quotes(command)
+                stripped_command = stripped_command.replace('\\"', '"')
 
             shell_path = get_default_shell()
             popen_kwargs = dict(
