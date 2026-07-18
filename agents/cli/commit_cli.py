@@ -46,9 +46,13 @@ def _extract_backtick_block(text: str) -> str | None:
     return None
 
 
-def _get_agent_author() -> tuple[str, str]:
-    """Return (author_name, author_email) matching the agent's identity."""
-    model = os.environ.get("LOCAL_MODEL", os.environ.get("AGENT_MODEL", "agent"))
+def _get_agent_author(model: str | None = None) -> tuple[str, str]:
+    """Return (author_name, author_email) matching the agent's identity.
+
+    *model* is the resolved model from the ``-m`` flag; when omitted the
+    identity falls back to LOCAL_MODEL/AGENT_MODEL env vars.
+    """
+    model = model or os.environ.get("LOCAL_MODEL", os.environ.get("AGENT_MODEL", "agent"))
     hostname = platform.node()
     return model, f"agent@{hostname}"
 
@@ -116,6 +120,7 @@ def _generate_commit_message(
                 "anthropic": "claude-opus-4-6",
                 "openai": "gpt-5.3-codex",
                 "gemini": "gemini-3.1-pro-preview",
+                "kimi": "kimi-k3",
             }
             model = provider_defaults.get(provider, "claude-opus-4-6")
     else:
@@ -214,11 +219,13 @@ def main():
         print("Error: not a git repository.", file=sys.stderr)
         sys.exit(1)
 
-    author_name, author_email = _get_agent_author()
+    author_name, author_email = _get_agent_author(args.model)
+
+    pre_staged = set(get_staged_files("."))
 
     if args.tracked:
         files = sorted(
-            set(get_tracked_modified_files(".")) | set(get_staged_files("."))
+            set(get_tracked_modified_files(".")) | pre_staged
         )
         if not files:
             print("No tracked files with changes to commit.")
@@ -231,16 +238,31 @@ def main():
     else:
         if not args.files:
             parser.error("Provide --tracked, --all, or specific file paths.")
-        files = args.files
+        files = sorted(set(args.files))
+
+    # Refuse to sweep unrelated pre-staged changes into the commit.
+    # (--all intentionally includes everything already staged.)
+    if not args.all:
+        outside = sorted(pre_staged - set(files))
+        if outside:
+            print(
+                "Error: the index contains pre-staged files outside the "
+                "requested commit set:\n  " + "\n  ".join(outside)
+                + "\nUnstage them first, or use --all to commit everything.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Stage files first so we can get the diff
-    _, stderr, rc = _run_git("add", *files, cwd=".")
+    # ('--' guards against filenames that start with a dash)
+    _, stderr, rc = _run_git("add", "--", *files, cwd=".")
     if rc != 0:
         print(f"git add failed: {stderr}", file=sys.stderr)
         sys.exit(1)
 
-    # Get the staged diff for the LLM
-    diff, _, _ = _run_git("diff", "--cached", cwd=".")
+    # Get the staged diff for the LLM (restricted to the target files
+    # so the message isn't polluted by unrelated staged changes)
+    diff, _, _ = _run_git("diff", "--cached", "--", *files, cwd=".")
 
     # Generate commit message from the diff
     message = _generate_commit_message(

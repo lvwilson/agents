@@ -51,6 +51,8 @@ class AgentPool:
 
     def __init__(self):
         self._agents: dict[str, SubAgentConfig] = {}
+        # Model to propagate to sub-agents (set by the parent Agent).
+        self.model: str | None = None
 
     def create(
         self,
@@ -139,7 +141,20 @@ class AgentPool:
             full_task,
             "-b", str(budget),
             "-a", "sub_agent.yaml",
+            # The parent's pre-flight clean-tree check would abort the
+            # sub-agent immediately (the parent has almost always dirtied
+            # the tree by delegation time), and the sub-agent must not
+            # auto-commit its own changes into the parent's work.
+            "--nogit",
         ]
+
+        # Propagate the parent's model when it's a known online model —
+        # ``-m`` auto-detects the provider.  Local-model selection
+        # already propagates via the inherited LOCAL_MODEL env var.
+        if self.model:
+            from .agents import _ONLINE_MODELS
+            if self.model in _ONLINE_MODELS:
+                cmd += ["-m", self.model]
 
         try:
             result = subprocess.run(

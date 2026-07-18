@@ -60,10 +60,14 @@ def check_git_clean(path: str = ".") -> tuple[bool, str]:
     for line in status_lines:
         if line.startswith("??"):
             untracked.append(line[3:].strip())
-        elif line[0] in ("M", "A", "D", "R", "C"):
-            staged.append(line[3:].strip())
-        elif line[1] in ("M", "A", "D", "R", "C"):
-            unstaged.append(line[3:].strip())
+            continue
+        x, y = line[0], line[1]
+        fname = line[3:].strip()
+        # A file can appear in both index (x) and worktree (y), e.g. "MM"
+        if x in ("M", "A", "D", "R", "C"):
+            staged.append(fname)
+        if y in ("M", "A", "D", "R", "C"):
+            unstaged.append(fname)
 
     parts: list[str] = []
     if staged:
@@ -130,16 +134,20 @@ def git_add_and_commit(
     Returns (success, error_message).
     """
     if files:
-        _, stderr, rc = _run_git("add", *files, cwd=path)
+        # '--' guards against filenames that start with a dash
+        _, stderr, rc = _run_git("add", "--", *files, cwd=path)
     else:
         _, stderr, rc = _run_git("add", "-A", cwd=path)
     if rc != 0:
         return False, f"git add failed: {stderr}"
 
-    # Build commit args
+    # Build commit args.  When a file list is given, commit with a
+    # pathspec so unrelated pre-staged changes are not swept in.
     commit_args = ["commit", "-m", message]
     if author_name:
         commit_args += ["--author", f"{author_name} <{author_email}>"]
+    if files:
+        commit_args += ["--"] + list(files)
 
     # Commit
     _, stderr, rc = _run_git(*commit_args, cwd=path)

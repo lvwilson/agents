@@ -26,7 +26,7 @@ from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
-from .git_utils import is_git_repo, check_git_clean, get_diff_summary, git_add_and_commit
+from .git_utils import is_git_repo, check_git_clean, git_add_and_commit
 from .memory import (
     format_memory_view,
     add_episode,
@@ -35,6 +35,7 @@ from .memory import (
     notes_need_compact,
     get_notes,
     MAX_NOTES_CHARS,
+    EPISODES_BEFORE_SQUASH,
 )
 from .session import (
     generate_session_id,
@@ -358,7 +359,7 @@ class Agent:
         if notes_need_compact():
             self.system_prompt += (
                 f"\n\nNOTE: Your project notes have exceeded {MAX_NOTES_CHARS} characters. "
-                "Please use note_rewrite to make them more compact (approximately half their current size)."
+                "Please use the `note rewrite` command to make them more compact (approximately half their current size)."
             )
 
         # Set remaining attributes
@@ -403,6 +404,7 @@ class Agent:
         from .agent_pool import AgentPool
 
         self._agent_pool = AgentPool()
+        self._agent_pool.model = self.model_name
         _register_pool(self._agent_pool)
 
     def _iterate(self):
@@ -624,7 +626,11 @@ class Agent:
             "Do not include any commands — just the summary text."
         )
         self.context.append(_form_message("user", feedback))
-        self._iterate()
+        try:
+            self._iterate()
+        except Exception as e:
+            logging.warning("Episode-summary iteration failed: %s", e)
+            return None
         for msg in reversed(self.context):
             if msg["role"] == "assistant":
                 return msg["content"][0]["text"].strip()
@@ -668,11 +674,21 @@ class Agent:
             "Do not include any other content or commands — just the commit message."
         )
         self.context.append(_form_message("user", feedback))
-        self._iterate()
+        try:
+            self._iterate()
+        except Exception as e:
+            # A failure here (loop detection, retry exhaustion) must not
+            # crash the CLI after the session completed successfully.
+            logging.warning("Commit-message iteration failed: %s", e)
+            return None
         # Extract the last assistant response as the commit message
         for msg in reversed(self.context):
             if msg["role"] == "assistant":
-                return msg["content"][0]["text"].strip()
+                raw = msg["content"][0]["text"].strip()
+                # Strip markdown fences the model may wrap the message in
+                raw = re.sub(r"`{3,5}", "", raw).strip()
+                first_line = raw.split("\n")[0].strip()
+                return first_line or None
         return None
 
     def save_context(self):
@@ -820,7 +836,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
             add_episode(episode_summary, session_id=agent.session_id)
 
             # After storing, check if we need to squash old episodes.
-            if get_episode_count() >= 8:
+            if get_episode_count() >= EPISODES_BEFORE_SQUASH:
                 squash_prompt = read_configuration("memory.yaml").get(
                     "squash_prompt",
                     "Compress these episode summaries into one concise paragraph.",
@@ -842,7 +858,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         if not clean:
             commit_msg = agent.request_commit_message()
             if commit_msg:
-                # Take only the first line as the commit message
+                # First line only; fences already stripped above
                 first_line = commit_msg.split("\n")[0].strip()
                 author_name = agent.model_name
                 author_email = f"agent@{platform.node()}"
