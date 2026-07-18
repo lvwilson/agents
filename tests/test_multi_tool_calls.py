@@ -312,9 +312,9 @@ class TestProcessContentMultipleCommands(unittest.TestCase):
 
 
 class TestFindReplaceMultipleBlocks(unittest.TestCase):
-    """findreplace.find_replace() uses re.search (single match), so only
-    the first SEARCH/REPLACE block in a command string is processed.
-    Additional blocks are silently ignored."""
+    """findreplace.find_replace() applies every SEARCH/REPLACE block
+    in a command string, validates each search text, and applies
+    edits right-to-left."""
 
     def setUp(self):
         self.source = (
@@ -341,9 +341,8 @@ class TestFindReplaceMultipleBlocks(unittest.TestCase):
         self.assertIn("return 2", result)
         self.assertIn("return 3", result)
 
-    def test_multiple_blocks_only_first_processed(self):
-        """LEGITIMATE FAILURE: With two SEARCH/REPLACE blocks in one
-        command string, only the first block is applied."""
+    def test_multiple_blocks_all_processed(self):
+        """All SEARCH/REPLACE blocks in one command string are applied."""
         command = (
             "<<<<<<< SEARCH\n"
             "    return 1\n"
@@ -358,10 +357,10 @@ class TestFindReplaceMultipleBlocks(unittest.TestCase):
         )
         result = find_replace(self.source, command)
         self.assertIn("return 10", result)
-        self.assertIn("return 2", result)
-        self.assertNotIn("return 20", result)
+        self.assertIn("return 20", result)
+        self.assertIn("return 3", result)
 
-    def test_three_blocks_only_first_processed(self):
+    def test_three_blocks_all_processed(self):
         """All three SEARCH/REPLACE blocks in one command are applied."""
         command = (
             "<<<<<<< SEARCH\n"
