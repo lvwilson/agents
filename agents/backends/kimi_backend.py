@@ -182,12 +182,19 @@ class KimiBackend(LLMBackend):
                 reasoning_effort="max",
                 max_completion_tokens=131_072,
                 stream=True,
+                stream_options={"include_usage": True},
             )
 
             collected_text = ""
             usage = None
 
             for event in stream:
+                # Usage arrives on a dedicated final chunk whose choices
+                # list is empty, so capture it before the guard below.
+                chunk_usage = getattr(event, "usage", None)
+                if chunk_usage:
+                    usage = chunk_usage
+
                 choices = getattr(event, "choices", None)
                 if not choices:
                     continue
@@ -195,20 +202,15 @@ class KimiBackend(LLMBackend):
                 if delta is None:
                     continue
 
-                # Kimi streams reasoning_content separately
-                reasoning = getattr(delta, "reasoning_content", None)
-                if reasoning:
-                    sh.on_stream_token(reasoning)
+                # NOTE: ``reasoning_content`` (thinking tokens) is
+                # intentionally ignored — never streamed and never
+                # collected — so thinking cannot leak into the content
+                # stream or the conversation context.
 
                 text = getattr(delta, "content", None)
                 if text:
                     sh.on_stream_token(text)
                     collected_text += text
-
-                # Usage may appear on the final chunk
-                chunk_usage = getattr(event, "usage", None)
-                if chunk_usage:
-                    usage = chunk_usage
 
             return collected_text, usage
 
