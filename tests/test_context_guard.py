@@ -7,6 +7,7 @@ Resuming a session must not mutate the restored prefix in any way —
 the new task is appended at the tail and nothing is re-injected.
 """
 
+import copy
 import os
 import sys
 import unittest
@@ -151,6 +152,99 @@ class TestCachePureResume(unittest.TestCase):
         # Still no guard injected — prefix left exactly as saved.
         self.assertEqual(agent.context[0], legacy_first)
         self.assertEqual(agent.context[-1]["content"][0]["text"], "new task")
+
+
+class TestResumePayloadPurity(unittest.TestCase):
+    """After a save→resume round-trip, the payload sent to the backend must
+    be byte-identical to the pre-resume payload up to the new task appended
+    at the tail.  This is the concrete condition that lets the Anthropic
+    prompt cache hit; if anything earlier shifts, the whole prefix is
+    re-processed at full cost.
+    """
+
+    def _run_one_iteration(self, agent):
+        """Drive exactly one _iterate() with a canned backend reply."""
+        agent.client.generate_response = mock.Mock(return_value="ok, working on it")
+        agent._iterate()
+
+    def test_resume_payload_identical_up_to_new_task(self):
+        # ── Session 1: build a real multi-turn context ──────────────
+        agent = _make_agent(task="original task")
+        saved_prompt = agent.system_prompt
+        # Simulate a couple of turns: assistant reply + user command result.
+        agent.context.append({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "step one complete"}],
+        })
+        agent.context.append({
+            "role": "user",
+            "content": [{"type": "text", "text": "Command output: file contents here"}],
+        })
+        # load_context pops the trailing user message (the last command
+        # result) and replaces it with the new task — so the invariant
+        # prefix is everything BEFORE that trailing user message.
+        pre_resume_prefix = copy.deepcopy(agent.context[:-1])
+
+        # ── Save, then resume into a fresh Agent with a new task ────
+        state = {"context": copy.deepcopy(agent.context),
+                 "system_prompt": saved_prompt}
+        resumed = _make_agent(task="resume task")
+        with mock.patch.object(agents_module, "load_session", return_value=state):
+            resumed.load_context("sidX")
+
+        # ── Capture the payload sent on the first post-resume call ──
+        payloads = []
+        resumed.client.generate_response = mock.Mock(
+            side_effect=lambda sp, ctx: payloads.append((sp, copy.deepcopy(ctx))) or "resumed work"
+        )
+        resumed._iterate()
+
+        self.assertTrue(payloads, "no payload captured on resume")
+        system_prompt, context = payloads[0]
+
+        # System prompt must be byte-identical.
+        self.assertEqual(system_prompt, saved_prompt)
+
+        # Every message before the appended task must equal the saved
+        # prefix exactly — same count, same order, same content.
+        self.assertEqual(context[:-1], pre_resume_prefix,
+                         "context prefix changed across resume")
+        # The only difference is the new task appended at the tail.
+        self.assertEqual(context[-1]["role"], "user")
+        self.assertEqual(context[-1]["content"][0]["text"], "resume task")
+        self.assertEqual(len(context), len(pre_resume_prefix) + 1)
+
+    def test_resume_does_not_inject_new_guard_or_memory(self):
+        """On resume, the only new message is the bare task at the tail.
+        No fresh guard is injected and no fresh memory leaks into the
+        restored conversation."""
+        saved_context = [
+            {"role": "user", "content": [{"type": "text", "text":
+                CONTEXT_GUARD_HEADER + "\nWorking Directory: /old\n\norig task"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "did work"}]},
+            {"role": "user", "content": [{"type": "text", "text": "End."}]},
+        ]
+        state = {"context": copy.deepcopy(saved_context),
+                 "system_prompt": "IMMUTABLE SYSTEM PROMPT"}
+        # The new process sees DIFFERENT fresh memory — it must not leak in.
+        resumed = _make_agent(task="resume task", memory_view="FRESH MEMORY XYZ")
+        with mock.patch.object(agents_module, "load_session", return_value=state):
+            resumed.load_context("sidY")
+
+        # Prefix (everything before the popped trailing user msg) restored
+        # byte-identically.
+        self.assertEqual(resumed.context[:-1], saved_context[:-1])
+        # Exactly one message appended — the bare new task.
+        self.assertEqual(len(resumed.context), len(saved_context))
+        self.assertEqual(resumed.context[-1]["content"][0]["text"], "resume task")
+        # Fresh memory from the new process never entered the context.
+        joined = " ".join(m["content"][0].get("text", "") for m in resumed.context)
+        self.assertNotIn("FRESH MEMORY XYZ", joined)
+        # Only the original (first) message carries a guard header.
+        guard_msgs = [m for m in resumed.context
+                      if CONTEXT_GUARD_HEADER in m["content"][0].get("text", "")]
+        self.assertEqual(len(guard_msgs), 1)
+        self.assertIs(guard_msgs[0], resumed.context[0])
 
 
 if __name__ == "__main__":
