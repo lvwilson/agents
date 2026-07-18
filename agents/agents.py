@@ -177,6 +177,40 @@ def extract_completion(text, backticks=5) -> Optional[CompletionResult]:
     return CompletionResult(text="Task could not be verified.", success=False)
 
 
+def _find_latest_completion(context, scan_limit=5):
+    """Find the most recent completion block in the conversation.
+
+    Scans assistant messages from newest to oldest and returns the
+    first successfully parsed :class:`CompletionResult`.  Only
+    assistant messages are inspected, so completion-looking text inside
+    user messages (e.g. tool output echoing these instructions) is
+    never mistaken for the agent's own completion.
+
+    Args:
+        context: Conversation in the internal message format.
+        scan_limit: Maximum number of assistant messages to inspect.
+
+    Returns:
+        CompletionResult, or None if no recent assistant message
+        contains a valid completion block.
+    """
+    checked = 0
+    for message in reversed(context):
+        if message.get("role") != "assistant":
+            continue
+        checked += 1
+        if checked > scan_limit:
+            break
+        try:
+            text = message["content"][0]["text"]
+        except (KeyError, IndexError, TypeError):
+            continue
+        result = extract_completion(text)
+        if result is not None:
+            return result
+    return None
+
+
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
     print_sigterm()
@@ -863,18 +897,20 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         agent.load_context(restore_sid)
 
     agent.run()
-    completion_result = None
-    if len(agent.context) > 2:
-        final_content = agent.context[-2]['content'][0]['text']
-        completion_result = extract_completion(final_content)
-        if completion_result is None:
-            # Give the agent one more chance to provide a completion block.
-            try:
-                if agent.request_completion() and len(agent.context) > 2:
-                    final_content = agent.context[-2]['content'][0]['text']
-                    completion_result = extract_completion(final_content)
-            except Exception as e:
-                logging.warning("Completion-retry iteration failed: %s", e)
+    # The completion block is not guaranteed to sit at context[-2]:
+    # if the agent's final reply ends with a Worklog line or a trailing
+    # Command, the loop runs one more iteration and the completion
+    # slides one message earlier.  Scan recent assistant messages
+    # newest-to-oldest so a correctly written completion is never
+    # reported as a failure merely because of its position.
+    completion_result = _find_latest_completion(agent.context)
+    if completion_result is None and len(agent.context) > 2:
+        # Give the agent one more chance to provide a completion block.
+        try:
+            if agent.request_completion():
+                completion_result = _find_latest_completion(agent.context)
+        except Exception as e:
+            logging.warning("Completion-retry iteration failed: %s", e)
 
     completion = completion_result.text if completion_result else "Error"
     success = completion_result.success if completion_result else False
