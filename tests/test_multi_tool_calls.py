@@ -362,8 +362,7 @@ class TestFindReplaceMultipleBlocks(unittest.TestCase):
         self.assertNotIn("return 20", result)
 
     def test_three_blocks_only_first_processed(self):
-        """LEGITIMATE FAILURE: With three SEARCH/REPLACE blocks, only
-        the first is applied. The second and third are silently ignored."""
+        """All three SEARCH/REPLACE blocks in one command are applied."""
         command = (
             "<<<<<<< SEARCH\n"
             "    return 1\n"
