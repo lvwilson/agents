@@ -91,6 +91,17 @@ class InterruptedResponse(Exception):
         super().__init__(f"Response interrupted ({len(partial_text)} chars received)")
 
 
+class EmptyResponseError(Exception):
+    """Raised when the model returns no text content at all.
+
+    This is distinct from a network/transient failure: the API call
+    succeeded but the assistant turn contained only reasoning/thinking
+    tokens (or nothing).  The agent loop catches this and feeds it back
+    to the model as an instruction to produce visible output, rather
+    than treating the blank turn as a request to end the session.
+    """
+
+
 class LLMBackend(ABC):
     """Unified interface for large-language-model providers.
 

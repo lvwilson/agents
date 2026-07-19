@@ -44,7 +44,7 @@ from .session import (
     save_session,
     load_session,
 )
-from .llm_backend import InterruptedResponse
+from .llm_backend import InterruptedResponse, EmptyResponseError
 from .ui import (
     RichStreamHandler,
     print_banner,
@@ -469,6 +469,7 @@ class Agent:
         self.start_time = None
         self._last_assistant_response = None
         self._loop_count = 0
+        self._empty_response_count = 0
 
         # Register the LLM backend for the summarize tool so that
         # the tools layer can make one-shot LLM calls without a circular import.
@@ -519,8 +520,35 @@ class Agent:
         )
         self.iterations += 1
 
-        # Generate response from Claude
-        response = self.client.generate_response(self.system_prompt, self.context)
+        # Generate response from the LLM.  A blank turn (only thinking
+        # tokens, no visible text) must NOT end the session — the model
+        # simply failed to emit content, usually because it wrote its
+        # commands into a reasoning block.  Feed the failure back so it
+        # can retry; only give up after several consecutive blanks.
+        try:
+            response = self.client.generate_response(self.system_prompt, self.context)
+        except EmptyResponseError:
+            self._empty_response_count += 1
+            if self._empty_response_count >= 3:
+                raise
+            print_error(
+                f"Model returned no text content "
+                f"(attempt {self._empty_response_count}/3). Injecting feedback.",
+                None,
+            )
+            empty_feedback = (
+                "Feedback: Your previous response contained no text content — "
+                "it was completely blank. A blank response is interpreted as a "
+                "request to end the session, which is almost certainly not what "
+                "you intended. This usually happens when commands or replies "
+                "are written into reasoning/thinking instead of visible output. "
+                "You must always produce visible text, and commands must be "
+                "issued as 'Command: name args' lines in your visible response — "
+                "never inside thinking. Please respond to your task now."
+            )
+            self.context.append(_form_message("user", empty_feedback))
+            return True
+        self._empty_response_count = 0
 
         if not response:
             return False

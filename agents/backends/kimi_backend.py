@@ -18,7 +18,13 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
+from ..llm_backend import (
+    LLMBackend,
+    StreamHandler,
+    EmptyResponseError,
+    RATE_LIMIT,
+    TRANSIENT,
+)
 
 
 class KimiBackend(LLMBackend):
@@ -187,6 +193,7 @@ class KimiBackend(LLMBackend):
 
             collected_text = ""
             usage = None
+            reasoning_started = False
 
             for event in stream:
                 # Usage arrives on a dedicated final chunk whose choices
@@ -202,15 +209,28 @@ class KimiBackend(LLMBackend):
                 if delta is None:
                     continue
 
-                # NOTE: ``reasoning_content`` (thinking tokens) is
-                # intentionally ignored — never streamed and never
-                # collected — so thinking cannot leak into the content
-                # stream or the conversation context.
+                # ``reasoning_content`` (thinking tokens) is streamed to
+                # the UI via the reasoning hooks so it renders dimmed,
+                # but it is never collected — thinking cannot leak into
+                # the content stream or the conversation context.
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    if not reasoning_started:
+                        sh.on_stream_reasoning_start()
+                        reasoning_started = True
+                    sh.on_stream_reasoning_token(reasoning)
 
                 text = getattr(delta, "content", None)
                 if text:
+                    if reasoning_started:
+                        sh.on_stream_reasoning_end()
+                        reasoning_started = False
                     sh.on_stream_token(text)
                     collected_text += text
+
+            # Clean up if the stream ended during a reasoning block.
+            if reasoning_started:
+                sh.on_stream_reasoning_end()
 
             return collected_text, usage
 
@@ -257,6 +277,6 @@ class KimiBackend(LLMBackend):
         )
 
         if not text:
-            raise Exception("No text content found in model response")
+            raise EmptyResponseError("No text content found in model response")
 
         return text

@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
+from ..llm_backend import (
+    LLMBackend,
+    StreamHandler,
+    EmptyResponseError,
+    RATE_LIMIT,
+    TRANSIENT,
+)
 
 
 class OpenAIBackend(LLMBackend):
@@ -255,6 +261,6 @@ class OpenAIBackend(LLMBackend):
         )
 
         if not text:
-            raise Exception("No text content found in model response")
+            raise EmptyResponseError("No text content found in model response")
 
         return text
