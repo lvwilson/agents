@@ -80,40 +80,6 @@ def check_git_clean(path: str = ".") -> tuple[bool, str]:
     return False, "Git working tree is not clean (" + "; ".join(parts) + ")"
 
 
-def get_diff_summary(path: str = ".") -> str:
-    """Return a concise summary of all uncommitted changes.
-
-    Includes staged, unstaged, and untracked files with their diffs.
-    """
-    stdout, _, rc = _run_git("diff", "--stat", cwd=path)
-    if rc != 0:
-        return ""
-
-    # Also get the full diff
-    diff_out, _, _ = _run_git("diff", cwd=path)
-
-    # Get staged diff
-    staged_diff, _, _ = _run_git("diff", "--cached", cwd=path)
-
-    # Get untracked files
-    status_out, _, _ = _run_git("status", "--porcelain", cwd=path)
-    untracked = [
-        line[3:].strip()
-        for line in status_out.splitlines()
-        if line.startswith("??")
-    ]
-
-    parts: list[str] = []
-    if staged_diff:
-        parts.append("=== Staged changes ===\n" + staged_diff)
-    if diff_out:
-        parts.append("=== Unstaged changes ===\n" + diff_out)
-    if untracked:
-        parts.append("=== Untracked files ===\n" + "\n".join(untracked))
-
-    return "\n\n".join(parts) if parts else stdout
-
-
 def git_add_and_commit(
     message: str,
     path: str = ".",

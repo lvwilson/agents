@@ -24,6 +24,7 @@ from ..llm_backend import (
     EmptyResponseError,
     RATE_LIMIT,
     TRANSIENT,
+    merge_consecutive_messages,
 )
 
 
@@ -80,7 +81,13 @@ class KimiBackend(LLMBackend):
 
     @staticmethod
     def _format_messages(system_prompt: str, context: list[dict]) -> list[dict]:
-        """Convert internal message format to OpenAI chat-completions input."""
+        """Convert internal message format to OpenAI chat-completions input.
+
+        Consecutive same-role messages (produced by harness feedback
+        injections) are merged first so strict servers that enforce
+        role alternation don't reject the payload.
+        """
+        context = merge_consecutive_messages(context)
 
         def _to_content(parts: list[dict]) -> str | list[dict]:
             """Handle both text-only and multimodal content."""

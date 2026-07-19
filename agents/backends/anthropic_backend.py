@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
+from ..llm_backend import (
+    LLMBackend,
+    StreamHandler,
+    RATE_LIMIT,
+    TRANSIENT,
+    merge_consecutive_messages,
+)
 
 
 class AnthropicBackend(LLMBackend):
@@ -237,7 +243,12 @@ class AnthropicBackend(LLMBackend):
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "…"}}
 
         Text blocks and cache_control annotations are passed through unchanged.
+
+        Consecutive same-role messages (produced by harness feedback
+        injections) are merged first so strict Anthropic-compatible
+        servers that enforce role alternation don't reject the payload.
         """
+        context = merge_consecutive_messages(context)
         messages = []
         for msg in context:
             parts = msg.get("content", [])

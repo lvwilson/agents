@@ -15,6 +15,7 @@ from ..llm_backend import (
     EmptyResponseError,
     RATE_LIMIT,
     TRANSIENT,
+    merge_consecutive_messages,
 )
 
 
@@ -106,7 +107,12 @@ class GeminiBackend(LLMBackend):
         Gemini format::
 
             [Content(role="user"|"model", parts=[Part(text="…"), …]), …]
+
+        Consecutive same-role messages (produced by harness feedback
+        injections) are merged first so the strict role-alternation
+        enforced by the Gemini API doesn't reject the payload.
         """
+        context = merge_consecutive_messages(context)
         types = self._types
         contents = []
         for msg in context:

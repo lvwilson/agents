@@ -86,7 +86,6 @@ TEXT_EXTENSIONS = {
     ".ini", ".cfg", ".conf", ".properties", ".prop",
     ".env", ".envrc",
     ".log",
-    ".pickle", ".pkl",  # text-ish when small
     # Docs / markup
     ".md", ".mdx", ".markdown",
     ".rst", ".txt",

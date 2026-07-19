@@ -79,6 +79,39 @@ RATE_LIMIT = "rate_limit"
 TRANSIENT = "transient"
 
 
+def merge_consecutive_messages(context: list[dict]) -> list[dict]:
+    """Merge consecutive messages that share the same role.
+
+    Several harness feedback paths (empty-response feedback, the
+    no-output reminder, episode-summary and commit-message requests,
+    user feedback mode) append a ``user`` message immediately after a
+    previous ``user`` (tool-results) message.  Strict chat APIs
+    (OpenAI, some Anthropic-compatible local servers) reject payloads
+    with consecutive same-role messages with a 400 error.
+
+    This normalization pass merges such runs into a single message by
+    concatenating their content part lists, preserving order.  Image
+    and text parts are kept as separate content blocks, which every
+    supported backend accepts.  The input is not mutated; a new list
+    of (shallow-copied) messages is returned.
+
+    Args:
+        context: Conversation in the internal message format.
+
+    Returns:
+        A new list of messages with no consecutive same-role pairs.
+    """
+    merged: list[dict] = []
+    for msg in context:
+        role = msg.get("role")
+        parts = list(msg.get("content", []) or [])
+        if merged and merged[-1].get("role") == role:
+            merged[-1]["content"] = merged[-1]["content"] + parts
+        else:
+            merged.append({"role": role, "content": parts})
+    return merged
+
+
 class InterruptedResponse(Exception):
     """Raised when a streaming response is interrupted by the user.
 

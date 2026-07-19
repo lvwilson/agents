@@ -26,7 +26,12 @@ from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
-from .git_utils import is_git_repo, check_git_clean, git_add_and_commit
+from .git_utils import (
+    is_git_repo,
+    check_git_clean,
+    git_add_and_commit,
+    get_all_changed_files,
+)
 from .memory import (
     format_memory_view,
     add_episode,
@@ -92,6 +97,24 @@ _ONLINE_MODELS: dict[str, str] = {
     # Kimi
     "kimi-k3": "kimi",
 }
+
+
+def resolve_model(model, local_host="localhost", local_port=8000):
+    """Resolve an explicit ``-m`` model name to ``(provider, base_url)``.
+
+    Shared by :class:`Agent` and ``agent-commit`` so the two never
+    drift apart.
+
+    Returns:
+        * Known online model → ``(its_provider, None)`` — the caller
+          falls back to the configured ``base_url``.
+        * Unknown name → ``(None, local_base_url)`` — the caller keeps
+          its current provider and points at the local server.
+    """
+    provider = _ONLINE_MODELS.get(model)
+    if provider is not None:
+        return provider, None
+    return None, f"http://{_format_host_for_url(local_host)}:{local_port}"
 
 
 # ── Message helpers ──────────────────────────────────────────────────
@@ -211,6 +234,54 @@ def _find_latest_completion(context, scan_limit=5):
     return None
 
 
+#: Line prefixes the agent is trained to emit as turn scaffolding.
+#: None of these can be a real commit message, so they are skipped
+#: when falling back to a plain-line extraction.
+_COMMIT_MSG_SKIP_PREFIXES = (
+    "detailed thoughts",
+    "task:",
+    "end conditions:",
+    "worklog:",
+    "feedback:",
+    "command:",
+)
+
+
+def _extract_commit_message(text):
+    """Extract a commit message from the model's raw reply.
+
+    The agent is trained to open every turn with scaffolding such as
+    ``Detailed thoughts and Plans: …``, so the first raw line is almost
+    never the commit message — this once produced a real commit titled
+    "Detailed thoughts and Plans: Provide a concise git commit
+    message…", permanently poisoning the repo's history.
+
+    Extraction order:
+    1. First 5-backtick fenced block (what the prompt requests).
+    2. First 3-backtick fenced block (common model habit).
+    3. First non-empty line that isn't recognised scaffolding
+       (``Detailed thoughts``, ``Task:``, ``Worklog:``, …).
+
+    Returns the single-line message, or None if nothing usable found.
+    """
+    for fence in ("`" * 5, "`" * 3):
+        match = re.search(
+            re.escape(fence) + r"([\s\S]*?)" + re.escape(fence), text
+        )
+        if match:
+            block = match.group(1).strip()
+            if block:
+                return block.split("\n")[0].strip() or None
+    for line in text.split("\n"):
+        stripped = line.strip().strip("`").strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith(_COMMIT_MSG_SKIP_PREFIXES):
+            continue
+        return stripped
+    return None
+
+
 #: Reminder injected (at most once per incident) when a model response
 #: contains neither a command nor a completion block — an almost
 #: certainly unintended session end.  It explains both output
@@ -320,10 +391,6 @@ TASK_HEADER = "=== Task ==="
 #: Header line identifying a tool-results user message.
 TOOL_RESULTS_HEADER = "=== Tool Results ==="
 
-#: Header line identifying the example first-response block appended to
-#: the first user message of a new session.
-EXAMPLE_HEADER = "=== Example First Response ==="
-
 #: Example opening turn appended to the first user message of every new
 #: session.  Written exactly as the agent would write it, it acts as a
 #: few-shot anchor: before planning, explore the directory structure.
@@ -361,15 +428,6 @@ def build_tool_results_message(command_response):
     as if the human typed it.  The guard makes the origin explicit.
     """
     return f"{TOOL_RESULTS_HEADER}\n{command_response}\n=== End Tool Results ==="
-
-
-def build_example_message():
-    """Wrap :data:`EXAMPLE_FIRST_RESPONSE` in an explicit example block.
-
-    The labelled wrapper makes clear the block is an example of an
-    agent response, not a real conversation turn.
-    """
-    return f"{EXAMPLE_HEADER}\n{EXAMPLE_FIRST_RESPONSE}\n=== End Example ==="
 
 
 def build_context_guard():
@@ -455,16 +513,17 @@ class Agent:
         # Priority: explicit -m flag > local_model (env/flag) > AGENT_MODEL > default
         if model is not None:
             # Explicit model via -m: auto-detect online vs local
-            detected_provider = _ONLINE_MODELS.get(model)
+            detected_provider, local_base_url = resolve_model(
+                model, local_host, local_port
+            )
+            self.model_name = model
             if detected_provider is not None:
                 # Known online model — auto-select provider
-                self.model_name = model
                 provider = detected_provider
                 base_url = configuration.get("base_url", None)
             else:
                 # Unknown model name — treat as local
-                self.model_name = model
-                base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+                base_url = local_base_url
         elif local_model:
             self.model_name = local_model
             base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
@@ -874,27 +933,6 @@ class Agent:
                 return msg["content"][0]["text"].strip()
         return None
 
-    def request_completion(self) -> bool:
-        """Ask the LLM for a completion block if none was found.
-
-        Appends a feedback message requesting a completion block and
-        runs one more iteration.
-
-        Returns True if an iteration was performed, False if budget
-        was already exhausted.
-        """
-        if self.client.cost > self.compute_budget:
-            return False
-        feedback = (
-            "Feedback: No completion block was found in your response. "
-            "Please provide a completion block with "
-            "'Completion: <description>' and 'Success: True/False' "
-            "at the end of your response."
-        )
-        self.context.append(_form_message("user", feedback))
-        self._iterate()
-        return True
-
     def request_commit_message(self) -> str | None:
         """Ask the LLM for a git commit message.
 
@@ -906,10 +944,15 @@ class Agent:
         """
         if self.client.cost > self.compute_budget:
             return None
+        fence = "`" * 5
         feedback = (
             "Feedback: Your work has changed files in the repository. "
-            "Please provide a concise git commit message on a single line. "
-            "Do not include any other content or commands — just the commit message."
+            "Please provide a concise git commit message on a single "
+            "line, wrapped in five backticks on their own lines like "
+            f"this:\n{fence}\nyour commit message here\n{fence}\n"
+            "Do not include any other content or commands — no Task, "
+            "Worklog, or Detailed thoughts lines, just the fenced "
+            "commit message."
         )
         self.context.append(_form_message("user", feedback))
         try:
@@ -919,14 +962,13 @@ class Agent:
             # crash the CLI after the session completed successfully.
             logging.warning("Commit-message iteration failed: %s", e)
             return None
-        # Extract the last assistant response as the commit message
+        # Extract the commit message from the last assistant response.
+        # The raw first line cannot be trusted (the model opens every
+        # turn with scaffolding), so use fenced-block extraction with a
+        # scaffolding-skipping fallback.
         for msg in reversed(self.context):
             if msg["role"] == "assistant":
-                raw = msg["content"][0]["text"].strip()
-                # Strip markdown fences the model may wrap the message in
-                raw = re.sub(r"`{3,5}", "", raw).strip()
-                first_line = raw.split("\n")[0].strip()
-                return first_line or None
+                return _extract_commit_message(msg["content"][0]["text"])
         return None
 
     def save_context(self):
@@ -1111,17 +1153,29 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     if not nogit and is_git_repo():
         clean, _ = check_git_clean()
         if not clean:
+            # Capture the file list up-front so the commit is not an
+            # unreviewable black box (risk: git add -A sweeps everything).
+            changed_files = get_all_changed_files()
             commit_msg = agent.request_commit_message()
             if commit_msg:
-                # First line only; fences already stripped above
-                first_line = commit_msg.split("\n")[0].strip()
                 author_name = agent.model_name
                 author_email = f"agent@{platform.node()}"
-                ok, err = git_add_and_commit(first_line, author_name=author_name, author_email=author_email)
+                ok, err = git_add_and_commit(commit_msg, author_name=author_name, author_email=author_email)
                 if ok:
-                    safe_console_print(f"  ⚡  Auto-committed: [green]{first_line}[/] [dim]by {author_name} <{author_email}>[/]", style="info")
+                    safe_console_print(f"  ⚡  Auto-committed: [green]{commit_msg}[/] [dim]by {author_name} <{author_email}>[/]", style="info")
+                    for changed in changed_files:
+                        safe_console_print(f"      {changed}", style="dim")
                 else:
                     safe_console_print(f"  ⚠  Auto-commit failed: {err}", style="warning")
+                    safe_console_print("  ⚠  Uncommitted changes remain in the working tree.", style="warning")
+            else:
+                # The user must be told — a silent skip leaves dirty files
+                # they may never notice (e.g. budget exhausted, LLM down).
+                safe_console_print(
+                    "  ⚠  Uncommitted changes remain in the working tree "
+                    "(no commit message was generated).",
+                    style="warning",
+                )
 
     return completion, success, agent.session_id
 

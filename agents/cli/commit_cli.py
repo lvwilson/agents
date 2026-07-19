@@ -22,7 +22,7 @@ import sys
 from ..agents import (
     read_configuration,
     _format_host_for_url,
-    _ONLINE_MODELS,
+    resolve_model,
 )
 from ..backends import create_backend
 from ..git_utils import (
@@ -68,8 +68,8 @@ def _auto_message(files: list[str]) -> str:
 COMMIT_SYSTEM_PROMPT = (
     "You are a git commit message generator. You receive a unified diff "
     "and must produce a single, concise commit message on one line. "
-    "Wrap the commit message in five backticks like in the following example."
-    "`````Commit message here`````"
+    "Wrap the commit message in five backticks like in the following "
+    f"example.\n{_BACKTICK}Commit message here{_BACKTICK}"
 )
 
 
@@ -97,17 +97,21 @@ def _generate_commit_message(
 
     # ── Resolve model and provider ──────────────────────────────────
     if model is not None:
-        # Explicit model via -m: auto-detect provider
-        provider = _ONLINE_MODELS.get(model)
-        if provider is not None:
+        # Explicit model via -m: auto-detect provider (shared helper so
+        # this never drifts from the Agent's own resolution).
+        local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
+        local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
+        detected_provider, local_base_url = resolve_model(
+            model, local_host, local_port
+        )
+        if detected_provider is not None:
             # Known online model — use the detected provider
+            provider = detected_provider
             base_url = config.get("base_url", None)
         else:
             # Unknown model name — treat as local
-            local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
-            local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
             provider = "anthropic"
-            base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+            base_url = local_base_url
     elif online:
         provider = os.environ.get(
             "AGENT_MODEL_PROVIDER",

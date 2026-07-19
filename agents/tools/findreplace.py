@@ -14,30 +14,32 @@ def find_replace(source: str, command: str) -> str:
     ---------
     * All blocks are extracted with ``re.finditer`` (previously only the
       first block was applied — a silent data-loss bug).
-    * Each block's search text must occur in the *original* source, and
-      at most once, otherwise a ``ValueError`` is raised and **no**
-      replacement is performed (all-or-nothing).  A search text that
-      silently matches nothing used to pass as a "successful" no-op,
-      hiding agent mistakes.
-    * Replacements are applied right-to-left by match position so that
-      earlier matches keep their offsets and overlapping blocks are
-      handled deterministically.
+    * Blocks are applied **sequentially**, in command order: each
+      block's search text is looked up in the result of applying all
+      preceding blocks.  This lets a later block match text introduced
+      by an earlier block's replacement — the natural way to express a
+      chain of dependent edits.
+    * Each block's search text must occur exactly once in the running
+      text, otherwise a ``ValueError`` is raised and **no** replacement
+      is returned (all-or-nothing: the caller's original string is
+      never mutated, so a raised error leaves the file untouched).
     """
     blocks = list(_BLOCK_PATTERN.finditer(command))
     if not blocks:
         raise ValueError("Command format is incorrect or missing SEARCH and REPLACE sections.")
 
-    # Collect (start, end, replacement) edits against the original source.
-    edits = []
+    result = source
     for i, block in enumerate(blocks, start=1):
         search_text = block.group(1).strip()
         replace_text = block.group(2).strip()
 
-        count = source.count(search_text)
+        count = result.count(search_text)
         if count == 0:
             raise ValueError(
-                f"Block {i}: SEARCH text not found in source. "
-                f"Check indentation/exact content. First line: "
+                f"Block {i}: SEARCH text not found. "
+                f"(Blocks apply sequentially — the text may have been "
+                f"altered by an earlier block, or indentation/exact "
+                f"content may be wrong.) First line: "
                 f"{search_text.splitlines()[0][:80] if search_text else '(empty)'!r}"
             )
         if count > 1:
@@ -47,11 +49,6 @@ def find_replace(source: str, command: str) -> str:
                 f"{search_text.splitlines()[0][:80]!r}"
             )
 
-        start = source.index(search_text)
-        edits.append((start, start + len(search_text), replace_text))
-
-    # Apply right-to-left so earlier positions stay valid.
-    result = source
-    for start, end, replace_text in sorted(edits, key=lambda e: e[0], reverse=True):
-        result = result[:start] + replace_text + result[end:]
+        start = result.index(search_text)
+        result = result[:start] + replace_text + result[start + len(search_text):]
     return result

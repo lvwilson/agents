@@ -20,11 +20,9 @@ from agents.agents import (  # noqa: E402
     Agent,
     CONTEXT_GUARD_HEADER,
     EXAMPLE_FIRST_RESPONSE,
-    EXAMPLE_HEADER,
     TASK_HEADER,
     TOOL_RESULTS_HEADER,
     build_context_guard,
-    build_example_message,
     build_task_message,
     build_tool_results_message,
 )
@@ -83,7 +81,6 @@ class TestContextGuardOnNewSession(unittest.TestCase):
         self.assertIn("=== Folder Memory: Episodes ===", text)
         # First user message contains only guard + task (no example —
         # the example is now a real seeded turn, not static text).
-        self.assertNotIn(EXAMPLE_HEADER, text)
         self.assertIn(TASK_HEADER, text)
         self.assertIn(build_task_message("do the thing"), text)
 
@@ -271,12 +268,6 @@ class TestExampleFirstResponse(unittest.TestCase):
     accurate directory snapshot in context.  On resume the seed is a
     no-op — it is already part of the saved context."""
 
-    def test_build_example_message_wraps_in_example_block(self):
-        framed = build_example_message()
-        self.assertTrue(framed.startswith(EXAMPLE_HEADER))
-        self.assertTrue(framed.endswith("=== End Example ==="))
-        self.assertIn(EXAMPLE_FIRST_RESPONSE, framed)
-
     def test_seed_appends_assistant_and_tool_results(self):
         agent = _make_agent(task="do the thing")
         with mock.patch(
@@ -297,9 +288,11 @@ class TestExampleFirstResponse(unittest.TestCase):
         """The first user message contains only guard + task, no example."""
         agent = _make_agent(task="survey the repo")
         text = agent.context[0]["content"][0]["text"]
-        self.assertNotIn(EXAMPLE_HEADER, text)
         self.assertIn(TASK_HEADER, text)
         self.assertIn(CONTEXT_GUARD_HEADER, text)
+        # EXAMPLE_FIRST_RESPONSE is not in the first user message — it's
+        # a real seeded assistant turn, not static text in the guard.
+        self.assertNotIn(EXAMPLE_FIRST_RESPONSE, text)
 
     def test_example_is_static_no_dynamic_content(self):
         self.assertNotIn("Working Directory", EXAMPLE_FIRST_RESPONSE)

@@ -16,6 +16,7 @@ from ..llm_backend import (
     EmptyResponseError,
     RATE_LIMIT,
     TRANSIENT,
+    merge_consecutive_messages,
 )
 
 
@@ -84,7 +85,12 @@ class OpenAIBackend(LLMBackend):
         Role/content constraints enforced:
         - system/user: input_text (and user may include input_image)
         - assistant: output_text (or refusal; we only emit output_text)
+
+        Consecutive same-role messages (produced by harness feedback
+        injections) are merged first so strict servers that enforce
+        role alternation don't reject the payload.
         """
+        context = merge_consecutive_messages(context)
 
         def _to_user_items(parts: list[dict]) -> list[dict]:
             items: list[dict] = []

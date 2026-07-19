@@ -46,13 +46,23 @@ def _db_path() -> Path:
     return _MEMORY_DIR / _MEMORY_DB_NAME
 
 
+#: Set to True once the schema has been verified in this process.
+#: ``_ensure_tables`` runs 3 CREATE statements plus a commit on every
+#: connection otherwise — wasteful on the hot read-only context-guard
+#: path (``get_notes`` / ``format_memory_view``).
+_tables_ensured = False
+
+
 def _get_connection() -> sqlite3.Connection:
     """Return a connection to the memory database, creating tables if needed."""
+    global _tables_ensured
     db = _db_path()
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    _ensure_tables(conn)
+    if not _tables_ensured:
+        _ensure_tables(conn)
+        _tables_ensured = True
     return conn
 
 
@@ -91,6 +101,13 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
 
 # ── Folder resolution ───────────────────────────────────────────────
 
+#: Cache of cwd → resolved folder.  ``_resolve_folder`` shells out to
+#: git, which is wasteful when ``build_context_guard`` triggers several
+#: ``folder_hash()`` calls per session; the git root cannot change
+#: while the process stays in one cwd, so caching per cwd is safe.
+_resolve_folder_cache: dict[str, str] = {}
+
+
 def _resolve_folder() -> str:
     """Return the folder path to use for memory indexing.
 
@@ -98,6 +115,16 @@ def _resolve_folder() -> str:
     repository root is returned.  Otherwise the cwd itself is used.
     """
     cwd = os.getcwd()
+    cached = _resolve_folder_cache.get(cwd)
+    if cached is not None:
+        return cached
+    folder = _resolve_folder_uncached(cwd)
+    _resolve_folder_cache[cwd] = folder
+    return folder
+
+
+def _resolve_folder_uncached(cwd: str) -> str:
+    """Resolve the memory folder for *cwd* by querying git."""
     # Try to find git root
     try:
         import subprocess
