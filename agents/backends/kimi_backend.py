@@ -10,7 +10,7 @@ Kimi K3 specifics
 * ``reasoning_effort="max"`` on every call (thinking always enabled)
 * Fixed parameters: temperature=1.0, top_p=0.95, n=1, penalties=0
   (omitted from requests per Kimi docs)
-* Pricing: $3 / M input, $15 / M output, $0.30 / M cache-hit input
+* Pricing: $3 / M input, $15 / M output, $0.30 / M cache-read input
 * API key via ``MOONSHOT_API_KEY`` environment variable
 """
 
@@ -35,7 +35,7 @@ class KimiBackend(LLMBackend):
         "kimi-k3": {
             "input_token_cost": 3.00,
             "output_token_cost": 15.00,
-            "cache_hit_token_cost": 0.30,
+            "cache_read_cost": 0.30,
         },
     }
 
@@ -160,7 +160,7 @@ class KimiBackend(LLMBackend):
 
         input_cost = pricing["input_token_cost"]
         output_cost = pricing["output_token_cost"]
-        cache_cost = pricing.get("cache_hit_token_cost", input_cost * 0.1)
+        cache_cost = pricing.get("cache_read_cost", input_cost * 0.1)
 
         uncached_input = max(0, input_tokens - cache_read_tokens)
 
