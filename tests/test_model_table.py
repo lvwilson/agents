@@ -19,7 +19,7 @@ class TestListAvailableModels(unittest.TestCase):
         entries = list_available_models()
         providers = {e["provider"] for e in entries}
         self.assertEqual(
-            providers, {"anthropic", "deepseek", "gemini", "kimi", "openai"}
+            providers, {"anthropic", "deepseek", "gemini", "kimi", "minimax", "openai"}
         )
         # Every entry exposes the documented keys.
         for e in entries:

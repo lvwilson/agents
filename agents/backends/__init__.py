@@ -26,10 +26,11 @@ if TYPE_CHECKING:
 # Maps provider name → (module_path, class_name)
 _REGISTRY: dict[str, tuple[str, str]] = {
     "anthropic": (".anthropic_backend", "AnthropicBackend"),
-    "openai":    (".openai_backend",    "OpenAIBackend"),
+    "deepseek":  (".deepseek_backend",  "DeepSeekBackend"),
     "gemini":    (".gemini_backend",    "GeminiBackend"),
     "kimi":      (".kimi_backend",      "KimiBackend"),
-    "deepseek":  (".deepseek_backend",  "DeepSeekBackend"),
+    "minimax":   (".minimax_backend",   "MinimaxBackend"),
+    "openai":    (".openai_backend",    "OpenAIBackend"),
 }
 
 # Cache of already-imported classes so we import each module at most once.
