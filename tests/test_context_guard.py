@@ -19,9 +19,12 @@ from agents import agents as agents_module  # noqa: E402
 from agents.agents import (  # noqa: E402
     Agent,
     CONTEXT_GUARD_HEADER,
+    EXAMPLE_FIRST_RESPONSE,
+    EXAMPLE_HEADER,
     TASK_HEADER,
     TOOL_RESULTS_HEADER,
     build_context_guard,
+    build_example_message,
     build_task_message,
     build_tool_results_message,
 )
@@ -78,8 +81,9 @@ class TestContextGuardOnNewSession(unittest.TestCase):
         self.assertIn("Operating System:", text)
         self.assertIn("Shell:", text)
         self.assertIn("=== Folder Memory: Episodes ===", text)
-        self.assertTrue(text.endswith(build_task_message("do the thing")))
+        self.assertTrue(text.endswith(build_example_message()))
         self.assertIn(TASK_HEADER, text)
+        self.assertIn(build_task_message("do the thing"), text)
 
     def test_memory_loaded_at_session_start(self):
         agent = _make_agent(memory_view="=== Folder Memory: Notes ===\nIMPORTANT NOTE")
@@ -255,6 +259,59 @@ class TestResumePayloadPurity(unittest.TestCase):
                       if CONTEXT_GUARD_HEADER in m["content"][0].get("text", "")]
         self.assertEqual(len(guard_msgs), 1)
         self.assertIs(guard_msgs[0], resumed.context[0])
+
+
+class TestExampleFirstResponse(unittest.TestCase):
+    """New sessions carry a few-shot example first response, written in
+    the agent's own voice, anchoring the expected response format:
+    explore the directory structure (tree -L 2) before planning."""
+
+    def test_build_example_message_wraps_in_example_block(self):
+        framed = build_example_message()
+        self.assertTrue(framed.startswith(EXAMPLE_HEADER))
+        self.assertTrue(framed.endswith("=== End Example ==="))
+        self.assertIn(EXAMPLE_FIRST_RESPONSE, framed)
+
+    def test_first_message_contains_example_after_task_block(self):
+        agent = _make_agent(task="survey the repo")
+        text = agent.context[0]["content"][0]["text"]
+        self.assertIn(EXAMPLE_HEADER, text)
+        task_pos = text.index("=== End Task ===")
+        example_pos = text.index(EXAMPLE_HEADER)
+        self.assertLess(task_pos, example_pos)
+
+    def test_example_is_agent_voice_tree_command(self):
+        agent = _make_agent()
+        text = agent.context[0]["content"][0]["text"]
+        self.assertIn("Detailed thoughts and Plans:", text)
+        self.assertIn('Command: run_console_command "tree -L 2"', text)
+
+    def test_example_is_static_no_dynamic_content(self):
+        self.assertNotIn("Working Directory", EXAMPLE_FIRST_RESPONSE)
+        self.assertNotIn("System Date", EXAMPLE_FIRST_RESPONSE)
+        self.assertNotIn(CONTEXT_GUARD_HEADER, EXAMPLE_FIRST_RESPONSE)
+
+    def test_resume_does_not_duplicate_example(self):
+        guard_msg = {
+            "role": "user",
+            "content": [{"type": "text", "text":
+                         CONTEXT_GUARD_HEADER +
+                         "\nWorking Directory: /old\n\n" +
+                         build_task_message("orig") +
+                         "\n\n" + build_example_message()}],
+        }
+        asst = {"role": "assistant",
+                "content": [{"type": "text", "text": "working…"}]}
+        trailing_user = {"role": "user",
+                         "content": [{"type": "text", "text": "End."}]}
+        state = {"context": [dict(m) for m in (guard_msg, asst, trailing_user)],
+                 "system_prompt": "IMMUTABLE SYSTEM PROMPT"}
+        agent = _make_agent(task="resume task")
+        with mock.patch.object(agents_module, "load_session", return_value=state):
+            agent.load_context("sidE")
+        joined = " ".join(m["content"][0].get("text", "") for m in agent.context)
+        self.assertEqual(joined.count(EXAMPLE_HEADER), 1)
+        self.assertEqual(agent.context[0], guard_msg)
 
 
 class TestMessageFraming(unittest.TestCase):

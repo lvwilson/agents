@@ -320,6 +320,23 @@ TASK_HEADER = "=== Task ==="
 #: Header line identifying a tool-results user message.
 TOOL_RESULTS_HEADER = "=== Tool Results ==="
 
+#: Header line identifying the example first-response block appended to
+#: the first user message of a new session.
+EXAMPLE_HEADER = "=== Example First Response ==="
+
+#: Example opening turn appended to the first user message of every new
+#: session.  Written exactly as the agent would write it, it acts as a
+#: few-shot anchor: before planning, explore the directory structure.
+#: It is static and lives in the first user message, so resume never
+#: touches or duplicates it.
+EXAMPLE_FIRST_RESPONSE = (
+    "Detailed thoughts and Plans: Before I create a detailed plan I "
+    "should explore the directory structure to understand what I am "
+    "working with.\n"
+    "\n"
+    'Command: run_console_command "tree -L 2"'
+)
+
 
 def build_task_message(task):
     """Wrap *task* in an explicit task block.
@@ -339,6 +356,15 @@ def build_tool_results_message(command_response):
     as if the human typed it.  The guard makes the origin explicit.
     """
     return f"{TOOL_RESULTS_HEADER}\n{command_response}\n=== End Tool Results ==="
+
+
+def build_example_message():
+    """Wrap :data:`EXAMPLE_FIRST_RESPONSE` in an explicit example block.
+
+    The labelled wrapper makes clear the block is an example of an
+    agent response, not a real conversation turn.
+    """
+    return f"{EXAMPLE_HEADER}\n{EXAMPLE_FIRST_RESPONSE}\n=== End Example ==="
 
 
 def build_context_guard():
@@ -488,6 +514,9 @@ class Agent:
         self.task = task
         task_block = build_task_message(task)
         first_message = f"{context_guard}\n\n{task_block}" if context_guard else task_block
+        # Few-shot anchor: an example first response in the agent's own
+        # voice (explore the directory structure before planning).
+        first_message += f"\n\n{build_example_message()}"
         self.context.append(_form_message("user", first_message))
         self.compute_budget = compute_budget
         self.iterations = 0
