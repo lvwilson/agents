@@ -29,6 +29,7 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "openai":    (".openai_backend",    "OpenAIBackend"),
     "gemini":    (".gemini_backend",    "GeminiBackend"),
     "kimi":      (".kimi_backend",      "KimiBackend"),
+    "deepseek":  (".deepseek_backend",  "DeepSeekBackend"),
 }
 
 # Cache of already-imported classes so we import each module at most once.

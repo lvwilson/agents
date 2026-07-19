@@ -270,6 +270,16 @@ class AnthropicBackend(LLMBackend):
 
     # ── Core: get raw API response with retries ──────────────────────
 
+    def _extra_stream_kwargs(self) -> dict:
+        """Extra provider-specific keyword arguments for the stream call.
+
+        Merged into ``stream_kwargs`` by ``_get_response``.  The base
+        implementation returns an empty dict; subclasses (e.g. DeepSeek)
+        override it to inject endpoint-specific parameters without
+        duplicating the whole request method.
+        """
+        return {}
+
     def _get_response(self, system_prompt: str, context: list[dict]):
         self.call_count += 1
         sh = self.stream_handler
@@ -317,6 +327,10 @@ class AnthropicBackend(LLMBackend):
         )
         if self.model not in self.NO_TEMPERATURE_MODELS:
             stream_kwargs["temperature"] = self.temperature
+
+        # Provider-specific extras (e.g. DeepSeek's output_config.effort).
+        # The base implementation returns an empty dict.
+        stream_kwargs.update(self._extra_stream_kwargs())
 
         # Send the thinking API parameter only to servers known to
         # support it (Anthropic API with a recognised model name).
