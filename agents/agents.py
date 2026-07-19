@@ -330,6 +330,11 @@ EXAMPLE_HEADER = "=== Example First Response ==="
 #: It is static and lives in the first user message, so resume never
 #: touches or duplicates it.
 EXAMPLE_FIRST_RESPONSE = (
+    "Task: Understand project structure and user request before "
+    "updating the task to be more specific.\n"
+    "End conditions: To be determined once the scope of work is "
+    "understood.\n"
+    'Worklog: "Exploring directory structure."\n'
     "Detailed thoughts and Plans: Before I create a detailed plan I "
     "should explore the directory structure to understand what I am "
     "working with.\n"
