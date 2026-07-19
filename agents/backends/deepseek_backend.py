@@ -7,10 +7,15 @@ pointing it at DeepSeek's Anthropic-compatible endpoint
 
 DeepSeek specifics (per the DeepSeek Anthropic-API docs)
 --------------------------------------------------------
-* ``deepseek-v4-pro-max`` — max-reasoning variant; thinking is always
-  enabled and ``output_config={"effort": "max"}`` is sent on every call
-  (the ``thinking`` field is supported but ``budget_tokens`` is ignored,
-  so reasoning depth is controlled via ``output_config.effort``).
+* The endpoint accepts exactly two model names — ``deepseek-v4-pro``
+  and ``deepseek-v4-flash``.  This backend defaults to ``deepseek-v4-pro``
+  and requests maximum reasoning on every call: thinking is always
+  enabled and ``output_config={"effort": "max"}`` is sent (the
+  ``thinking`` field is supported but ``budget_tokens`` is ignored, so
+  reasoning depth is controlled via ``output_config.effort``).
+  (An earlier revision used the invented name ``deepseek-v4-pro-max``,
+  which the endpoint rejects with a 400 — the "max" lives in the effort
+  parameter, not the model name.)
 * ``cache_control`` and ``anthropic-beta`` headers are ignored by the
   endpoint, so prompt-cache annotations are harmless but useless — they
   are skipped anyway because the backend always has a ``base_url``
@@ -35,19 +40,19 @@ from .anthropic_backend import AnthropicBackend
 class DeepSeekBackend(AnthropicBackend):
     """DeepSeek backend over the Anthropic-compatible endpoint.
 
-    Thinking (reasoning) is always enabled at maximum effort — that is
-    the entire point of selecting a ``-max`` model.
+    Uses the ``deepseek-v4-pro`` model with thinking (reasoning) always
+    enabled at maximum effort (``output_config.effort=max``).
     """
 
     DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
-    DEFAULT_MODEL = "deepseek-v4-pro-max"
+    DEFAULT_MODEL = "deepseek-v4-pro"
 
     MODEL_DISPLAY_NAMES: dict[str, str] = {
-        "deepseek-v4-pro-max": "DeepSeek V4 Pro Max",
+        "deepseek-v4-pro": "DeepSeek V4 Pro Max",
     }
 
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-        "deepseek-v4-pro-max": 256_000,
+        "deepseek-v4-pro": 256_000,
     }
 
     def __init__(
@@ -102,5 +107,13 @@ class DeepSeekBackend(AnthropicBackend):
         the ``thinking`` field; reasoning depth is instead controlled via
         ``output_config.effort`` (the only ``output_config`` field the
         endpoint supports).
+
+        ``output_config`` is a DeepSeek extension unknown to the
+        ``anthropic`` SDK, whose ``Messages.stream()`` accepts only its
+        documented parameters — passing it directly raises
+        ``TypeError: Messages.stream() got an unexpected keyword
+        argument 'output_config'``.  It is therefore sent via
+        ``extra_body``, which the SDK deep-merges into the JSON request
+        body so the field reaches the endpoint as a top-level key.
         """
-        return {"output_config": {"effort": "max"}}
+        return {"extra_body": {"output_config": {"effort": "max"}}}

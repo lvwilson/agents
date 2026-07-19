@@ -125,7 +125,7 @@ def _generate_commit_message(
                 "openai": "gpt-5.3-codex",
                 "gemini": "gemini-3.1-pro-preview",
                 "kimi": "kimi-k3",
-                "deepseek": "deepseek-v4-pro-max",
+                "deepseek": "deepseek-v4-pro",
             }
             model = provider_defaults.get(provider, "claude-opus-4-6")
     else:

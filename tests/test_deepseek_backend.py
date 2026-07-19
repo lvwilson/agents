@@ -43,17 +43,17 @@ class TestRegistration(unittest.TestCase):
     def test_factory_creates_deepseek_backend(self):
         with mock.patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-test"}):
             with mock.patch("anthropic.Anthropic"):
-                backend = create_backend("deepseek", model="deepseek-v4-pro-max")
+                backend = create_backend("deepseek", model="deepseek-v4-pro")
         self.assertIsInstance(backend, DeepSeekBackend)
         self.assertIsInstance(backend, AnthropicBackend)
 
     def test_model_name_maps_to_provider(self):
         self.assertEqual(
-            agents_module._ONLINE_MODELS["deepseek-v4-pro-max"], "deepseek"
+            agents_module._ONLINE_MODELS["deepseek-v4-pro"], "deepseek"
         )
 
     def test_resolve_model_auto_detects_online(self):
-        provider, base_url = agents_module.resolve_model("deepseek-v4-pro-max")
+        provider, base_url = agents_module.resolve_model("deepseek-v4-pro")
         self.assertEqual(provider, "deepseek")
         self.assertIsNone(base_url)  # online — no local URL
 
@@ -70,7 +70,7 @@ class TestConstructor(unittest.TestCase):
 
     def test_default_model_and_endpoint(self):
         backend, client_cls = _make_backend()
-        self.assertEqual(backend.model, "deepseek-v4-pro-max")
+        self.assertEqual(backend.model, "deepseek-v4-pro")
         self.assertEqual(backend.base_url, "https://api.deepseek.com/anthropic")
         # The real client is authenticated with the DeepSeek key, not the
         # parent's placeholder "local" key.
@@ -96,7 +96,7 @@ class TestConstructor(unittest.TestCase):
     def test_display_name_and_context_window(self):
         backend, _ = _make_backend()
         # base_url is set, so display_name shows the endpoint host.
-        self.assertIn("deepseek-v4-pro-max", backend.display_name)
+        self.assertIn("deepseek-v4-pro", backend.display_name)
         self.assertEqual(backend.context_window_size, 256_000)
 
 
@@ -107,7 +107,7 @@ class TestMaxReasoningRequest(unittest.TestCase):
         backend, _ = _make_backend()
         self.assertEqual(
             backend._extra_stream_kwargs(),
-            {"output_config": {"effort": "max"}},
+            {"extra_body": {"output_config": {"effort": "max"}}},
         )
 
     def test_base_class_extra_stream_kwargs_empty(self):
@@ -140,8 +140,14 @@ class TestMaxReasoningRequest(unittest.TestCase):
         self.assertEqual(result, "done")
 
         kwargs = backend._client.messages.stream.call_args.kwargs
-        self.assertEqual(kwargs["model"], "deepseek-v4-pro-max")
-        self.assertEqual(kwargs["output_config"], {"effort": "max"})
+        self.assertEqual(kwargs["model"], "deepseek-v4-pro")
+        # output_config is a DeepSeek extension the anthropic SDK doesn't
+        # model, so it must travel via extra_body (merged into the JSON
+        # request body) rather than as a direct stream() kwarg.
+        self.assertEqual(
+            kwargs["extra_body"], {"output_config": {"effort": "max"}}
+        )
+        self.assertNotIn("output_config", kwargs)
         # Thinking is requested; budget_tokens is ignored by DeepSeek but
         # harmless (parent builds "enabled" mode config).
         self.assertEqual(kwargs["thinking"]["type"], "enabled")

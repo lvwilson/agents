@@ -97,7 +97,7 @@ _ONLINE_MODELS: dict[str, str] = {
     # Kimi
     "kimi-k3": "kimi",
     # DeepSeek
-    "deepseek-v4-pro-max": "deepseek",
+    "deepseek-v4-pro": "deepseek",
 }
 
 
@@ -539,7 +539,7 @@ class Agent:
                 "openai": "gpt-5.3-codex",
                 "gemini": "gemini-3.1-pro-preview",
                 "kimi": "kimi-k3",
-                "deepseek": "deepseek-v4-pro-max",
+                "deepseek": "deepseek-v4-pro",
             }
             self.model_name = provider_defaults.get(provider, "claude-opus-4-6")
             base_url = configuration.get("base_url", None)
