@@ -1,6 +1,9 @@
 import unittest
 import difflib
-from agents.tools.codemanipulator import create_code, replace_code, remove_code, format_code
+from agents.tools.codemanipulator import (create_code, replace_code, remove_code, format_code,
+    syntax_check, insert_code_before, insert_code_after,
+    get_signatures_and_docstrings, read_code_at_address, change_docstring,
+    convert_double_quotes_to_single)
 
 class TestCodeManipulator(unittest.TestCase):
     def setUp(self):
@@ -349,5 +352,78 @@ if __name__ == "__main__":
 
         result_code = replace_code(source_code, "TestClass", new_class)
         self.assertCodeEqual(result_code, expected_code)
+
+
+class TestManipulatorUtilities(unittest.TestCase):
+    """Direct coverage for the module-level helpers that had none."""
+
+    SIMPLE = (
+        "def foo():\n"
+        "    return 1\n"
+        "\n"
+        "def bar():\n"
+        "    return 2\n"
+    )
+
+    CLASS = (
+        "class Greeter:\n"
+        "    \"\"\"Greeting utilities.\"\"\"\n"
+        "    def hello(self):\n"
+        "        \"\"\"Say hello.\"\"\"\n"
+        "        return 'hi'\n"
+    )
+
+    def test_syntax_check_valid_and_invalid(self):
+        self.assertTrue(syntax_check("x = 1\n"))
+        self.assertFalse(syntax_check("def broken(:\n"))
+
+    def test_insert_code_before_module_function(self):
+        new_func = "def inserted():\n    return 0\n"
+        result = insert_code_before(self.SIMPLE, "bar", new_func)
+        self.assertLess(result.index("def inserted"), result.index("def bar"))
+        self.assertIn("def foo", result)
+
+    def test_insert_code_after_module_function(self):
+        new_func = "def inserted():\n    return 0\n"
+        result = insert_code_after(self.SIMPLE, "foo", new_func)
+        self.assertLess(result.index("def foo"), result.index("def inserted"))
+        self.assertLess(result.index("def inserted"), result.index("def bar"))
+
+    def test_get_signatures_and_docstrings(self):
+        result = get_signatures_and_docstrings(self.CLASS)
+        self.assertIn("class Greeter:", result)
+        self.assertIn("def hello(self):", result)
+        self.assertIn("Say hello.", result)
+
+    def test_read_code_at_address(self):
+        result = read_code_at_address(self.CLASS, "Greeter.hello")
+        self.assertIn("def hello(self):", result)
+        self.assertIn("return 'hi'", result)
+        # Unknown address reports rather than raising.
+        self.assertIn("No code found", read_code_at_address(self.CLASS, "Greeter.nope"))
+
+    def test_change_docstring(self):
+        result = change_docstring(self.CLASS, "Greeter.hello", '"Documented afresh."')
+        self.assertIn("Documented afresh.", result)
+        self.assertNotIn("Say hello.", result)
+        with self.assertRaises(ValueError):
+            change_docstring(self.CLASS, "Greeter.missing", '"x"')
+
+    def test_convert_double_quotes_to_single(self):
+        self.assertEqual(convert_double_quotes_to_single('x = "hello"'), "x = 'hello'")
+
+    def test_remove_async_function(self):
+        source = (
+            "async def afunc():\n"
+            "    return 1\n"
+            "\n"
+            "def keep():\n"
+            "    return 2\n"
+        )
+        result = remove_code(source, "afunc")
+        self.assertNotIn("afunc", result)
+        self.assertIn("def keep", result)
+
+
 if __name__ == "__main__":
     unittest.main()

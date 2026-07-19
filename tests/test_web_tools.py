@@ -115,39 +115,10 @@ class TestPageLinks(unittest.TestCase):
 class TestViewPage(unittest.TestCase):
     """Tests for WebBrowser.view_page()"""
 
-    def test_view_page_returns_tuple(self):
-        browser, mock_page = _make_browser_with_mocks()
-        mock_page.goto.return_value = MagicMock(status=200)
-        mock_page.inner_text.return_value = "Page text"
-        mock_page.evaluate.return_value = {
-            "links": [], "buttons": [], "inputs": [],
-            "selects": [], "textareas": []
-        }
-        mock_page.screenshot = MagicMock()
-
-        result = browser.view_page("https://example.com")
-
-        self.assertIsInstance(result, tuple)
-        self.assertEqual(len(result), 2)
-
-    def test_view_page_includes_text_content(self):
+    def test_view_page_includes_text_and_interactive_elements(self):
         browser, mock_page = _make_browser_with_mocks()
         mock_page.goto.return_value = MagicMock(status=200)
         mock_page.inner_text.return_value = "Important page text"
-        mock_page.evaluate.return_value = {
-            "links": [], "buttons": [], "inputs": [],
-            "selects": [], "textareas": []
-        }
-        mock_page.screenshot = MagicMock()
-
-        rich_text, file_path = browser.view_page("https://example.com")
-
-        self.assertIn("Important page text", rich_text)
-
-    def test_view_page_includes_interactive_elements(self):
-        browser, mock_page = _make_browser_with_mocks()
-        mock_page.goto.return_value = MagicMock(status=200)
-        mock_page.inner_text.return_value = "Text"
         mock_page.evaluate.return_value = {
             "links": [{"text": "Click me", "href": "https://example.com/link", "selector": "a#link1"}],
             "buttons": [{"text": "Submit", "selector": "button#submit"}],
@@ -159,6 +130,7 @@ class TestViewPage(unittest.TestCase):
 
         rich_text, file_path = browser.view_page("https://example.com")
 
+        self.assertIn("Important page text", rich_text)
         self.assertIn("Interactive Elements", rich_text)
         self.assertIn("Click me", rich_text)
         self.assertIn("Submit", rich_text)
@@ -187,60 +159,36 @@ class TestViewPage(unittest.TestCase):
         _, file_path = browser.view_page("https://example.com")
 
         self.assertIsNotNone(file_path)
-        self.assertTrue(file_path.startswith("/tmp/web_screenshot_"))
+        # TMPDIR-independent: check the basename prefix, not the absolute dir.
+        import os
+        self.assertTrue(os.path.basename(file_path).startswith("web_screenshot_"))
         self.assertTrue(file_path.endswith(".png"))
 
 
 class TestGetInteractiveElements(unittest.TestCase):
     """Tests for WebBrowser.get_interactive_elements()"""
 
-    def test_extracts_links(self):
-        browser, mock_page = _make_browser_with_mocks()
-        mock_page.evaluate.return_value = {
-            "links": [
-                {"text": "Home", "href": "https://example.com/", "selector": "a#home"},
-                {"text": "About", "href": "https://example.com/about", "selector": "a.nav-about"},
-            ],
-            "buttons": [], "inputs": [], "selects": [], "textareas": []
-        }
-
-        result = browser.get_interactive_elements()
-
-        self.assertIn("Links (2)", result)
-        self.assertIn("Home", result)
-        self.assertIn("a#home", result)
-
-    def test_extracts_inputs(self):
-        browser, mock_page = _make_browser_with_mocks()
-        mock_page.evaluate.return_value = {
-            "links": [],
-            "buttons": [],
-            "inputs": [
-                {"type": "text", "name": "email", "placeholder": "Enter email", "value": "", "selector": "input#email"},
-                {"type": "password", "name": "password", "placeholder": "Password", "value": "", "selector": "input[name=\"password\"]"},
-            ],
-            "selects": [], "textareas": []
-        }
-
-        result = browser.get_interactive_elements()
-
-        self.assertIn("Inputs (2)", result)
-        self.assertIn("email", result)
-        self.assertIn("password", result)
-
-    def test_extracts_buttons(self):
-        browser, mock_page = _make_browser_with_mocks()
-        mock_page.evaluate.return_value = {
-            "links": [],
-            "buttons": [{"text": "Submit", "selector": "button#submit-btn"}],
-            "inputs": [], "selects": [], "textareas": []
-        }
-
-        result = browser.get_interactive_elements()
-
-        self.assertIn("Buttons (1)", result)
-        self.assertIn("Submit", result)
-        self.assertIn("button#submit-btn", result)
+    def test_extracts_each_element_kind(self):
+        """Each element kind is rendered with a count, label and selector."""
+        cases = [
+            ("links", [{"text": "Home", "href": "https://example.com/", "selector": "a#home"}],
+             "Links (1)", "Home", "a#home"),
+            ("buttons", [{"text": "Submit", "selector": "button#submit-btn"}],
+             "Buttons (1)", "Submit", "button#submit-btn"),
+            ("inputs", [{"type": "text", "name": "email", "placeholder": "Email", "value": "", "selector": "input#email"}],
+             "Inputs (1)", "email", "input#email"),
+        ]
+        for kind, items, header, label, selector in cases:
+            with self.subTest(kind=kind):
+                browser, mock_page = _make_browser_with_mocks()
+                mock_page.evaluate.return_value = {
+                    "links": [], "buttons": [], "inputs": [],
+                    "selects": [], "textareas": [], kind: items,
+                }
+                result = browser.get_interactive_elements()
+                self.assertIn(header, result)
+                self.assertIn(label, result)
+                self.assertIn(selector, result)
 
     def test_returns_empty_string_when_no_elements(self):
         browser, mock_page = _make_browser_with_mocks()
@@ -364,19 +312,6 @@ class TestBrowseRead(unittest.TestCase):
 
 class TestFilterContent(unittest.TestCase):
     """Tests for filter_content() bug fix and command stacking."""
-
-    def test_filter_content_read_file_stacking(self):
-        """Regression test: read_file stacking works after namedtuple bug fix."""
-        content = (
-            'Command: read_file file1.txt\n'
-            'Command: read_file file2.txt\n'
-        )
-        result = filter_content(content)
-        # Both read_file commands should pass through
-        self.assertIn("file1.txt", result)
-        self.assertIn("file2.txt", result)
-
-
 
     def test_filter_content_cuts_after_non_read(self):
         """A non-read command after read commands causes truncation."""

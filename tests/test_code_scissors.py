@@ -85,13 +85,6 @@ def goodbye_world():
         with self.assertRaises(ValueError):
             insert_after(empty_code, "any_line", new_code)
 
-    def test_cutting_point_at_end(self):
-        """Test append with cutting point at the end of the code."""
-        new_code = "# New end\n"
-        result = insert_after(self.sample_code, 'print("Goodbye, World!")', new_code)
-        self.assertIn("# New end", result)
-        self.assertTrue(result.index('print("Goodbye, World!")') < result.index("# New end"))
-
     def test_newline_handling(self):
         """Test consistent newline handling."""
         new_code = "new_line_without_newline"

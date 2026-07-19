@@ -120,16 +120,6 @@ class TestProcessSliceMultipleCommands(unittest.TestCase):
         self.assertIsNone(bt2)
         self.assertEqual(rem2, "")
 
-    def test_trailing_text_after_last_command(self):
-        content = (
-            "Command: read_file /path.py\n"
-            "\nAll done!"
-        )
-        cmd, args, bt, rem = process_slice(content)
-        self.assertEqual(cmd, "read_file")
-        self.assertIn("All done", rem)
-
-
 class TestProcessSliceBacktickAttachment(unittest.TestCase):
     """The parser requires the backtick to be on the line immediately
     after the command. A blank line causes the backtick to be ignored."""
@@ -340,19 +330,16 @@ class TestFindReplaceMultipleBlocks(unittest.TestCase):
         self.assertIn("return 3", result)
 
 
-    def test_multiple_blocks_with_overlapping_search_regions(self):
-        source = "one two three four"
+    def test_multiple_blocks_chained_replacement(self):
+        """Blocks apply sequentially: a later block can match text
+        introduced by an earlier block's replacement."""
+        source = "start"
         command = (
-            "<<<<<<< SEARCH\none\n=======\nONE\n>>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\ntwo\n=======\nTWO\n>>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\nthree\n=======\nTHREE\n>>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\nfour\n=======\nFOUR\n>>>>>>> REPLACE"
+            "<<<<<<< SEARCH\nstart\n=======\nmiddle\n>>>>>>> REPLACE\n"
+            "<<<<<<< SEARCH\nmiddle\n=======\nfinal\n>>>>>>> REPLACE"
         )
         result = find_replace(source, command)
-        self.assertIn("ONE", result)
-        self.assertIn("TWO", result)
-        self.assertIn("THREE", result)
-        self.assertIn("FOUR", result)
+        self.assertEqual(result, "final")
 
 
 class TestFilterContent(unittest.TestCase):

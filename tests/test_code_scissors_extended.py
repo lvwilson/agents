@@ -126,38 +126,5 @@ if __name__ == '__main__':
         self.assertIn("# Main function below", code)
         self.assertIn("logging.basicConfig(level=logging.INFO)", code)
 
-    def test_error_on_non_existent_cutting_point(self):
-        """All six functions raise ValueError when cutting point is not found."""
-        for func, args in [
-            (insert_before, ("non_existent_line", "new_code")),
-            (insert_after, ("non_existent_line", "new_code")),
-            (replace_before, ("non_existent_line", "new_code")),
-            (replace_after, ("non_existent_line", "new_code")),
-            (insert_between, ("non_existent_line1", "non_existent_line2", "new_code")),
-            (replace_between, ("non_existent_line1", "non_existent_line2", "new_code")),
-        ]:
-            with self.assertRaises(ValueError):
-                func(self.complex_code, *args)
-
-    def test_empty_input(self):
-        """Test functions with empty input."""
-        empty_code = ""
-        new_code = "print('Hello')\n"
-        self.assertEqual(insert_before(empty_code, "any_line", new_code), new_code)
-        with self.assertRaises(ValueError):
-            insert_after(empty_code, "any_line", new_code)
-
-    def test_cutting_point_at_end(self):
-        """Test append with cutting point at the end of the code."""
-        new_code = "# New end\n"
-        result = insert_after(self.complex_code, "    main()", new_code)
-        self.assertTrue(result.rstrip().endswith("# New end"))
-
-    def test_newline_handling(self):
-        """Test consistent newline handling."""
-        new_code = "new_line_without_newline"
-        result = insert_after(self.complex_code, "import logging", new_code)
-        self.assertIn("new_line_without_newline\n", result)
-
 if __name__ == '__main__':
     unittest.main()

@@ -76,6 +76,19 @@ def replacement():
         with self.assertRaises(ValueError):
             find_replace(self.source_code, command)
 
+    def test_duplicate_match_raises_error(self):
+        """A SEARCH text occurring more than once must raise (all-or-nothing)."""
+        command = """<<<<<<< SEARCH
+    pass
+=======
+    return None
+>>>>>>> REPLACE"""
+        source = "def a():\n    pass\n\ndef b():\n    pass\n"
+        with self.assertRaises(ValueError):
+            find_replace(source, command)
+        # Original string untouched (all-or-nothing semantics).
+        self.assertEqual(source, "def a():\n    pass\n\ndef b():\n    pass\n")
+
 
 if __name__ == "__main__":
     unittest.main()
