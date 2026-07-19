@@ -420,6 +420,18 @@ class AnthropicBackend(LLMBackend):
             self.last_output_tokens,
         )
 
+        # Surface native tool_use blocks — this harness executes textual
+        # Command: lines, not API tool calls, so these would otherwise be
+        # silently dropped.  Log them (yellow in the UI) so the user can
+        # see the model is emitting commands in the wrong place.
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use":
+                self._pending_tool_calls.append((
+                    getattr(block, "name", "?"),
+                    str(getattr(block, "input", "")),
+                ))
+        self._emit_tool_calls()
+
         # Collect text from all TextBlock objects in the response.
         # ThinkingBlock content is deliberately excluded — reasoning was
         # already streamed to the UI via the stream handler and must not

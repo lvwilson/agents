@@ -224,6 +224,13 @@ class OpenAIBackend(LLMBackend):
                     if text:
                         sh.on_stream_token(text)
                         collected_text += text
+                elif event.type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if getattr(item, "type", None) == "function_call":
+                        self._pending_tool_calls.append((
+                            getattr(item, "name", "?") or "?",
+                            getattr(item, "arguments", "") or "",
+                        ))
                 elif event.type == "response.completed":
                     if hasattr(event, "response") and event.response:
                         usage = event.response.usage
@@ -265,6 +272,8 @@ class OpenAIBackend(LLMBackend):
             self.last_output_tokens,
             cache_read_tokens=0,
         )
+
+        self._emit_tool_calls()
 
         if not text:
             raise EmptyResponseError("No text content found in model response")

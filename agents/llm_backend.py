@@ -55,6 +55,16 @@ class StreamHandler:
     def on_stream_reasoning_end(self) -> None:
         """Called after the last reasoning token (or if no reasoning tokens)."""
 
+    def on_tool_call(self, name: str, arguments: str = "") -> None:
+        """Called when the model emits a native API tool/function call.
+
+        This harness does not execute native tool calls — it parses
+        textual ``Command:`` lines instead — so any native tool call the
+        model emits would otherwise be silently dropped.  Backends call
+        this hook so the UI can log the call (in yellow) and the user
+        can see that the model is emitting commands in the wrong place.
+        """
+
     def on_retry(self, message: str) -> None:
         """Called when a retryable error occurs (rate-limit or transient)."""
 
@@ -192,6 +202,12 @@ class LLMBackend(ABC):
         self.last_total_context_tokens: int = 0
         self.peak_context_tokens: int = 0
 
+        # Native tool/function calls detected during the current call.
+        # Backends append (name, arguments) tuples here while parsing
+        # the response; generate_response drains the list via
+        # _emit_tool_calls() after the stream has ended.
+        self._pending_tool_calls: list[tuple[str, str]] = []
+
     # ── Retry template method ────────────────────────────────────────
 
     def _run_with_retries(self, attempt_fn: Callable[[], _T]) -> _T:
@@ -299,6 +315,25 @@ class LLMBackend(ABC):
                 except (ValueError, TypeError):
                     pass
         return None
+
+    # ── Native tool-call logging ─────────────────────────────────────
+
+    def _emit_tool_calls(self) -> None:
+        """Drain ``_pending_tool_calls`` through the stream handler.
+
+        Called by ``generate_response`` after the response has been
+        fully processed (stream ended, usage recorded).  This harness
+        executes textual ``Command:`` lines, not native API tool calls,
+        so any tool calls the model emitted are logged (yellow in the
+        UI) to alert the user that commands are landing in the wrong
+        place, rather than being silently dropped.
+        """
+        # getattr for subclasses that bypass LLMBackend.__init__ (e.g.
+        # test fixtures that construct backends with __new__).
+        pending = getattr(self, "_pending_tool_calls", None) or []
+        self._pending_tool_calls = []
+        for name, arguments in pending:
+            self.stream_handler.on_tool_call(name, arguments)
 
     # ── Abstract methods ─────────────────────────────────────────────
 

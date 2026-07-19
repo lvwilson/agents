@@ -340,6 +340,14 @@ class GeminiBackend(LLMBackend):
             for chunk in stream:
                 if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
                     usage_metadata = chunk.usage_metadata
+                # Native function calls would be silently dropped by the
+                # text-only path below — buffer them for post-response
+                # logging so the user sees the model called a tool.
+                for fc in getattr(chunk, "function_calls", None) or []:
+                    self._pending_tool_calls.append((
+                        getattr(fc, "name", "?") or "?",
+                        str(getattr(fc, "args", "") or ""),
+                    ))
                 if chunk.text:
                     sh.on_stream_token(chunk.text)
                     collected_text += chunk.text
@@ -401,6 +409,8 @@ class GeminiBackend(LLMBackend):
             self.last_input_tokens,
             self.last_output_tokens,
         )
+
+        self._emit_tool_calls()
 
         if not text:
             raise EmptyResponseError("No text content found in model response")

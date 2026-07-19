@@ -201,6 +201,7 @@ class KimiBackend(LLMBackend):
             collected_text = ""
             usage = None
             reasoning_started = False
+            tool_calls: dict[int, dict] = {}
 
             for event in stream:
                 # Usage arrives on a dedicated final chunk whose choices
@@ -215,6 +216,26 @@ class KimiBackend(LLMBackend):
                 delta = getattr(choices[0], "delta", None)
                 if delta is None:
                     continue
+
+                # Native tool calls stream as per-index fragments:
+                # ``function.name`` arrives once, ``function.arguments``
+                # in chunks.  This harness executes textual Command:
+                # lines, not API tool calls, so these would otherwise be
+                # silently dropped — accumulate them for post-response
+                # logging (yellow in the UI).
+                for tc in getattr(delta, "tool_calls", None) or []:
+                    slot = tool_calls.setdefault(
+                        getattr(tc, "index", 0) or 0,
+                        {"name": "", "arguments": []},
+                    )
+                    func = getattr(tc, "function", None)
+                    if func is not None:
+                        name = getattr(func, "name", None)
+                        if name:
+                            slot["name"] = name
+                        args = getattr(func, "arguments", None)
+                        if args:
+                            slot["arguments"].append(args)
 
                 # ``reasoning_content`` (thinking tokens) is streamed to
                 # the UI via the reasoning hooks so it renders dimmed,
@@ -238,6 +259,12 @@ class KimiBackend(LLMBackend):
             # Clean up if the stream ended during a reasoning block.
             if reasoning_started:
                 sh.on_stream_reasoning_end()
+
+            for slot in tool_calls.values():
+                self._pending_tool_calls.append((
+                    slot["name"] or "?",
+                    "".join(slot["arguments"]),
+                ))
 
             return collected_text, usage
 
@@ -282,6 +309,8 @@ class KimiBackend(LLMBackend):
             self.last_output_tokens,
             cache_read_tokens=0,
         )
+
+        self._emit_tool_calls()
 
         if not text:
             raise EmptyResponseError("No text content found in model response")
