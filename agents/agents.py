@@ -514,9 +514,6 @@ class Agent:
         self.task = task
         task_block = build_task_message(task)
         first_message = f"{context_guard}\n\n{task_block}" if context_guard else task_block
-        # Few-shot anchor: an example first response in the agent's own
-        # voice (explore the directory structure before planning).
-        first_message += f"\n\n{build_example_message()}"
         self.context.append(_form_message("user", first_message))
         self.compute_budget = compute_budget
         self.iterations = 0
@@ -559,6 +556,24 @@ class Agent:
         self._agent_pool = AgentPool()
         self._agent_pool.model = self.model_name
         _register_pool(self._agent_pool)
+
+    def _seed_first_turn(self):
+        """Execute the example first turn: explore directory structure.
+
+        Appends the example assistant response, runs `tree -L 2`, and
+        feeds the output back as a framed tool-results user message.
+        On resume this is a no-op — the seed is part of the saved
+        context and must not be duplicated.
+        """
+        from .tools.functions import run_console_command
+
+        # Append the example assistant response
+        self.context.append(_form_message("assistant", EXAMPLE_FIRST_RESPONSE))
+
+        # Execute the tree command for real
+        tree_output = run_console_command("tree -L 2")
+        framed = build_tool_results_message(tree_output)
+        self.context.append(_form_message("user", framed))
 
     def _iterate(self):
         """Perform one iteration of the conversation with Claude.
@@ -1041,6 +1056,9 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
+    else:
+        # Seed new sessions with a real first turn: explore directory.
+        agent._seed_first_turn()
 
     agent.run()
     # The completion block is not guaranteed to sit at context[-2]:

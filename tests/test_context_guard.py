@@ -81,7 +81,9 @@ class TestContextGuardOnNewSession(unittest.TestCase):
         self.assertIn("Operating System:", text)
         self.assertIn("Shell:", text)
         self.assertIn("=== Folder Memory: Episodes ===", text)
-        self.assertTrue(text.endswith(build_example_message()))
+        # First user message contains only guard + task (no example —
+        # the example is now a real seeded turn, not static text).
+        self.assertNotIn(EXAMPLE_HEADER, text)
         self.assertIn(TASK_HEADER, text)
         self.assertIn(build_task_message("do the thing"), text)
 
@@ -262,9 +264,12 @@ class TestResumePayloadPurity(unittest.TestCase):
 
 
 class TestExampleFirstResponse(unittest.TestCase):
-    """New sessions carry a few-shot example first response, written in
-    the agent's own voice, anchoring the expected response format:
-    explore the directory structure (tree -L 2) before planning."""
+    """New sessions are seeded with a real first turn: the agent explores
+    the directory structure (tree -L 2) before planning.  The seed is a
+    genuine assistant message + real command execution (not static text
+    in the first user message), so the model always begins with an
+    accurate directory snapshot in context.  On resume the seed is a
+    no-op — it is already part of the saved context."""
 
     def test_build_example_message_wraps_in_example_block(self):
         framed = build_example_message()
@@ -272,46 +277,65 @@ class TestExampleFirstResponse(unittest.TestCase):
         self.assertTrue(framed.endswith("=== End Example ==="))
         self.assertIn(EXAMPLE_FIRST_RESPONSE, framed)
 
-    def test_first_message_contains_example_after_task_block(self):
+    def test_seed_appends_assistant_and_tool_results(self):
+        with mock.patch(
+            "agents.tools.functions.run_console_command",
+            return_value="├── agents\n└── tests",
+        ):
+            agent = _make_agent(task="do the thing")
+        agent._seed_first_turn()
+        # After seed: [user task, assistant example, user tool results]
+        self.assertEqual(len(agent.context), 3)
+        self.assertEqual(agent.context[1]["role"], "assistant")
+        self.assertEqual(agent.context[1]["content"][0]["text"], EXAMPLE_FIRST_RESPONSE)
+        self.assertEqual(agent.context[2]["role"], "user")
+        tool_text = agent.context[2]["content"][0]["text"]
+        self.assertTrue(tool_text.startswith(TOOL_RESULTS_HEADER))
+        self.assertIn("├── agents", tool_text)
+
+    def test_first_user_message_has_no_example(self):
+        """The first user message contains only guard + task, no example."""
         agent = _make_agent(task="survey the repo")
         text = agent.context[0]["content"][0]["text"]
-        self.assertIn(EXAMPLE_HEADER, text)
-        task_pos = text.index("=== End Task ===")
-        example_pos = text.index(EXAMPLE_HEADER)
-        self.assertLess(task_pos, example_pos)
-
-    def test_example_is_agent_voice_tree_command(self):
-        agent = _make_agent()
-        text = agent.context[0]["content"][0]["text"]
-        self.assertIn("Detailed thoughts and Plans:", text)
-        self.assertIn('Command: run_console_command "tree -L 2"', text)
+        self.assertNotIn(EXAMPLE_HEADER, text)
+        self.assertIn(TASK_HEADER, text)
+        self.assertIn(CONTEXT_GUARD_HEADER, text)
 
     def test_example_is_static_no_dynamic_content(self):
         self.assertNotIn("Working Directory", EXAMPLE_FIRST_RESPONSE)
         self.assertNotIn("System Date", EXAMPLE_FIRST_RESPONSE)
         self.assertNotIn(CONTEXT_GUARD_HEADER, EXAMPLE_FIRST_RESPONSE)
 
-    def test_resume_does_not_duplicate_example(self):
+    def test_resume_does_not_duplicate_seed(self):
+        """On resume, _seed_first_turn is not called — the seed is already
+        in the saved context and must not be duplicated."""
         guard_msg = {
             "role": "user",
             "content": [{"type": "text", "text":
                          CONTEXT_GUARD_HEADER +
                          "\nWorking Directory: /old\n\n" +
-                         build_task_message("orig") +
-                         "\n\n" + build_example_message()}],
+                         build_task_message("orig")}],
         }
-        asst = {"role": "assistant",
-                "content": [{"type": "text", "text": "working…"}]}
+        seed_assist = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": EXAMPLE_FIRST_RESPONSE}],
+        }
+        seed_tool = {
+            "role": "user",
+            "content": [{"type": "text", "text":
+                         build_tool_results_message("tree output")}],
+        }
         trailing_user = {"role": "user",
                          "content": [{"type": "text", "text": "End."}]}
-        state = {"context": [dict(m) for m in (guard_msg, asst, trailing_user)],
+        state = {"context": [dict(m) for m in (guard_msg, seed_assist, seed_tool, trailing_user)],
                  "system_prompt": "IMMUTABLE SYSTEM PROMPT"}
         agent = _make_agent(task="resume task")
         with mock.patch.object(agents_module, "load_session", return_value=state):
             agent.load_context("sidE")
-        joined = " ".join(m["content"][0].get("text", "") for m in agent.context)
-        self.assertEqual(joined.count(EXAMPLE_HEADER), 1)
-        self.assertEqual(agent.context[0], guard_msg)
+        # No extra seed appended — context ends with the replaced task.
+        self.assertEqual(len(agent.context), 4)
+        self.assertEqual(agent.context[-1]["content"][0]["text"],
+                         build_task_message("resume task"))
 
 
 class TestMessageFraming(unittest.TestCase):
