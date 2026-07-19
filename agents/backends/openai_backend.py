@@ -24,11 +24,11 @@ class OpenAIBackend(LLMBackend):
     """OpenAI completions backend with streaming and retry logic."""
 
     MODEL_PRICING: dict[str, dict[str, float]] = {
-        "gpt-5.2": {"input_token_cost": 2.50, "output_token_cost": 10.00},
-        "gpt-5.2-mini": {"input_token_cost": 0.15, "output_token_cost": 0.60},
-        "gpt-5.3": {"input_token_cost": 2.50, "output_token_cost": 10.00},
-        "gpt-5.3-mini": {"input_token_cost": 0.15, "output_token_cost": 0.60},
-        "gpt-5.3-codex": {"input_token_cost": 3.00, "output_token_cost": 12.00},
+        "gpt-5.2": {"input_token_cost": 2.50, "output_token_cost": 10.00, "cache_read_cost": 1.25},
+        "gpt-5.2-mini": {"input_token_cost": 0.15, "output_token_cost": 0.60, "cache_read_cost": 0.075},
+        "gpt-5.3": {"input_token_cost": 2.50, "output_token_cost": 10.00, "cache_read_cost": 1.25},
+        "gpt-5.3-mini": {"input_token_cost": 0.15, "output_token_cost": 0.60, "cache_read_cost": 0.075},
+        "gpt-5.3-codex": {"input_token_cost": 3.00, "output_token_cost": 12.00, "cache_read_cost": 1.50},
     }
 
     MODEL_DISPLAY_NAMES: dict[str, str] = {

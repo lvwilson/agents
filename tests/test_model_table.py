@@ -37,6 +37,19 @@ class TestListAvailableModels(unittest.TestCase):
         self.assertTrue(entries)
         self.assertTrue(all(e["provider"] == "deepseek" for e in entries))
 
+    def test_all_models_have_cache_read_cost(self):
+        """Every model across all providers must have a positive cache_read_cost."""
+        entries = list_available_models()
+        for e in entries:
+            self.assertIsNotNone(
+                e["cache_read_cost"],
+                f'{e["provider"]}/{e["model"]} missing cache_read_cost',
+            )
+            self.assertGreater(
+                e["cache_read_cost"], 0,
+                f'{e["provider"]}/{e["model"]} cache_read_cost is zero',
+            )
+
 
 class TestPrintModelTable(unittest.TestCase):
     """Stream routing: table on stdout, diagnostics on stderr."""

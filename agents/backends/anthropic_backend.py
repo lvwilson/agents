@@ -21,15 +21,15 @@ class AnthropicBackend(LLMBackend):
     """Claude backend with streaming, prompt caching, and retry logic."""
 
     MODEL_PRICING = {
-        "claude-3-5-sonnet-20240620":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-3-5-sonnet-20241022":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-3-7-sonnet-20250219":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-sonnet-4-20250514":    {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00},
-        "claude-fable-5":              {"input_token_cost": 10.00, "output_token_cost": 50.00},
-        "MiniMax-M2.5" :               {"input_token_cost": 0.3,  "output_token_cost": 1.2},
+        "claude-3-5-sonnet-20240620":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-3-5-sonnet-20241022":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-3-7-sonnet-20250219":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-sonnet-4-20250514":    {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00, "cache_read_cost": 0.50},
+        "claude-fable-5":              {"input_token_cost": 10.00, "output_token_cost": 50.00, "cache_read_cost": 1.00},
+        "MiniMax-M2.5" :               {"input_token_cost": 0.30, "output_token_cost": 1.20, "cache_read_cost": 0.03},
     }
 
     MODEL_DISPLAY_NAMES = {
