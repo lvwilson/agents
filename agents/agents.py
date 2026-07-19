@@ -25,7 +25,8 @@ from .tools import register_llm as _register_summarize_llm
 from .tools import register_pool as _register_pool
 
 # Local imports
-from .backends import create_backend, list_available_models
+from .backends import create_backend
+from .cli.model_table import print_model_table
 from .git_utils import (
     is_git_repo,
     check_git_clean,
@@ -1203,69 +1204,6 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     return completion, success, agent.session_id
 
 
-def _print_model_table(provider_filter: str | None = None) -> None:
-    """Print a Rich-table of available models and exit."""
-    import sys as _sys
-
-    from rich.table import Table
-    from rich.console import Console
-
-    entries = list_available_models(provider_filter)
-    if not entries:
-        if provider_filter:
-            _sys.stderr.write(
-                f"No models found for provider '{provider_filter}'.\n"
-            )
-        else:
-            _sys.stderr.write("No models found.\n")
-        return
-
-    # Write directly to /dev/tty (the same strategy used by the
-    # lazy Console singleton in ui.py) so the output is never
-    # interleaved with stdout/stderr redirections.
-    try:
-        tty = open("/dev/tty", "w")
-    except OSError:
-        tty = _sys.stderr
-    console = Console(file=tty)
-
-    table = Table(title="Available Models", border_style="bright_blue")
-    table.add_column("Provider", style="dim")
-    table.add_column("Model", style="bold")
-    table.add_column("Context", justify="right")
-    table.add_column("Input $/M", justify="right")
-    table.add_column("Output $/M", justify="right")
-
-    current_provider = None
-    for e in entries:
-        if e["provider"] != current_provider:
-            current_provider = e["provider"]
-            if table.row_count > 0:
-                table.add_section()
-
-        ctx = (
-            f"{e['context']:,}" if isinstance(e["context"], int)
-            else "—"
-        )
-        inp = (
-            f"${e['input_cost']:.2f}" if isinstance(e["input_cost"], (int, float))
-            else "—"
-        )
-        out = (
-            f"${e['output_cost']:.2f}" if isinstance(e["output_cost"], (int, float))
-            else "—"
-        )
-        table.add_row(e["provider"], e["display"], ctx, inp, out)
-
-    console.print()
-    console.print(table)
-    console.print()
-
-    # Don't leave a dangling /dev/tty handle
-    if tty is not _sys.stderr and hasattr(tty, "close"):
-        tty.close()
-
-
 def main():
     """Parse arguments and run the agent."""
     # Register signal handler here rather than at import time so that
@@ -1311,7 +1249,7 @@ def main():
     # --list-models: show table and exit (no git check, no agent startup).
     if args.list_models is not None:
         provider = args.list_models if args.list_models != '__all__' else None
-        _print_model_table(provider)
+        print_model_table(provider)
         return
 
     if not args.command:

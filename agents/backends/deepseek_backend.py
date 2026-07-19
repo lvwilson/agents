@@ -24,9 +24,15 @@ DeepSeek specifics (per the DeepSeek Anthropic-API docs)
   API there is no requirement to force temperature=1 when thinking is
   enabled (the parent only enforces that for non-local clients).
 * API key via the ``DEEPSEEK_API_KEY`` environment variable.
-* Pricing is not published in the provided docs, so the model is
-  deliberately absent from ``MODEL_PRICING`` and costs report as $0
-  rather than inventing numbers.
+* Pricing (per https://api-docs.deepseek.com/quick_start/pricing/, in
+  $/1M tokens) — ``deepseek-v4-pro``: input $0.435 (cache miss),
+  $0.003625 (cache hit), output $0.87.  ``deepseek-v4-flash``: input
+  $0.14 (miss), $0.0028 (hit), output $0.28.  Both models have a 1M
+  context length.  DeepSeek's server-side context caching is automatic
+  and carries no creation charge, so ``calculate_cost`` is overridden
+  to bill cache reads at the published hit price rather than the
+  parent's Anthropic heuristic (10% of the input price — ~12x the
+  real hit rate).
 """
 
 from __future__ import annotations
@@ -47,12 +53,28 @@ class DeepSeekBackend(AnthropicBackend):
     DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
     DEFAULT_MODEL = "deepseek-v4-pro"
 
+    # $/1M tokens — https://api-docs.deepseek.com/quick_start/pricing/
+    MODEL_PRICING: dict[str, dict[str, float]] = {
+        "deepseek-v4-pro": {
+            "input_token_cost": 0.435,
+            "output_token_cost": 0.87,
+            "cache_read_cost": 0.003625,
+        },
+        "deepseek-v4-flash": {
+            "input_token_cost": 0.14,
+            "output_token_cost": 0.28,
+            "cache_read_cost": 0.0028,
+        },
+    }
+
     MODEL_DISPLAY_NAMES: dict[str, str] = {
         "deepseek-v4-pro": "DeepSeek V4 Pro Max",
+        "deepseek-v4-flash": "DeepSeek V4 Flash",
     }
 
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-        "deepseek-v4-pro": 256_000,
+        "deepseek-v4-pro": 1_000_000,
+        "deepseek-v4-flash": 1_000_000,
     }
 
     def __init__(
@@ -117,3 +139,30 @@ class DeepSeekBackend(AnthropicBackend):
         body so the field reaches the endpoint as a top-level key.
         """
         return {"extra_body": {"output_config": {"effort": "max"}}}
+
+    # ── Cost calculation ─────────────────────────────────────────────
+
+    def calculate_cost(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation_tokens: int = 0,
+        cache_read_tokens: int = 0,
+    ) -> float:
+        """Bill usage at DeepSeek's published prices.
+
+        Unlike Anthropic (cache reads at 10% of input, writes at 125%),
+        DeepSeek's context caching is automatic with no creation
+        charge, and cache hits are billed at an explicit published rate
+        (~0.8% of the miss price).  ``cache_creation_tokens`` are
+        therefore ignored.
+        """
+        pricing = self.MODEL_PRICING.get(self.model)
+        if pricing is None:
+            return 0.0
+        cost = (
+            input_tokens * pricing["input_token_cost"]
+            + cache_read_tokens * pricing["cache_read_cost"]
+            + output_tokens * pricing["output_token_cost"]
+        ) / 1_000_000
+        return cost

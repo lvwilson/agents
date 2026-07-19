@@ -97,7 +97,58 @@ class TestConstructor(unittest.TestCase):
         backend, _ = _make_backend()
         # base_url is set, so display_name shows the endpoint host.
         self.assertIn("deepseek-v4-pro", backend.display_name)
-        self.assertEqual(backend.context_window_size, 256_000)
+        self.assertEqual(backend.context_window_size, 1_000_000)
+
+
+class TestPricing(unittest.TestCase):
+    """Pricing structure is sane and cost math follows the published
+    formula (expectations are derived from MODEL_PRICING so vendor
+    price changes don't break the suite)."""
+
+    def test_pricing_structure(self):
+        for model in ("deepseek-v4-pro", "deepseek-v4-flash"):
+            price = DeepSeekBackend.MODEL_PRICING[model]
+            for key in ("input_token_cost", "output_token_cost", "cache_read_cost"):
+                self.assertIn(key, price)
+                self.assertIsInstance(price[key], (int, float))
+                self.assertGreater(price[key], 0)
+            # The invariant behind the calculate_cost override: cache
+            # hits are drastically cheaper than misses, so the parent's
+            # 10%-of-input heuristic would be badly wrong.
+            self.assertLess(price["cache_read_cost"], price["input_token_cost"] * 0.05)
+
+    def test_calculate_cost_plain(self):
+        backend, _ = _make_backend()
+        price = DeepSeekBackend.MODEL_PRICING[backend.model]
+        expected = price["input_token_cost"] + price["output_token_cost"]
+        cost = backend.calculate_cost(1_000_000, 1_000_000)
+        self.assertAlmostEqual(cost, expected)
+
+    def test_calculate_cost_cache_read_uses_hit_price(self):
+        backend, _ = _make_backend()
+        price = DeepSeekBackend.MODEL_PRICING[backend.model]
+        # Cache reads bill at the explicit hit rate, NOT the parent's
+        # Anthropic heuristic of 10% x input price.
+        cost = backend.calculate_cost(0, 0, cache_read_tokens=1_000_000)
+        self.assertAlmostEqual(cost, price["cache_read_cost"])
+        self.assertNotAlmostEqual(cost, price["input_token_cost"] * 0.10)
+
+    def test_calculate_cost_cache_creation_free(self):
+        backend, _ = _make_backend()
+        # DeepSeek context caching is automatic; no creation charge.
+        cost = backend.calculate_cost(0, 0, cache_creation_tokens=1_000_000)
+        self.assertEqual(cost, 0.0)
+
+    def test_calculate_cost_flash_model(self):
+        backend, _ = _make_backend(model="deepseek-v4-flash")
+        price = DeepSeekBackend.MODEL_PRICING["deepseek-v4-flash"]
+        expected = price["input_token_cost"] + price["output_token_cost"]
+        cost = backend.calculate_cost(1_000_000, 1_000_000)
+        self.assertAlmostEqual(cost, expected)
+
+    def test_calculate_cost_unknown_model_zero(self):
+        backend, _ = _make_backend(model="deepseek-v9-hypothetical")
+        self.assertEqual(backend.calculate_cost(1_000, 1_000), 0.0)
 
 
 class TestMaxReasoningRequest(unittest.TestCase):

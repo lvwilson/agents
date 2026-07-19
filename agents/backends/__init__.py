@@ -68,9 +68,9 @@ def list_available_models(provider_filter: str | None = None) -> list[dict]:
     -------
     list[dict]
         Each dict has keys: provider, model, display, input_cost,
-        output_cost, context.  Costs are in dollars per million tokens;
-        context is the context-window size in tokens.  ``None`` values
-        indicate unavailable information.
+        output_cost, cache_read_cost, context.  Costs are in dollars
+        per million tokens; context is the context-window size in
+        tokens.  ``None`` values indicate unavailable information.
     """
     results: list[dict] = []
     for provider_name in sorted(_REGISTRY):
@@ -81,9 +81,10 @@ def list_available_models(provider_filter: str | None = None) -> list[dict]:
         except Exception:
             continue
 
-        # Use __dict__ rather than getattr to avoid inheriting model
-        # registries from base classes (e.g. DeepSeekBackend inherits
-        # AnthropicBackend's MODEL_PRICING but has no models of its own).
+        # Use __dict__ rather than getattr so subclassed backends are
+        # not credited with models they merely inherit — DeepSeekBackend
+        # subclasses AnthropicBackend, so a plain getattr would list all
+        # nine Claude models under the "deepseek" provider too.
         pricing: dict = cls.__dict__.get("MODEL_PRICING", {}) or {}
         contexts: dict = cls.__dict__.get("MODEL_CONTEXT_WINDOWS", {}) or {}
         displays: dict = cls.__dict__.get("MODEL_DISPLAY_NAMES", {}) or {}
@@ -99,6 +100,7 @@ def list_available_models(provider_filter: str | None = None) -> list[dict]:
                     "display": displays.get(model_name, model_name),
                     "input_cost": price.get("input_token_cost"),
                     "output_cost": price.get("output_token_cost"),
+                    "cache_read_cost": price.get("cache_read_cost"),
                     "context": contexts.get(model_name),
                 }
             )
