@@ -211,6 +211,31 @@ def _find_latest_completion(context, scan_limit=5):
     return None
 
 
+#: Reminder injected (at most once per incident) when a model response
+#: contains neither a command nor a completion block — an almost
+#: certainly unintended session end.  It explains both output
+#: mechanisms and that this is the only warning before the session ends.
+NO_OUTPUT_REMINDER = (
+    "Feedback: Your previous response contained no commands and no "
+    "completion block, so the session is about to end — which you "
+    "almost certainly did not intend. You have two ways to produce "
+    "output:\n"
+    "1. To keep working, issue one or more commands as visible lines "
+    "of the form 'Command: name args', each optionally followed by a "
+    "5-backtick payload block. Command output is returned to you in a "
+    "'=== Tool Results ===' message.\n"
+    "2. To intentionally finish the task, end your response with a "
+    "completion block wrapped in 5 backticks:\n"
+    f"`````\n"
+    "Completion: <description of what you accomplished>\n"
+    "Success: True or False\n"
+    f"`````\n"
+    "This is your only warning: if your next response again contains "
+    "neither commands nor a completion block, the session will end. "
+    "Please respond to your task now."
+)
+
+
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
     print_sigterm()
@@ -470,6 +495,7 @@ class Agent:
         self._last_assistant_response = None
         self._loop_count = 0
         self._empty_response_count = 0
+        self._no_output_reminded = False
 
         # Register the LLM backend for the summarize tool so that
         # the tools layer can make one-shot LLM calls without a circular import.
@@ -595,6 +621,9 @@ class Agent:
         # "End." sentinel is mutated and the agent fails to terminate
         # even when no commands were found.
         command_called = command_response != "End."
+        # A response with no completion block also ended the turn: the
+        # model stopped without either mechanism the harness understands.
+        completion_found = extract_completion(response) is not None
 
         # Check compute budget
         if self.client.cost > 0.80 * self.compute_budget:
@@ -620,6 +649,33 @@ class Agent:
         if len(command_response) >= self.LARGE_MESSAGE_CACHE_THRESHOLD:
             self.client.mark_for_caching(message)
             self.client.trim_cache_blocks(self.context)
+
+        # Accidental-stop guard: a response with neither commands nor a
+        # completion block almost certainly was not meant to end the
+        # session — the model simply forgot both output mechanisms.
+        # Give it ONE reminder explaining both mechanisms and one chance
+        # to self-correct; if the next response is again content-free,
+        # let the session end as it normally would.  A response that
+        # does contain a command or a completion block counts as
+        # intentional and ends (or continues) normally, and also re-arms
+        # the reminder so each incident gets its own single warning.
+        if command_called or completion_found:
+            self._no_output_reminded = False
+        elif self._no_output_reminded:
+            print_error(
+                "Model produced neither commands nor a completion block "
+                "again after one reminder. Ending the session.",
+                None,
+            )
+        else:
+            self._no_output_reminded = True
+            print_error(
+                "Model response contained neither commands nor a "
+                "completion block. Injecting reminder (only warning).",
+                None,
+            )
+            self.context.append(_form_message("user", NO_OUTPUT_REMINDER))
+            return True
 
         return command_called
 

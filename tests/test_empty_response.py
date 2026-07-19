@@ -78,11 +78,15 @@ class TestEmptyResponseFeedback(unittest.TestCase):
             side_effect=[
                 EmptyResponseError("No text content found in model response"),
                 "no commands here",
+                "still no commands",
             ]
         )
         self.assertTrue(agent._iterate())
+        # "no commands here" has no completion block either, so the
+        # no-output reminder fires once before the session may end.
+        self.assertTrue(agent._iterate())
         running = agent._iterate()
-        self.assertFalse(running)  # "no commands here" → End. sentinel
+        self.assertFalse(running)  # second content-free turn → End.
         self.assertEqual(agent._empty_response_count, 0)
         # The successful reply was appended as an assistant message.
         roles = [m["role"] for m in agent.context]

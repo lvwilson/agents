@@ -295,8 +295,16 @@ class TestMessageFraming(unittest.TestCase):
     def test_iterate_no_command_still_frames_end_sentinel(self):
         # Even when no command is found, the appended user message is a
         # labelled Tool Results block (content "End."), never bare text.
+        # The no-output reminder fires once, so the session ends only on
+        # the second consecutive command-free response.
         agent = _make_agent(task="do work")
-        agent.client.generate_response = mock.Mock(return_value="no commands here")
+        agent.client.generate_response = mock.Mock(
+            side_effect=["no commands here", "still no commands"]
+        )
+        self.assertTrue(agent._iterate())   # reminder injected
+        text = agent.context[-2]["content"][0]["text"]
+        self.assertTrue(text.startswith(TOOL_RESULTS_HEADER))
+        self.assertIn("End.", text)
         running = agent._iterate()
         self.assertFalse(running)
         text = agent.context[-1]["content"][0]["text"]
