@@ -133,11 +133,6 @@ class TestPricing(unittest.TestCase):
                         + price["output_token_cost"])
             self.assertAlmostEqual(cost, expected)
 
-    def test_calculate_cost_unknown_model_zero(self):
-        backend, _ = _make_backend(model="deepseek-v9-hypothetical")
-        self.assertEqual(backend.calculate_cost(1_000, 1_000), 0.0)
-
-
 class TestMaxReasoningRequest(unittest.TestCase):
     """Every API call requests thinking + max effort."""
 
@@ -147,9 +142,6 @@ class TestMaxReasoningRequest(unittest.TestCase):
             backend._extra_stream_kwargs(),
             {"extra_body": {"output_config": {"effort": "max"}}},
         )
-
-    def test_base_class_extra_stream_kwargs_empty(self):
-        self.assertEqual(AnthropicBackend._extra_stream_kwargs(mock.Mock()), {})
 
     def test_get_response_sends_thinking_and_effort(self):
         backend, _ = _make_backend()

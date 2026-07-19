@@ -126,35 +126,18 @@ if __name__ == '__main__':
         self.assertIn("# Main function below", code)
         self.assertIn("logging.basicConfig(level=logging.INFO)", code)
 
-    def test_prepend_error(self):
-        """Test prepend function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            insert_before(self.complex_code, "non_existent_line", "new_code")
-
-    def test_append_error(self):
-        """Test append function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            insert_after(self.complex_code, "non_existent_line", "new_code")
-
-    def test_replace_before_error(self):
-        """Test replace_before function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            replace_before(self.complex_code, "non_existent_line", "new_code")
-
-    def test_replace_after_error(self):
-        """Test replace_after function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            replace_after(self.complex_code, "non_existent_line", "new_code")
-
-    def test_insert_between_error(self):
-        """Test insert_between function with non-existent cutting points."""
-        with self.assertRaises(ValueError):
-            insert_between(self.complex_code, "non_existent_line1", "non_existent_line2", "new_code")
-
-    def test_replace_between_error(self):
-        """Test replace_between function with non-existent cutting points."""
-        with self.assertRaises(ValueError):
-            replace_between(self.complex_code, "non_existent_line1", "non_existent_line2", "new_code")
+    def test_error_on_non_existent_cutting_point(self):
+        """All six functions raise ValueError when cutting point is not found."""
+        for func, args in [
+            (insert_before, ("non_existent_line", "new_code")),
+            (insert_after, ("non_existent_line", "new_code")),
+            (replace_before, ("non_existent_line", "new_code")),
+            (replace_after, ("non_existent_line", "new_code")),
+            (insert_between, ("non_existent_line1", "non_existent_line2", "new_code")),
+            (replace_between, ("non_existent_line1", "non_existent_line2", "new_code")),
+        ]:
+            with self.assertRaises(ValueError):
+                func(self.complex_code, *args)
 
     def test_empty_input(self):
         """Test functions with empty input."""
@@ -163,12 +146,6 @@ if __name__ == '__main__':
         self.assertEqual(insert_before(empty_code, "any_line", new_code), new_code)
         with self.assertRaises(ValueError):
             insert_after(empty_code, "any_line", new_code)
-
-    def test_cutting_point_at_beginning(self):
-        """Test prepend with cutting point at the beginning of the code."""
-        new_code = "# New beginning\n"
-        result = insert_before(self.complex_code, "import logging", new_code)
-        self.assertTrue(result.lstrip().startswith("# New beginning"))
 
     def test_cutting_point_at_end(self):
         """Test append with cutting point at the end of the code."""

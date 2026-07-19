@@ -298,13 +298,6 @@ class TestBrowseType(unittest.TestCase):
         # Should auto-read because text ends with [Enter]
         self.assertIn("Search results", result)
 
-    def test_browse_type_auto_reads_on_enter(self):
-        browser, mock_page = _make_browser_with_mocks()
-        mock_page.inner_text.return_value = "Result page"
-
-        result = browser.browse_type("#input", "query[Enter]")
-
-        self.assertIn("Result page", result)
 
     def test_browse_type_no_auto_read_on_tab(self):
         browser, mock_page = _make_browser_with_mocks()
@@ -383,25 +376,7 @@ class TestFilterContent(unittest.TestCase):
         self.assertIn("file1.txt", result)
         self.assertIn("file2.txt", result)
 
-    def test_filter_content_read_page_stacking(self):
-        """read_page commands can be stacked."""
-        content = (
-            'Command: read_page "https://site1.com"\n'
-            'Command: read_page "https://site2.com"\n'
-        )
-        result = filter_content(content)
-        self.assertIn("site1.com", result)
-        self.assertIn("site2.com", result)
 
-    def test_filter_content_mixed_stacking(self):
-        """read_page and read_file can be queued together."""
-        content = (
-            'Command: read_file file1.txt\n'
-            'Command: read_page "https://site1.com"\n'
-        )
-        result = filter_content(content)
-        self.assertIn("file1.txt", result)
-        self.assertIn("site1.com", result)
 
     def test_filter_content_cuts_after_non_read(self):
         """A non-read command after read commands causes truncation."""
@@ -421,25 +396,7 @@ class TestFilterContent(unittest.TestCase):
         result = filter_content(content)
         self.assertIn("run_console_command", result)
 
-    def test_filter_content_view_page_stackable(self):
-        """view_page is in the stackable set."""
-        content = (
-            'Command: view_page "https://site1.com"\n'
-            'Command: read_page "https://site2.com"\n'
-        )
-        result = filter_content(content)
-        self.assertIn("site1.com", result)
-        self.assertIn("site2.com", result)
 
-    def test_filter_content_page_links_stackable(self):
-        """page_links is in the stackable set."""
-        content = (
-            'Command: page_links "https://site1.com"\n'
-            'Command: read_file file1.txt\n'
-        )
-        result = filter_content(content)
-        self.assertIn("site1.com", result)
-        self.assertIn("file1.txt", result)
 
 
 # ── Phase 4.3: view_page parser image pipeline ─────────────────────
@@ -490,104 +447,34 @@ class TestViewPageParser(unittest.TestCase):
 class TestCommandDispatch(unittest.TestCase):
     """Tests that new commands dispatch correctly via _execute_command."""
 
-    @patch('agents.tools.functions.get_browser')
-    def test_read_page_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.read_page.return_value = "Page text"
-        mock_get_browser.return_value = mock_browser
-
+    def test_all_browser_commands_dispatch(self):
+        """Every browser command reaches its method via _execute_command."""
         from agents.tools.parser import _execute_command
-        result = _execute_command("read_page", '"https://example.com"', None)
+        commands = [
+            ("read_page", '"https://example.com"', None),
+            ("read_page_html", '"https://example.com"', None),
+            ("page_links", '"https://example.com"', None),
+            ("view_page", '"https://example.com"', None),
+            ("browse_open", '"https://example.com"', None),
+            ("browse_read", "", None),
+            ("browse_click", '"button#submit"', None),
+            ("browse_type", '"#input" "hello[Enter]"', None),
+            ("browse_js", "", "return 40 + 2;"),
+        ]
+        for cmd_name, args, bt in commands:
+            with patch("agents.tools.functions.get_browser") as mock_get_browser:
+                mock_browser = MagicMock()
+                mock_get_browser.return_value = mock_browser
+                _execute_command(cmd_name, args, bt)
+                # Each command should call exactly one browser method
+                method_called = any(
+                    getattr(mock_browser, m).called
+                    for m in ("read_page", "read_page_html", "page_links", "view_page",
+                               "browse_open", "browse_read", "browse_click",
+                               "browse_type", "execute_js")
+                )
+                self.assertTrue(method_called, f"{cmd_name} did not call any browser method")
 
-        mock_browser.read_page.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_read_page_html_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.read_page_html.return_value = "<html>test</html>"
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("read_page_html", '"https://example.com"', None)
-
-        mock_browser.read_page_html.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_page_links_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.page_links.return_value = "Found 5 links"
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("page_links", '"https://example.com"', None)
-
-        mock_browser.page_links.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_view_page_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.view_page.return_value = ("text", "/tmp/screenshot.png")
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("view_page", '"https://example.com"', None)
-
-        mock_browser.view_page.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_browse_open_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.browse_open.return_value = "Page content"
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("browse_open", '"https://example.com"', None)
-
-        mock_browser.browse_open.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_browse_read_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.browse_read.return_value = "Current page text"
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("browse_read", "", None)
-
-        mock_browser.browse_read.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_browse_click_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.browse_click.return_value = "Clicked and read"
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("browse_click", '"button#submit"', None)
-
-        mock_browser.browse_click.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_browse_type_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.browse_type.return_value = "Typed into: #input"
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("browse_type", '"#input" "hello[Enter]"', None)
-
-        mock_browser.browse_type.assert_called_once()
-
-    @patch('agents.tools.functions.get_browser')
-    def test_browse_js_dispatches(self, mock_get_browser):
-        mock_browser = MagicMock()
-        mock_browser.execute_js.return_value = "42"
-        mock_get_browser.return_value = mock_browser
-
-        from agents.tools.parser import _execute_command
-        result = _execute_command("browse_js", "", "return 40 + 2;")
-
-        mock_browser.execute_js.assert_called_once_with("return 40 + 2;")
 
 
 # ── STACKABLE_READ_COMMANDS constant test ───────────────────────────

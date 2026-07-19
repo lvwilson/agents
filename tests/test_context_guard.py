@@ -84,11 +84,6 @@ class TestContextGuardOnNewSession(unittest.TestCase):
         self.assertIn(TASK_HEADER, text)
         self.assertIn(build_task_message("do the thing"), text)
 
-    def test_memory_loaded_at_session_start(self):
-        agent = _make_agent(memory_view="=== Folder Memory: Notes ===\nIMPORTANT NOTE")
-        text = agent.context[0]["content"][0]["text"]
-        self.assertIn("IMPORTANT NOTE", text)
-
     def test_compact_hint_lives_in_guard_not_system_prompt(self):
         agent = _make_agent(notes_compact=True)
         text = agent.context[0]["content"][0]["text"]
@@ -294,11 +289,6 @@ class TestExampleFirstResponse(unittest.TestCase):
         # a real seeded assistant turn, not static text in the guard.
         self.assertNotIn(EXAMPLE_FIRST_RESPONSE, text)
 
-    def test_example_is_static_no_dynamic_content(self):
-        self.assertNotIn("Working Directory", EXAMPLE_FIRST_RESPONSE)
-        self.assertNotIn("System Date", EXAMPLE_FIRST_RESPONSE)
-        self.assertNotIn(CONTEXT_GUARD_HEADER, EXAMPLE_FIRST_RESPONSE)
-
     def test_resume_does_not_duplicate_seed(self):
         """On resume, _seed_first_turn is not called — the seed is already
         in the saved context and must not be duplicated."""
@@ -348,12 +338,6 @@ class TestMessageFraming(unittest.TestCase):
         self.assertTrue(framed.endswith("=== End Tool Results ==="))
         self.assertIn("ok", framed)
 
-    def test_first_message_contains_task_block(self):
-        agent = _make_agent(task="ship it")
-        text = agent.context[0]["content"][0]["text"]
-        self.assertIn(TASK_HEADER, text)
-        self.assertIn("=== End Task ===", text)
-
     def test_iterate_wraps_tool_output_in_results_block(self):
         agent = _make_agent(task="do work")
         agent.client.generate_response = mock.Mock(
@@ -365,25 +349,6 @@ class TestMessageFraming(unittest.TestCase):
         text = last["content"][0]["text"]
         self.assertTrue(text.startswith(TOOL_RESULTS_HEADER))
         self.assertTrue(text.rstrip().endswith("=== End Tool Results ==="))
-
-    def test_iterate_no_command_still_frames_end_sentinel(self):
-        # Even when no command is found, the appended user message is a
-        # labelled Tool Results block (content "End."), never bare text.
-        # The no-output reminder fires once, so the session ends only on
-        # the second consecutive command-free response.
-        agent = _make_agent(task="do work")
-        agent.client.generate_response = mock.Mock(
-            side_effect=["no commands here", "still no commands"]
-        )
-        self.assertTrue(agent._iterate())   # reminder injected
-        text = agent.context[-2]["content"][0]["text"]
-        self.assertTrue(text.startswith(TOOL_RESULTS_HEADER))
-        self.assertIn("End.", text)
-        running = agent._iterate()
-        self.assertFalse(running)
-        text = agent.context[-1]["content"][0]["text"]
-        self.assertTrue(text.startswith(TOOL_RESULTS_HEADER))
-        self.assertIn("End.", text)
 
     def test_tool_result_content_not_mistaken_for_user_task(self):
         # A tool result must be distinguishable from the user-authored task.

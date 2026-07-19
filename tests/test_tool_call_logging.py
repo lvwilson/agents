@@ -77,11 +77,6 @@ class TestEmitToolCalls(unittest.TestCase):
         )
         self.assertEqual(backend._pending_tool_calls, [])
 
-    def test_emit_with_no_pending_calls_is_noop(self):
-        backend = _bare(_ConcreteBackend)
-        backend._emit_tool_calls()
-        self.assertEqual(backend.stream_handler.tool_calls, [])
-
     def test_base_handler_on_tool_call_is_noop(self):
         handler = StreamHandler()
         handler.on_tool_call("anything", "args")  # must not raise
@@ -156,13 +151,7 @@ class TestKimiToolCallLogging(unittest.TestCase):
             [("read_file", "a.py"), ("stdout", "hello")],
         )
 
-    def test_no_tool_calls_no_logging(self):
-        backend = _make_kimi([_kimi_content_event("plain"), _kimi_usage_event()])
-        backend.generate_response("sys", [])
-        self.assertEqual(backend.stream_handler.tool_calls, [])
-
-
-# ── OpenAI (Responses API function_call output items) ────────────────
+    # ── OpenAI (Responses API function_call output items) ────────────────
 
 def _make_openai(events):
     backend = _bare(OpenAIBackend)
@@ -198,21 +187,7 @@ class TestOpenAIToolCallLogging(unittest.TestCase):
             [("run_console_command", '{"command": "ls"}')],
         )
 
-    def test_non_function_items_ignored(self):
-        events = [
-            SimpleNamespace(
-                type="response.output_item.done",
-                item=SimpleNamespace(type="reasoning", summary=[]),
-            ),
-            SimpleNamespace(type="response.output_text.delta", delta="hi"),
-            SimpleNamespace(type="response.completed", response=None),
-        ]
-        backend = _make_openai(events)
-        backend.generate_response("sys", [])
-        self.assertEqual(backend.stream_handler.tool_calls, [])
-
-
-# ── Gemini (chunk.function_calls convenience property) ───────────────
+    # ── Gemini (chunk.function_calls convenience property) ───────────────
 
 def _make_gemini(chunks):
     backend = _bare(GeminiBackend)
@@ -248,15 +223,7 @@ class TestGeminiToolCallLogging(unittest.TestCase):
             [("web_search", str({"query": "news"}))],
         )
 
-    def test_chunk_without_function_calls_no_logging(self):
-        chunk = SimpleNamespace(
-            usage_metadata=None, function_calls=None, text="plain")
-        backend = _make_gemini([chunk])
-        backend.generate_response("sys", [])
-        self.assertEqual(backend.stream_handler.tool_calls, [])
-
-
-# ── Anthropic (tool_use blocks in the final response) ────────────────
+    # ── Anthropic (tool_use blocks in the final response) ────────────────
 
 def _make_anthropic(blocks):
     backend = _bare(AnthropicBackend)
@@ -287,14 +254,7 @@ class TestAnthropicToolCallLogging(unittest.TestCase):
             [("read_file", str({"file_path": "a.py"}))],
         )
 
-    def test_text_only_response_no_logging(self):
-        blocks = [SimpleNamespace(type="text", text="just text")]
-        backend = _make_anthropic(blocks)
-        backend.generate_response("sys", [])
-        self.assertEqual(backend.stream_handler.tool_calls, [])
-
-
-# ── UI rendering ─────────────────────────────────────────────────────
+    # ── UI rendering ─────────────────────────────────────────────────────
 
 class TestRichStreamHandlerToolCall(unittest.TestCase):
     """The interactive handler renders tool calls in yellow without

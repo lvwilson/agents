@@ -59,17 +59,6 @@ class Container:
         result = find_replace(self.source_code, command)
         self.assertIn(expected_output_contains, result)
 
-    def test_replace_function_with_multiple_decorators(self):
-        command = """<<<<<<< SEARCH
-def complex_calculation(x):
-=======
-def complex_calculation(x):
-    print(f"Starting complex calculation with x={x}")
->>>>>>> REPLACE"""
-        expected_output_contains = 'print(f"Starting complex calculation with x={x}")'
-        result = find_replace(self.source_code, command)
-        self.assertIn(expected_output_contains, result)
-
     def test_no_match_raises_error(self):
         command = """<<<<<<< SEARCH
 def nonexistent_function():

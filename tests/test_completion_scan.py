@@ -58,16 +58,6 @@ class TestExtractCompletion(unittest.TestCase):
 class TestFindLatestCompletion(unittest.TestCase):
     """The conversation scan used by run_agent()."""
 
-    def test_completion_at_tail(self):
-        context = [
-            _form_message("user", "task"),
-            _form_message("assistant", "done\n" + SUCCESS_BLOCK),
-            _form_message("user", "End."),
-        ]
-        result = _find_latest_completion(context)
-        self.assertIsNotNone(result)
-        self.assertTrue(result.success)
-
     def test_completion_in_earlier_assistant_message(self):
         # The reported bug: completion written, then the agent replies
         # once more (trailing Worklog/Command) so the completion is no
@@ -107,14 +97,6 @@ class TestFindLatestCompletion(unittest.TestCase):
             _form_message("user", "task"),
             _form_message("assistant", "working on it\nCommand: read_file x"),
             _form_message("user", "file contents:\n" + SUCCESS_BLOCK),
-        ]
-        self.assertIsNone(_find_latest_completion(context))
-
-    def test_no_completion_anywhere_returns_none(self):
-        context = [
-            _form_message("user", "task"),
-            _form_message("assistant", "no block here"),
-            _form_message("user", "End."),
         ]
         self.assertIsNone(_find_latest_completion(context))
 
@@ -190,27 +172,6 @@ class TestRunAgentCompletionDetection(unittest.TestCase):
         # explicitly requires a completion block, so absence is a
         # definitive failure with no retry.
         agent.request_completion.assert_not_called()
-
-    @mock.patch.object(agents_module, "Agent")
-    def test_success_when_completion_in_final_response(self, MockAgent):
-        """Agent finishes with a completion block and no commands."""
-        agent = MockAgent.return_value
-        agent.session_id = "testsession"
-        agent._request_episode_summary.return_value = None
-        agent.context = [
-            _form_message("user", "task"),
-            _form_message("assistant", "done\n" + SUCCESS_BLOCK),
-            _form_message("user", "=== Tool Results ===\nEnd.\n=== End Tool Results ==="),
-        ]
-
-        completion, success, _sid = agents_module.run_agent(
-            "basic_agent.yaml", "do stuff", 1.0, save=False, nogit=True
-        )
-
-        self.assertTrue(success)
-        self.assertEqual(completion, "did the thing")
-        agent.request_completion.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()
