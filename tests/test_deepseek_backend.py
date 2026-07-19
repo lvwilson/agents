@@ -101,50 +101,37 @@ class TestConstructor(unittest.TestCase):
 
 
 class TestPricing(unittest.TestCase):
-    """Pricing structure is sane and cost math follows the published
-    formula (expectations are derived from MODEL_PRICING so vendor
-    price changes don't break the suite)."""
+    """Cost accounting follows MODEL_PRICING.
 
-    def test_pricing_structure(self):
-        for model in ("deepseek-v4-pro", "deepseek-v4-flash"):
-            price = DeepSeekBackend.MODEL_PRICING[model]
-            for key in ("input_token_cost", "output_token_cost", "cache_read_cost"):
-                self.assertIn(key, price)
-                self.assertIsInstance(price[key], (int, float))
-                self.assertGreater(price[key], 0)
-            # The invariant behind the calculate_cost override: cache
-            # hits are drastically cheaper than misses, so the parent's
-            # 10%-of-input heuristic would be badly wrong.
-            self.assertLess(price["cache_read_cost"], price["input_token_cost"] * 0.05)
+    All expectations are derived from the class dict, so vendor price
+    changes never break the suite — the tests pin structure and the
+    cost formula, not numbers.
+    """
 
-    def test_calculate_cost_plain(self):
-        backend, _ = _make_backend()
-        price = DeepSeekBackend.MODEL_PRICING[backend.model]
-        expected = price["input_token_cost"] + price["output_token_cost"]
-        cost = backend.calculate_cost(1_000_000, 1_000_000)
-        self.assertAlmostEqual(cost, expected)
+    def test_pricing_structure_and_cost_formula(self):
+        for model, price in DeepSeekBackend.MODEL_PRICING.items():
+            # The three rates the cost formula relies on.
+            for key in ("input_token_cost", "output_token_cost",
+                        "cache_read_cost"):
+                self.assertGreater(price.get(key, 0), 0, f"{model}.{key}")
+            # The invariant behind the calculate_cost override: hits
+            # are far cheaper than misses, so the parent's 10%-of-input
+            # heuristic would be badly wrong for this provider.
+            self.assertLess(price["cache_read_cost"],
+                            price["input_token_cost"] * 0.05)
 
-    def test_calculate_cost_cache_read_uses_hit_price(self):
-        backend, _ = _make_backend()
-        price = DeepSeekBackend.MODEL_PRICING[backend.model]
-        # Cache reads bill at the explicit hit rate, NOT the parent's
-        # Anthropic heuristic of 10% x input price.
-        cost = backend.calculate_cost(0, 0, cache_read_tokens=1_000_000)
-        self.assertAlmostEqual(cost, price["cache_read_cost"])
-        self.assertNotAlmostEqual(cost, price["input_token_cost"] * 0.10)
-
-    def test_calculate_cost_cache_creation_free(self):
-        backend, _ = _make_backend()
-        # DeepSeek context caching is automatic; no creation charge.
-        cost = backend.calculate_cost(0, 0, cache_creation_tokens=1_000_000)
-        self.assertEqual(cost, 0.0)
-
-    def test_calculate_cost_flash_model(self):
-        backend, _ = _make_backend(model="deepseek-v4-flash")
-        price = DeepSeekBackend.MODEL_PRICING["deepseek-v4-flash"]
-        expected = price["input_token_cost"] + price["output_token_cost"]
-        cost = backend.calculate_cost(1_000_000, 1_000_000)
-        self.assertAlmostEqual(cost, expected)
+            backend, _ = _make_backend(model=model)
+            # Formula: miss-rate input + hit-rate reads + output, with
+            # cache creation free (automatic server-side caching).
+            cost = backend.calculate_cost(
+                1_000_000, 1_000_000,
+                cache_creation_tokens=1_000_000,
+                cache_read_tokens=1_000_000,
+            )
+            expected = (price["input_token_cost"]
+                        + price["cache_read_cost"]
+                        + price["output_token_cost"])
+            self.assertAlmostEqual(cost, expected)
 
     def test_calculate_cost_unknown_model_zero(self):
         backend, _ = _make_backend(model="deepseek-v9-hypothetical")

@@ -22,10 +22,16 @@ from ..backends import list_available_models
 
 
 def _fmt_money(value) -> str:
-    """Format a per-million-token dollar price, or an em dash."""
-    if isinstance(value, (int, float)):
-        return f"${value:.4g}"
-    return "—"
+    """Format a per-million-token dollar price, or an em dash.
+
+    Two decimals for ordinary prices; extra precision for the
+    fractional-cent cache-hit rates where 2 decimals would round to 0.
+    """
+    if not isinstance(value, (int, float)):
+        return "—"
+    if 0 < value < 0.01:
+        return f"${value:.4f}".rstrip("0")
+    return f"${value:.2f}"
 
 
 def print_model_table(provider_filter: str | None = None) -> None:
