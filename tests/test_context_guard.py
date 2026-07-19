@@ -278,12 +278,12 @@ class TestExampleFirstResponse(unittest.TestCase):
         self.assertIn(EXAMPLE_FIRST_RESPONSE, framed)
 
     def test_seed_appends_assistant_and_tool_results(self):
+        agent = _make_agent(task="do the thing")
         with mock.patch(
             "agents.tools.functions.run_console_command",
             return_value="├── agents\n└── tests",
         ):
-            agent = _make_agent(task="do the thing")
-        agent._seed_first_turn()
+            agent._seed_first_turn()
         # After seed: [user task, assistant example, user tool results]
         self.assertEqual(len(agent.context), 3)
         self.assertEqual(agent.context[1]["role"], "assistant")

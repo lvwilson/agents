@@ -566,6 +566,10 @@ class Agent:
         context and must not be duplicated.
         """
         from .tools.functions import run_console_command
+        from .ui import safe_console_print
+
+        # Display the example assistant response to the user
+        safe_console_print("\n" + EXAMPLE_FIRST_RESPONSE + "\n", style="stream")
 
         # Append the example assistant response
         self.context.append(_form_message("assistant", EXAMPLE_FIRST_RESPONSE))
