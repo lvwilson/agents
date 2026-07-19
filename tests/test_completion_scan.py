@@ -174,7 +174,6 @@ class TestRunAgentCompletionDetection(unittest.TestCase):
         agent = MockAgent.return_value
         agent.session_id = "testsession"
         agent._request_episode_summary.return_value = None
-        agent.request_completion.return_value = True
         agent.context = [
             _form_message("user", "task"),
             _form_message("assistant", "no block"),
@@ -187,7 +186,30 @@ class TestRunAgentCompletionDetection(unittest.TestCase):
 
         self.assertFalse(success)
         self.assertEqual(completion, "Error")
-        agent.request_completion.assert_called_once()
+        # request_completion is no longer called — the system prompt
+        # explicitly requires a completion block, so absence is a
+        # definitive failure with no retry.
+        agent.request_completion.assert_not_called()
+
+    @mock.patch.object(agents_module, "Agent")
+    def test_success_when_completion_in_final_response(self, MockAgent):
+        """Agent finishes with a completion block and no commands."""
+        agent = MockAgent.return_value
+        agent.session_id = "testsession"
+        agent._request_episode_summary.return_value = None
+        agent.context = [
+            _form_message("user", "task"),
+            _form_message("assistant", "done\n" + SUCCESS_BLOCK),
+            _form_message("user", "=== Tool Results ===\nEnd.\n=== End Tool Results ==="),
+        ]
+
+        completion, success, _sid = agents_module.run_agent(
+            "basic_agent.yaml", "do stuff", 1.0, save=False, nogit=True
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(completion, "did the thing")
+        agent.request_completion.assert_not_called()
 
 
 if __name__ == "__main__":

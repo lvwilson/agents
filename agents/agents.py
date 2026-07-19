@@ -669,8 +669,6 @@ class Agent:
         # "End." sentinel is mutated and the agent fails to terminate
         # even when no commands were found.
         command_called = command_response != "End."
-        # A response with no completion block also ended the turn: the
-        # model stopped without either mechanism the harness understands.
         completion_found = extract_completion(response) is not None
 
         # Check compute budget
@@ -1072,13 +1070,6 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     # newest-to-oldest so a correctly written completion is never
     # reported as a failure merely because of its position.
     completion_result = _find_latest_completion(agent.context)
-    if completion_result is None and len(agent.context) > 2:
-        # Give the agent one more chance to provide a completion block.
-        try:
-            if agent.request_completion():
-                completion_result = _find_latest_completion(agent.context)
-        except Exception as e:
-            logging.warning("Completion-retry iteration failed: %s", e)
 
     completion = completion_result.text if completion_result else "Error"
     success = completion_result.success if completion_result else False
