@@ -136,7 +136,10 @@ class TestCommitMessageHandling(unittest.TestCase):
     def test_fences_stripped(self):
         agent = self._make_agent()
 
-        def fake_iterate():
+        def fake_iterate(free_form=False):
+            # Internal one-shot calls must run in free-form mode so the
+            # accidental-stop guard doesn't fire on plain-prose replies.
+            assert free_form, "commit-message iteration must be free_form"
             agent.context.append({
                 "role": "assistant",
                 "content": [{"type": "text", "text": "```\nfix the thing\n```"}],

@@ -643,11 +643,24 @@ class Agent:
         framed = build_tool_results_message(tree_output)
         self.context.append(_form_message("user", framed))
 
-    def _iterate(self):
+    def _iterate(self, free_form=False):
         """Perform one iteration of the conversation with Claude.
 
+        Args:
+            free_form: When True, the response is treated as free-form
+                text rather than a command turn: it is not scanned for
+                ``Command:`` lines (nothing is executed), the
+                completion-block and no-output-reminder guards are
+                skipped, and the anti-loop check does not apply.  Used
+                by internal one-shot calls (episode summary, commit
+                message) whose replies are plain prose by design —
+                running them through the command pipeline made the
+                harness complain "neither commands nor a completion
+                block" and inject a spurious reminder.
+
         Returns:
-            bool: True if the agent should continue running, False otherwise
+            bool: True if the agent should continue running, False
+            otherwise.  Always False in free-form mode.
         """
         print_iteration_header(
             self.iterations, self.client.cost, self.compute_budget,
@@ -701,7 +714,7 @@ class Agent:
             print_clipped(clipped, response)
 
         # Anti-looping check: detect if the LLM produced the exact same output twice in a row
-        if self._last_assistant_response is not None and response == self._last_assistant_response:
+        if not free_form and self._last_assistant_response is not None and response == self._last_assistant_response:
             self._loop_count += 1
             if self._loop_count >= 3:
                 raise RuntimeError("Looping error: LLM produced identical response 3 times in a row.")
@@ -726,6 +739,13 @@ class Agent:
         self.context.append(_form_message("assistant", response))
         self._last_assistant_response = response
         self._loop_count = 0
+
+        if free_form:
+            # Internal one-shot call: the reply is plain prose.  Nothing
+            # to execute, no guards to run — the caller extracts what it
+            # needs from the assistant message just appended.
+            return False
+
         command_response, image_media_tuple_array = process_content(response)
 
         # Determine if we should continue running.  This must be checked
@@ -924,7 +944,7 @@ class Agent:
         )
         self.context.append(_form_message("user", feedback))
         try:
-            self._iterate()
+            self._iterate(free_form=True)
         except Exception as e:
             logging.warning("Episode-summary iteration failed: %s", e)
             return None
@@ -956,7 +976,7 @@ class Agent:
         )
         self.context.append(_form_message("user", feedback))
         try:
-            self._iterate()
+            self._iterate(free_form=True)
         except Exception as e:
             # A failure here (loop detection, retry exhaustion) must not
             # crash the CLI after the session completed successfully.
