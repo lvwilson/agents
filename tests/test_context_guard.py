@@ -19,7 +19,11 @@ from agents import agents as agents_module  # noqa: E402
 from agents.agents import (  # noqa: E402
     Agent,
     CONTEXT_GUARD_HEADER,
+    TASK_HEADER,
+    TOOL_RESULTS_HEADER,
     build_context_guard,
+    build_task_message,
+    build_tool_results_message,
 )
 
 _FAKE_CONFIG = {
@@ -40,6 +44,8 @@ def _make_agent(task="do the thing", memory_view="", notes_compact=False):
         client.display_name = "MockModel"
         client.context_window_size = 200_000
         client.cost = 0.0
+        client.cost_without_cache = 0.0
+        client.peak_context_tokens = 0
         client.last_input_tokens = 0
         client.last_output_tokens = 0
         client.last_total_context_tokens = 0
@@ -72,7 +78,8 @@ class TestContextGuardOnNewSession(unittest.TestCase):
         self.assertIn("Operating System:", text)
         self.assertIn("Shell:", text)
         self.assertIn("=== Folder Memory: Episodes ===", text)
-        self.assertTrue(text.endswith("do the thing"))
+        self.assertTrue(text.endswith(build_task_message("do the thing")))
+        self.assertIn(TASK_HEADER, text)
 
     def test_memory_loaded_at_session_start(self):
         agent = _make_agent(memory_view="=== Folder Memory: Notes ===\nIMPORTANT NOTE")
@@ -132,7 +139,7 @@ class TestCachePureResume(unittest.TestCase):
         self.assertEqual(agent.context[1], asst)
         # Trailing user message replaced with the new task, guard-free.
         new_msg = agent.context[-1]
-        self.assertEqual(new_msg["content"][0]["text"], "new task")
+        self.assertEqual(new_msg["content"][0]["text"], build_task_message("new task"))
         self.assertNotIn(CONTEXT_GUARD_HEADER, new_msg["content"][0]["text"])
         # Cache annotation applied only to the new tail message.
         agent.client.mark_for_caching.assert_called_once_with(new_msg)
@@ -151,7 +158,8 @@ class TestCachePureResume(unittest.TestCase):
         self.assertTrue(any("context-guard" in m for m in logs.output))
         # Still no guard injected — prefix left exactly as saved.
         self.assertEqual(agent.context[0], legacy_first)
-        self.assertEqual(agent.context[-1]["content"][0]["text"], "new task")
+        self.assertEqual(agent.context[-1]["content"][0]["text"],
+                         build_task_message("new task"))
 
 
 class TestResumePayloadPurity(unittest.TestCase):
@@ -211,7 +219,8 @@ class TestResumePayloadPurity(unittest.TestCase):
                          "context prefix changed across resume")
         # The only difference is the new task appended at the tail.
         self.assertEqual(context[-1]["role"], "user")
-        self.assertEqual(context[-1]["content"][0]["text"], "resume task")
+        self.assertEqual(context[-1]["content"][0]["text"],
+                         build_task_message("resume task"))
         self.assertEqual(len(context), len(pre_resume_prefix) + 1)
 
     def test_resume_does_not_inject_new_guard_or_memory(self):
@@ -234,9 +243,10 @@ class TestResumePayloadPurity(unittest.TestCase):
         # Prefix (everything before the popped trailing user msg) restored
         # byte-identically.
         self.assertEqual(resumed.context[:-1], saved_context[:-1])
-        # Exactly one message appended — the bare new task.
+        # Exactly one message appended — the new task (framed as a Task block).
         self.assertEqual(len(resumed.context), len(saved_context))
-        self.assertEqual(resumed.context[-1]["content"][0]["text"], "resume task")
+        self.assertEqual(resumed.context[-1]["content"][0]["text"],
+                         build_task_message("resume task"))
         # Fresh memory from the new process never entered the context.
         joined = " ".join(m["content"][0].get("text", "") for m in resumed.context)
         self.assertNotIn("FRESH MEMORY XYZ", joined)
@@ -245,6 +255,67 @@ class TestResumePayloadPurity(unittest.TestCase):
                       if CONTEXT_GUARD_HEADER in m["content"][0].get("text", "")]
         self.assertEqual(len(guard_msgs), 1)
         self.assertIs(guard_msgs[0], resumed.context[0])
+
+
+class TestMessageFraming(unittest.TestCase):
+    """User input and tool output are wrapped in explicit labelled blocks
+    so the model can always tell them apart (a bare ``ok`` used to read
+    as if the human had typed it)."""
+
+    def test_build_task_message_wraps_in_task_block(self):
+        framed = build_task_message("fix the bug")
+        self.assertTrue(framed.startswith(TASK_HEADER))
+        self.assertTrue(framed.endswith("=== End Task ==="))
+        self.assertIn("fix the bug", framed)
+
+    def test_build_tool_results_message_wraps_in_results_block(self):
+        framed = build_tool_results_message("ok\n")
+        self.assertTrue(framed.startswith(TOOL_RESULTS_HEADER))
+        self.assertTrue(framed.endswith("=== End Tool Results ==="))
+        self.assertIn("ok", framed)
+
+    def test_first_message_contains_task_block(self):
+        agent = _make_agent(task="ship it")
+        text = agent.context[0]["content"][0]["text"]
+        self.assertIn(TASK_HEADER, text)
+        self.assertIn("=== End Task ===", text)
+
+    def test_iterate_wraps_tool_output_in_results_block(self):
+        agent = _make_agent(task="do work")
+        agent.client.generate_response = mock.Mock(
+            return_value='Command: run_console_command "true"'
+        )
+        agent._iterate()
+        last = agent.context[-1]
+        self.assertEqual(last["role"], "user")
+        text = last["content"][0]["text"]
+        self.assertTrue(text.startswith(TOOL_RESULTS_HEADER))
+        self.assertTrue(text.rstrip().endswith("=== End Tool Results ==="))
+
+    def test_iterate_no_command_still_frames_end_sentinel(self):
+        # Even when no command is found, the appended user message is a
+        # labelled Tool Results block (content "End."), never bare text.
+        agent = _make_agent(task="do work")
+        agent.client.generate_response = mock.Mock(return_value="no commands here")
+        running = agent._iterate()
+        self.assertFalse(running)
+        text = agent.context[-1]["content"][0]["text"]
+        self.assertTrue(text.startswith(TOOL_RESULTS_HEADER))
+        self.assertIn("End.", text)
+
+    def test_tool_result_content_not_mistaken_for_user_task(self):
+        # A tool result must be distinguishable from the user-authored task.
+        agent = _make_agent(task="real task")
+        agent.client.generate_response = mock.Mock(
+            return_value='Command: run_console_command "echo hi"'
+        )
+        agent._iterate()
+        task_text = agent.context[0]["content"][0]["text"]
+        result_text = agent.context[-1]["content"][0]["text"]
+        self.assertIn(TASK_HEADER, task_text)
+        self.assertNotIn(TASK_HEADER, result_text)
+        self.assertIn(TOOL_RESULTS_HEADER, result_text)
+        self.assertNotIn(TOOL_RESULTS_HEADER, task_text)
 
 
 if __name__ == "__main__":

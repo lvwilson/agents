@@ -289,6 +289,32 @@ def read_configuration(configuration_name):
 #: user message of a session.
 CONTEXT_GUARD_HEADER = "=== Context Guard (session start) ==="
 
+#: Header line identifying the task block of the first user message.
+TASK_HEADER = "=== Task ==="
+
+#: Header line identifying a tool-results user message.
+TOOL_RESULTS_HEADER = "=== Tool Results ==="
+
+
+def build_task_message(task):
+    """Wrap *task* in an explicit task block.
+
+    The first user message of a session is the only user-authored text
+    in the conversation; labelling it makes it unambiguous against the
+    tool-result user messages that follow.
+    """
+    return f"{TASK_HEADER}\n{task}\n=== End Task ==="
+
+
+def build_tool_results_message(command_response):
+    """Wrap *command_response* in an explicit tool-results block.
+
+    Tool output is delivered to the model as a ``user`` message (the
+    chat APIs have no tool role), so without a label a bare ``ok`` reads
+    as if the human typed it.  The guard makes the origin explicit.
+    """
+    return f"{TOOL_RESULTS_HEADER}\n{command_response}\n=== End Tool Results ==="
+
 
 def build_context_guard():
     """Build the context guard prepended to the first user message.
@@ -435,7 +461,8 @@ class Agent:
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
-        first_message = f"{context_guard}\n\n{task}" if context_guard else task
+        task_block = build_task_message(task)
+        first_message = f"{context_guard}\n\n{task_block}" if context_guard else task_block
         self.context.append(_form_message("user", first_message))
         self.compute_budget = compute_budget
         self.iterations = 0
@@ -546,11 +573,17 @@ class Agent:
             command_response += "\n" + self.overbudget_prompt
             print_budget_warning(self.client.cost, self.compute_budget)
 
+        # Label the tool output so it is unmistakably tool-generated
+        # rather than user-authored.  The loop-control sentinel above
+        # uses the raw command_response, so wrapping here cannot break
+        # termination.
+        framed_response = build_tool_results_message(command_response)
+
         # Add user message to context (with or without images)
         if len(image_media_tuple_array) == 0:
-            message = _form_message("user", command_response)
+            message = _form_message("user", framed_response)
         else:
-            message = _form_message_with_images("user", command_response, image_media_tuple_array)
+            message = _form_message_with_images("user", framed_response, image_media_tuple_array)
         self.context.append(message)
 
         # Large command outputs (e.g. file reads) are expensive to
@@ -834,7 +867,7 @@ class Agent:
                 "Appending new task without removing last message.",
                 self.context[-1]["role"] if self.context else "<empty>",
             )
-        new_message = _form_message("user", self.task)
+        new_message = _form_message("user", build_task_message(self.task))
         self.context.append(new_message)
         # Let the backend annotate the new message for caching (e.g.
         # Anthropic adds cache_control blocks) and trim stale markers.
