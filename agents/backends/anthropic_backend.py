@@ -8,22 +8,27 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
+from ..llm_backend import (
+    LLMBackend,
+    StreamHandler,
+    RATE_LIMIT,
+    TRANSIENT,
+    merge_consecutive_messages,
+)
 
 
 class AnthropicBackend(LLMBackend):
     """Claude backend with streaming, prompt caching, and retry logic."""
 
     MODEL_PRICING = {
-        "claude-3-5-sonnet-20240620":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-3-5-sonnet-20241022":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-3-7-sonnet-20250219":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-sonnet-4-20250514":    {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00},
-        "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00},
-        "claude-fable-5":              {"input_token_cost": 10.00, "output_token_cost": 50.00},
-        "MiniMax-M2.5" :               {"input_token_cost": 0.3,  "output_token_cost": 1.2},
+        "claude-3-5-sonnet-20240620":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-3-5-sonnet-20241022":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-3-7-sonnet-20250219":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-sonnet-4-20250514":    {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
+        "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00, "cache_read_cost": 0.50},
+        "claude-fable-5":              {"input_token_cost": 10.00, "output_token_cost": 50.00, "cache_read_cost": 1.00},
     }
 
     MODEL_DISPLAY_NAMES = {
@@ -46,11 +51,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-6":           200_000,
         "claude-opus-4-6":             200_000,
         "claude-fable-5":              200_000,
-        "MiniMax-M2.5":                200_000,
     }
-
-    # Models that route to MiniMax (require special API key validation)
-    MINIMAX_MODELS = {"MiniMax-M2.5"}
 
     # Models that support the thinking extension (reasoning tokens)
     THINKING_MODELS = {
@@ -112,15 +113,6 @@ class AnthropicBackend(LLMBackend):
         api_key = os.getenv("CLAUDE_API_KEY")
 
         if base_url:
-            # Defensive check: MiniMax models require specific API key prefix
-            # to prevent credential leaks. Only allow keys starting with "sk-api-kt"
-            if model in self.MINIMAX_MODELS:
-                if not api_key or not api_key.startswith("sk-api-kt"):
-                    raise ValueError(
-                        f"Invalid API key for MiniMax model '{model}'. "
-                        "API key must begin with 'sk-api-kt' to prevent credential leakage. "
-                        "Please use a valid MiniMax API key."
-                    )
             if not api_key:
                 api_key = "local"
             self._client = _anthropic.Anthropic(api_key=api_key, base_url=base_url)
@@ -237,7 +229,12 @@ class AnthropicBackend(LLMBackend):
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "…"}}
 
         Text blocks and cache_control annotations are passed through unchanged.
+
+        Consecutive same-role messages (produced by harness feedback
+        injections) are merged first so strict Anthropic-compatible
+        servers that enforce role alternation don't reject the payload.
         """
+        context = merge_consecutive_messages(context)
         messages = []
         for msg in context:
             parts = msg.get("content", [])
@@ -258,6 +255,16 @@ class AnthropicBackend(LLMBackend):
         return messages
 
     # ── Core: get raw API response with retries ──────────────────────
+
+    def _extra_stream_kwargs(self) -> dict:
+        """Extra provider-specific keyword arguments for the stream call.
+
+        Merged into ``stream_kwargs`` by ``_get_response``.  The base
+        implementation returns an empty dict; subclasses (e.g. DeepSeek)
+        override it to inject endpoint-specific parameters without
+        duplicating the whole request method.
+        """
+        return {}
 
     def _get_response(self, system_prompt: str, context: list[dict]):
         self.call_count += 1
@@ -306,6 +313,10 @@ class AnthropicBackend(LLMBackend):
         )
         if self.model not in self.NO_TEMPERATURE_MODELS:
             stream_kwargs["temperature"] = self.temperature
+
+        # Provider-specific extras (e.g. DeepSeek's output_config.effort).
+        # The base implementation returns an empty dict.
+        stream_kwargs.update(self._extra_stream_kwargs())
 
         # Send the thinking API parameter only to servers known to
         # support it (Anthropic API with a recognised model name).
@@ -408,6 +419,18 @@ class AnthropicBackend(LLMBackend):
             self.last_input_tokens + cache_creation + cache_read,
             self.last_output_tokens,
         )
+
+        # Surface native tool_use blocks — this harness executes textual
+        # Command: lines, not API tool calls, so these would otherwise be
+        # silently dropped.  Log them (yellow in the UI) so the user can
+        # see the model is emitting commands in the wrong place.
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use":
+                self._pending_tool_calls.append((
+                    getattr(block, "name", "?"),
+                    str(getattr(block, "input", "")),
+                ))
+        self._emit_tool_calls()
 
         # Collect text from all TextBlock objects in the response.
         # ThinkingBlock content is deliberately excluded — reasoning was

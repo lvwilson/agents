@@ -55,6 +55,16 @@ class StreamHandler:
     def on_stream_reasoning_end(self) -> None:
         """Called after the last reasoning token (or if no reasoning tokens)."""
 
+    def on_tool_call(self, name: str, arguments: str = "") -> None:
+        """Called when the model emits a native API tool/function call.
+
+        This harness does not execute native tool calls — it parses
+        textual ``Command:`` lines instead — so any native tool call the
+        model emits would otherwise be silently dropped.  Backends call
+        this hook so the UI can log the call (in yellow) and the user
+        can see that the model is emitting commands in the wrong place.
+        """
+
     def on_retry(self, message: str) -> None:
         """Called when a retryable error occurs (rate-limit or transient)."""
 
@@ -79,6 +89,39 @@ RATE_LIMIT = "rate_limit"
 TRANSIENT = "transient"
 
 
+def merge_consecutive_messages(context: list[dict]) -> list[dict]:
+    """Merge consecutive messages that share the same role.
+
+    Several harness feedback paths (empty-response feedback, the
+    no-output reminder, episode-summary and commit-message requests,
+    user feedback mode) append a ``user`` message immediately after a
+    previous ``user`` (tool-results) message.  Strict chat APIs
+    (OpenAI, some Anthropic-compatible local servers) reject payloads
+    with consecutive same-role messages with a 400 error.
+
+    This normalization pass merges such runs into a single message by
+    concatenating their content part lists, preserving order.  Image
+    and text parts are kept as separate content blocks, which every
+    supported backend accepts.  The input is not mutated; a new list
+    of (shallow-copied) messages is returned.
+
+    Args:
+        context: Conversation in the internal message format.
+
+    Returns:
+        A new list of messages with no consecutive same-role pairs.
+    """
+    merged: list[dict] = []
+    for msg in context:
+        role = msg.get("role")
+        parts = list(msg.get("content", []) or [])
+        if merged and merged[-1].get("role") == role:
+            merged[-1]["content"] = merged[-1]["content"] + parts
+        else:
+            merged.append({"role": role, "content": parts})
+    return merged
+
+
 class InterruptedResponse(Exception):
     """Raised when a streaming response is interrupted by the user.
 
@@ -89,6 +132,17 @@ class InterruptedResponse(Exception):
     def __init__(self, partial_text: str):
         self.partial_text = partial_text
         super().__init__(f"Response interrupted ({len(partial_text)} chars received)")
+
+
+class EmptyResponseError(Exception):
+    """Raised when the model returns no text content at all.
+
+    This is distinct from a network/transient failure: the API call
+    succeeded but the assistant turn contained only reasoning/thinking
+    tokens (or nothing).  The agent loop catches this and feeds it back
+    to the model as an instruction to produce visible output, rather
+    than treating the blank turn as a request to end the session.
+    """
 
 
 class LLMBackend(ABC):
@@ -147,6 +201,12 @@ class LLMBackend(ABC):
         self.last_output_tokens: int = 0
         self.last_total_context_tokens: int = 0
         self.peak_context_tokens: int = 0
+
+        # Native tool/function calls detected during the current call.
+        # Backends append (name, arguments) tuples here while parsing
+        # the response; generate_response drains the list via
+        # _emit_tool_calls() after the stream has ended.
+        self._pending_tool_calls: list[tuple[str, str]] = []
 
     # ── Retry template method ────────────────────────────────────────
 
@@ -255,6 +315,25 @@ class LLMBackend(ABC):
                 except (ValueError, TypeError):
                     pass
         return None
+
+    # ── Native tool-call logging ─────────────────────────────────────
+
+    def _emit_tool_calls(self) -> None:
+        """Drain ``_pending_tool_calls`` through the stream handler.
+
+        Called by ``generate_response`` after the response has been
+        fully processed (stream ended, usage recorded).  This harness
+        executes textual ``Command:`` lines, not native API tool calls,
+        so any tool calls the model emitted are logged (yellow in the
+        UI) to alert the user that commands are landing in the wrong
+        place, rather than being silently dropped.
+        """
+        # getattr for subclasses that bypass LLMBackend.__init__ (e.g.
+        # test fixtures that construct backends with __new__).
+        pending = getattr(self, "_pending_tool_calls", None) or []
+        self._pending_tool_calls = []
+        for name, arguments in pending:
+            self.stream_handler.on_tool_call(name, arguments)
 
     # ── Abstract methods ─────────────────────────────────────────────
 

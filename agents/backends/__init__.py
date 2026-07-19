@@ -26,9 +26,11 @@ if TYPE_CHECKING:
 # Maps provider name → (module_path, class_name)
 _REGISTRY: dict[str, tuple[str, str]] = {
     "anthropic": (".anthropic_backend", "AnthropicBackend"),
-    "openai":    (".openai_backend",    "OpenAIBackend"),
+    "deepseek":  (".deepseek_backend",  "DeepSeekBackend"),
     "gemini":    (".gemini_backend",    "GeminiBackend"),
     "kimi":      (".kimi_backend",      "KimiBackend"),
+    "minimax":   (".minimax_backend",   "MinimaxBackend"),
+    "openai":    (".openai_backend",    "OpenAIBackend"),
 }
 
 # Cache of already-imported classes so we import each module at most once.
@@ -53,6 +55,57 @@ def _load_class(provider: str) -> type:
     cls = getattr(module, class_name)
     _CLASS_CACHE[provider] = cls
     return cls
+
+
+def list_available_models(provider_filter: str | None = None) -> list[dict]:
+    """Return model information from all registered backends.
+
+    Parameters
+    ----------
+    provider_filter : str or None
+        If given, only return models from this provider.
+
+    Returns
+    -------
+    list[dict]
+        Each dict has keys: provider, model, display, input_cost,
+        output_cost, cache_read_cost, context.  Costs are in dollars
+        per million tokens; context is the context-window size in
+        tokens.  ``None`` values indicate unavailable information.
+    """
+    results: list[dict] = []
+    for provider_name in sorted(_REGISTRY):
+        if provider_filter and provider_name != provider_filter:
+            continue
+        try:
+            cls = _load_class(provider_name)
+        except Exception:
+            continue
+
+        # Use __dict__ rather than getattr so subclassed backends are
+        # not credited with models they merely inherit — DeepSeekBackend
+        # subclasses AnthropicBackend, so a plain getattr would list all
+        # nine Claude models under the "deepseek" provider too.
+        pricing: dict = cls.__dict__.get("MODEL_PRICING", {}) or {}
+        contexts: dict = cls.__dict__.get("MODEL_CONTEXT_WINDOWS", {}) or {}
+        displays: dict = cls.__dict__.get("MODEL_DISPLAY_NAMES", {}) or {}
+
+        all_models = set(pricing.keys()) | set(contexts.keys()) | set(displays.keys())
+
+        for model_name in sorted(all_models):
+            price = pricing.get(model_name, {})
+            results.append(
+                {
+                    "provider": provider_name,
+                    "model": model_name,
+                    "display": displays.get(model_name, model_name),
+                    "input_cost": price.get("input_token_cost"),
+                    "output_cost": price.get("output_token_cost"),
+                    "cache_read_cost": price.get("cache_read_cost"),
+                    "context": contexts.get(model_name),
+                }
+            )
+    return results
 
 
 def create_backend(

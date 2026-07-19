@@ -380,6 +380,16 @@ class RichStreamHandler(StreamHandler):
         # Restart spinner while waiting for text content
         self._start_spinner()
 
+    def on_tool_call(self, name: str, arguments: str = "") -> None:
+        args_str = str(arguments)
+        if len(args_str) > 120:
+            args_str = args_str[:117] + "…"
+        safe_console_print(
+            f"  ⚠ Native tool call detected (not executed): "
+            f"[bright_yellow]{name}[/]({args_str})",
+            style="warning",
+        )
+
     def on_retry(self, message: str) -> None:
         safe_console_print(f"\n  ⏳ {message}", style="warning")
 

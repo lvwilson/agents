@@ -44,7 +44,7 @@ TEXT_EXTENSIONS = {
     ".css", ".scss", ".sass", ".less", ".styl",
     ".html", ".htm", ".xhtml", ".svg",
     ".rb", ".erb",
-    ".java", ".jar",
+    ".java",
     ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx", ".hh",
     ".cs",
     ".go", ".mod",
@@ -86,7 +86,6 @@ TEXT_EXTENSIONS = {
     ".ini", ".cfg", ".conf", ".properties", ".prop",
     ".env", ".envrc",
     ".log",
-    ".pickle", ".pkl",  # text-ish when small
     # Docs / markup
     ".md", ".mdx", ".markdown",
     ".rst", ".txt",
@@ -137,8 +136,11 @@ SKIP_DIRS = {
     "venv", "env", ".env", ".tox", ".mypy_cache", ".ruff_cache",
     ".pytest_cache", ".idea", ".vscode", ".vs", "build", "dist",
     "target", "out", ".next", ".nuxt", ".output", "coverage",
-    ".eggs", "*.egg-info", ".cache", ".DS_Store",
+    ".eggs", ".cache", ".DS_Store",
 }
+# Directory names ending with this suffix are also skipped
+# (literal set-membership can't express the "*.egg-info" glob).
+SKIP_DIR_SUFFIXES = (".egg-info",)
 
 
 # ── Database helpers ────────────────────────────────────────────────
@@ -207,7 +209,10 @@ def _scan_folder(folder_path: str) -> dict:
 
     for root, dirs, filenames in os.walk(folder_path):
         # Prune skip directories
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [
+            d for d in dirs
+            if d not in SKIP_DIRS and not d.endswith(SKIP_DIR_SUFFIXES)
+        ]
 
         for fname in sorted(filenames):
             full_path = os.path.join(root, fname)

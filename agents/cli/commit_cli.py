@@ -22,7 +22,7 @@ import sys
 from ..agents import (
     read_configuration,
     _format_host_for_url,
-    _ONLINE_MODELS,
+    resolve_model,
 )
 from ..backends import create_backend
 from ..git_utils import (
@@ -46,9 +46,13 @@ def _extract_backtick_block(text: str) -> str | None:
     return None
 
 
-def _get_agent_author() -> tuple[str, str]:
-    """Return (author_name, author_email) matching the agent's identity."""
-    model = os.environ.get("LOCAL_MODEL", os.environ.get("AGENT_MODEL", "agent"))
+def _get_agent_author(model: str | None = None) -> tuple[str, str]:
+    """Return (author_name, author_email) matching the agent's identity.
+
+    *model* is the resolved model from the ``-m`` flag; when omitted the
+    identity falls back to LOCAL_MODEL/AGENT_MODEL env vars.
+    """
+    model = model or os.environ.get("LOCAL_MODEL", os.environ.get("AGENT_MODEL", "agent"))
     hostname = platform.node()
     return model, f"agent@{hostname}"
 
@@ -64,8 +68,8 @@ def _auto_message(files: list[str]) -> str:
 COMMIT_SYSTEM_PROMPT = (
     "You are a git commit message generator. You receive a unified diff "
     "and must produce a single, concise commit message on one line. "
-    "Wrap the commit message in five backticks like in the following example."
-    "`````Commit message here`````"
+    "Wrap the commit message in five backticks like in the following "
+    f"example.\n{_BACKTICK}Commit message here{_BACKTICK}"
 )
 
 
@@ -93,17 +97,21 @@ def _generate_commit_message(
 
     # ── Resolve model and provider ──────────────────────────────────
     if model is not None:
-        # Explicit model via -m: auto-detect provider
-        provider = _ONLINE_MODELS.get(model)
-        if provider is not None:
+        # Explicit model via -m: auto-detect provider (shared helper so
+        # this never drifts from the Agent's own resolution).
+        local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
+        local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
+        detected_provider, local_base_url = resolve_model(
+            model, local_host, local_port
+        )
+        if detected_provider is not None:
             # Known online model — use the detected provider
+            provider = detected_provider
             base_url = config.get("base_url", None)
         else:
             # Unknown model name — treat as local
-            local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
-            local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
             provider = "anthropic"
-            base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+            base_url = local_base_url
     elif online:
         provider = os.environ.get(
             "AGENT_MODEL_PROVIDER",
@@ -116,6 +124,8 @@ def _generate_commit_message(
                 "anthropic": "claude-opus-4-6",
                 "openai": "gpt-5.3-codex",
                 "gemini": "gemini-3.1-pro-preview",
+                "kimi": "kimi-k3",
+                "deepseek": "deepseek-v4-pro",
             }
             model = provider_defaults.get(provider, "claude-opus-4-6")
     else:
@@ -214,11 +224,13 @@ def main():
         print("Error: not a git repository.", file=sys.stderr)
         sys.exit(1)
 
-    author_name, author_email = _get_agent_author()
+    author_name, author_email = _get_agent_author(args.model)
+
+    pre_staged = set(get_staged_files("."))
 
     if args.tracked:
         files = sorted(
-            set(get_tracked_modified_files(".")) | set(get_staged_files("."))
+            set(get_tracked_modified_files(".")) | pre_staged
         )
         if not files:
             print("No tracked files with changes to commit.")
@@ -231,16 +243,31 @@ def main():
     else:
         if not args.files:
             parser.error("Provide --tracked, --all, or specific file paths.")
-        files = args.files
+        files = sorted(set(args.files))
+
+    # Refuse to sweep unrelated pre-staged changes into the commit.
+    # (--all intentionally includes everything already staged.)
+    if not args.all:
+        outside = sorted(pre_staged - set(files))
+        if outside:
+            print(
+                "Error: the index contains pre-staged files outside the "
+                "requested commit set:\n  " + "\n  ".join(outside)
+                + "\nUnstage them first, or use --all to commit everything.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     # Stage files first so we can get the diff
-    _, stderr, rc = _run_git("add", *files, cwd=".")
+    # ('--' guards against filenames that start with a dash)
+    _, stderr, rc = _run_git("add", "--", *files, cwd=".")
     if rc != 0:
         print(f"git add failed: {stderr}", file=sys.stderr)
         sys.exit(1)
 
-    # Get the staged diff for the LLM
-    diff, _, _ = _run_git("diff", "--cached", cwd=".")
+    # Get the staged diff for the LLM (restricted to the target files
+    # so the message isn't polluted by unrelated staged changes)
+    diff, _, _ = _run_git("diff", "--cached", "--", *files, cwd=".")
 
     # Generate commit message from the diff
     message = _generate_commit_message(

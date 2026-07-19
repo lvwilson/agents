@@ -10,7 +10,7 @@ Kimi K3 specifics
 * ``reasoning_effort="max"`` on every call (thinking always enabled)
 * Fixed parameters: temperature=1.0, top_p=0.95, n=1, penalties=0
   (omitted from requests per Kimi docs)
-* Pricing: $3 / M input, $15 / M output, $0.30 / M cache-hit input
+* Pricing: $3 / M input, $15 / M output, $0.30 / M cache-read input
 * API key via ``MOONSHOT_API_KEY`` environment variable
 """
 
@@ -18,7 +18,14 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import LLMBackend, StreamHandler, RATE_LIMIT, TRANSIENT
+from ..llm_backend import (
+    LLMBackend,
+    StreamHandler,
+    EmptyResponseError,
+    RATE_LIMIT,
+    TRANSIENT,
+    merge_consecutive_messages,
+)
 
 
 class KimiBackend(LLMBackend):
@@ -28,7 +35,7 @@ class KimiBackend(LLMBackend):
         "kimi-k3": {
             "input_token_cost": 3.00,
             "output_token_cost": 15.00,
-            "cache_hit_token_cost": 0.30,
+            "cache_read_cost": 0.30,
         },
     }
 
@@ -74,7 +81,13 @@ class KimiBackend(LLMBackend):
 
     @staticmethod
     def _format_messages(system_prompt: str, context: list[dict]) -> list[dict]:
-        """Convert internal message format to OpenAI chat-completions input."""
+        """Convert internal message format to OpenAI chat-completions input.
+
+        Consecutive same-role messages (produced by harness feedback
+        injections) are merged first so strict servers that enforce
+        role alternation don't reject the payload.
+        """
+        context = merge_consecutive_messages(context)
 
         def _to_content(parts: list[dict]) -> str | list[dict]:
             """Handle both text-only and multimodal content."""
@@ -147,7 +160,7 @@ class KimiBackend(LLMBackend):
 
         input_cost = pricing["input_token_cost"]
         output_cost = pricing["output_token_cost"]
-        cache_cost = pricing.get("cache_hit_token_cost", input_cost * 0.1)
+        cache_cost = pricing.get("cache_read_cost", input_cost * 0.1)
 
         uncached_input = max(0, input_tokens - cache_read_tokens)
 
@@ -182,12 +195,21 @@ class KimiBackend(LLMBackend):
                 reasoning_effort="max",
                 max_completion_tokens=131_072,
                 stream=True,
+                stream_options={"include_usage": True},
             )
 
             collected_text = ""
             usage = None
+            reasoning_started = False
+            tool_calls: dict[int, dict] = {}
 
             for event in stream:
+                # Usage arrives on a dedicated final chunk whose choices
+                # list is empty, so capture it before the guard below.
+                chunk_usage = getattr(event, "usage", None)
+                if chunk_usage:
+                    usage = chunk_usage
+
                 choices = getattr(event, "choices", None)
                 if not choices:
                     continue
@@ -195,20 +217,54 @@ class KimiBackend(LLMBackend):
                 if delta is None:
                     continue
 
-                # Kimi streams reasoning_content separately
+                # Native tool calls stream as per-index fragments:
+                # ``function.name`` arrives once, ``function.arguments``
+                # in chunks.  This harness executes textual Command:
+                # lines, not API tool calls, so these would otherwise be
+                # silently dropped — accumulate them for post-response
+                # logging (yellow in the UI).
+                for tc in getattr(delta, "tool_calls", None) or []:
+                    slot = tool_calls.setdefault(
+                        getattr(tc, "index", 0) or 0,
+                        {"name": "", "arguments": []},
+                    )
+                    func = getattr(tc, "function", None)
+                    if func is not None:
+                        name = getattr(func, "name", None)
+                        if name:
+                            slot["name"] = name
+                        args = getattr(func, "arguments", None)
+                        if args:
+                            slot["arguments"].append(args)
+
+                # ``reasoning_content`` (thinking tokens) is streamed to
+                # the UI via the reasoning hooks so it renders dimmed,
+                # but it is never collected — thinking cannot leak into
+                # the content stream or the conversation context.
                 reasoning = getattr(delta, "reasoning_content", None)
                 if reasoning:
-                    sh.on_stream_token(reasoning)
+                    if not reasoning_started:
+                        sh.on_stream_reasoning_start()
+                        reasoning_started = True
+                    sh.on_stream_reasoning_token(reasoning)
 
                 text = getattr(delta, "content", None)
                 if text:
+                    if reasoning_started:
+                        sh.on_stream_reasoning_end()
+                        reasoning_started = False
                     sh.on_stream_token(text)
                     collected_text += text
 
-                # Usage may appear on the final chunk
-                chunk_usage = getattr(event, "usage", None)
-                if chunk_usage:
-                    usage = chunk_usage
+            # Clean up if the stream ended during a reasoning block.
+            if reasoning_started:
+                sh.on_stream_reasoning_end()
+
+            for slot in tool_calls.values():
+                self._pending_tool_calls.append((
+                    slot["name"] or "?",
+                    "".join(slot["arguments"]),
+                ))
 
             return collected_text, usage
 
@@ -254,7 +310,9 @@ class KimiBackend(LLMBackend):
             cache_read_tokens=0,
         )
 
+        self._emit_tool_calls()
+
         if not text:
-            raise Exception("No text content found in model response")
+            raise EmptyResponseError("No text content found in model response")
 
         return text

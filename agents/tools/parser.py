@@ -153,6 +153,12 @@ def process_content(content):
             inner_result = _execute_command(
                 command.arguments, None, command.backtick_content, truncate=False
             )
+            if isinstance(inner_result, tuple):
+                # e.g. view_page returns (text, screenshot_path) — keep
+                # only the text part for the deep_read response.
+                inner_result = inner_result[0] if inner_result else None
+            if not isinstance(inner_result, str):
+                inner_result = str(inner_result) if inner_result is not None else "ok"
             command_response = (inner_result or "ok") + "\n"
         else:
             command_response = (_execute_command(command.command, command.arguments, command.backtick_content) or "ok") + "\n"
@@ -338,6 +344,8 @@ def _execute_command(command, arguments, backticks, truncate=True):
     # deep_read passes the inner command as a single string argument
     if isinstance(command, str):
         parts = split_preserving_quotes(command)
+        if not parts:
+            return "Error: deep_read requires an inner command (e.g. deep_read read_file path)."
         cmd_name = parts[0].lower()
         remaining_args = parts[1:] if len(parts) > 1 else []
     else:
@@ -347,7 +355,10 @@ def _execute_command(command, arguments, backticks, truncate=True):
     if cmd_name != "run_console_command":
         args = remaining_args + (split_preserving_quotes(arguments) if isinstance(arguments, str) else [])
     else:
-        args = [arguments] if isinstance(arguments, str) else list(arguments or [])
+        # Preserve any args split out of a deep_read inner-command string
+        # (e.g. deep_read run_console_command "ls -la") — they precede
+        # the explicitly-passed arguments.
+        args = remaining_args + ([arguments] if isinstance(arguments, str) and arguments else [])
 
     if not isinstance(args, list):
         args = [args]

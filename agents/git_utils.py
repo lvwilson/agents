@@ -60,10 +60,14 @@ def check_git_clean(path: str = ".") -> tuple[bool, str]:
     for line in status_lines:
         if line.startswith("??"):
             untracked.append(line[3:].strip())
-        elif line[0] in ("M", "A", "D", "R", "C"):
-            staged.append(line[3:].strip())
-        elif line[1] in ("M", "A", "D", "R", "C"):
-            unstaged.append(line[3:].strip())
+            continue
+        x, y = line[0], line[1]
+        fname = line[3:].strip()
+        # A file can appear in both index (x) and worktree (y), e.g. "MM"
+        if x in ("M", "A", "D", "R", "C"):
+            staged.append(fname)
+        if y in ("M", "A", "D", "R", "C"):
+            unstaged.append(fname)
 
     parts: list[str] = []
     if staged:
@@ -74,40 +78,6 @@ def check_git_clean(path: str = ".") -> tuple[bool, str]:
         parts.append(f"untracked: {', '.join(untracked)}")
 
     return False, "Git working tree is not clean (" + "; ".join(parts) + ")"
-
-
-def get_diff_summary(path: str = ".") -> str:
-    """Return a concise summary of all uncommitted changes.
-
-    Includes staged, unstaged, and untracked files with their diffs.
-    """
-    stdout, _, rc = _run_git("diff", "--stat", cwd=path)
-    if rc != 0:
-        return ""
-
-    # Also get the full diff
-    diff_out, _, _ = _run_git("diff", cwd=path)
-
-    # Get staged diff
-    staged_diff, _, _ = _run_git("diff", "--cached", cwd=path)
-
-    # Get untracked files
-    status_out, _, _ = _run_git("status", "--porcelain", cwd=path)
-    untracked = [
-        line[3:].strip()
-        for line in status_out.splitlines()
-        if line.startswith("??")
-    ]
-
-    parts: list[str] = []
-    if staged_diff:
-        parts.append("=== Staged changes ===\n" + staged_diff)
-    if diff_out:
-        parts.append("=== Unstaged changes ===\n" + diff_out)
-    if untracked:
-        parts.append("=== Untracked files ===\n" + "\n".join(untracked))
-
-    return "\n\n".join(parts) if parts else stdout
 
 
 def git_add_and_commit(
@@ -130,16 +100,20 @@ def git_add_and_commit(
     Returns (success, error_message).
     """
     if files:
-        _, stderr, rc = _run_git("add", *files, cwd=path)
+        # '--' guards against filenames that start with a dash
+        _, stderr, rc = _run_git("add", "--", *files, cwd=path)
     else:
         _, stderr, rc = _run_git("add", "-A", cwd=path)
     if rc != 0:
         return False, f"git add failed: {stderr}"
 
-    # Build commit args
+    # Build commit args.  When a file list is given, commit with a
+    # pathspec so unrelated pre-staged changes are not swept in.
     commit_args = ["commit", "-m", message]
     if author_name:
         commit_args += ["--author", f"{author_name} <{author_email}>"]
+    if files:
+        commit_args += ["--"] + list(files)
 
     # Commit
     _, stderr, rc = _run_git(*commit_args, cwd=path)

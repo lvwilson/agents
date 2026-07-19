@@ -78,9 +78,9 @@ def nonexistent_function():
 def replacement():
     pass
 >>>>>>> REPLACE"""
-        # find_replace does a string .replace() so no match just returns original
-        result = find_replace(self.source_code, command)
-        self.assertEqual(result, self.source_code)
+        # A SEARCH text that matches nothing must raise, not silently no-op.
+        with self.assertRaises(ValueError):
+            find_replace(self.source_code, command)
 
     def test_invalid_command_format(self):
         command = "This is not a valid find-replace command"

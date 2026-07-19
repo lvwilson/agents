@@ -26,7 +26,13 @@ from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
-from .git_utils import is_git_repo, check_git_clean, get_diff_summary, git_add_and_commit
+from .cli.model_table import print_model_table
+from .git_utils import (
+    is_git_repo,
+    check_git_clean,
+    git_add_and_commit,
+    get_all_changed_files,
+)
 from .memory import (
     format_memory_view,
     add_episode,
@@ -35,6 +41,7 @@ from .memory import (
     notes_need_compact,
     get_notes,
     MAX_NOTES_CHARS,
+    EPISODES_BEFORE_SQUASH,
 )
 from .session import (
     generate_session_id,
@@ -43,7 +50,7 @@ from .session import (
     save_session,
     load_session,
 )
-from .llm_backend import InterruptedResponse
+from .llm_backend import InterruptedResponse, EmptyResponseError
 from .ui import (
     RichStreamHandler,
     print_banner,
@@ -90,7 +97,27 @@ _ONLINE_MODELS: dict[str, str] = {
     "gemini-3-flash-preview": "gemini",
     # Kimi
     "kimi-k3": "kimi",
+    # DeepSeek
+    "deepseek-v4-pro": "deepseek",
 }
+
+
+def resolve_model(model, local_host="localhost", local_port=8000):
+    """Resolve an explicit ``-m`` model name to ``(provider, base_url)``.
+
+    Shared by :class:`Agent` and ``agent-commit`` so the two never
+    drift apart.
+
+    Returns:
+        * Known online model → ``(its_provider, None)`` — the caller
+          falls back to the configured ``base_url``.
+        * Unknown name → ``(None, local_base_url)`` — the caller keeps
+          its current provider and points at the local server.
+    """
+    provider = _ONLINE_MODELS.get(model)
+    if provider is not None:
+        return provider, None
+    return None, f"http://{_format_host_for_url(local_host)}:{local_port}"
 
 
 # ── Message helpers ──────────────────────────────────────────────────
@@ -176,6 +203,113 @@ def extract_completion(text, backticks=5) -> Optional[CompletionResult]:
     return CompletionResult(text="Task could not be verified.", success=False)
 
 
+def _find_latest_completion(context, scan_limit=5):
+    """Find the most recent completion block in the conversation.
+
+    Scans assistant messages from newest to oldest and returns the
+    first successfully parsed :class:`CompletionResult`.  Only
+    assistant messages are inspected, so completion-looking text inside
+    user messages (e.g. tool output echoing these instructions) is
+    never mistaken for the agent's own completion.
+
+    Args:
+        context: Conversation in the internal message format.
+        scan_limit: Maximum number of assistant messages to inspect.
+
+    Returns:
+        CompletionResult, or None if no recent assistant message
+        contains a valid completion block.
+    """
+    checked = 0
+    for message in reversed(context):
+        if message.get("role") != "assistant":
+            continue
+        checked += 1
+        if checked > scan_limit:
+            break
+        try:
+            text = message["content"][0]["text"]
+        except (KeyError, IndexError, TypeError):
+            continue
+        result = extract_completion(text)
+        if result is not None:
+            return result
+    return None
+
+
+#: Line prefixes the agent is trained to emit as turn scaffolding.
+#: None of these can be a real commit message, so they are skipped
+#: when falling back to a plain-line extraction.
+_COMMIT_MSG_SKIP_PREFIXES = (
+    "detailed thoughts",
+    "task:",
+    "end conditions:",
+    "worklog:",
+    "feedback:",
+    "command:",
+)
+
+
+def _extract_commit_message(text):
+    """Extract a commit message from the model's raw reply.
+
+    The agent is trained to open every turn with scaffolding such as
+    ``Detailed thoughts and Plans: …``, so the first raw line is almost
+    never the commit message — this once produced a real commit titled
+    "Detailed thoughts and Plans: Provide a concise git commit
+    message…", permanently poisoning the repo's history.
+
+    Extraction order:
+    1. First 5-backtick fenced block (what the prompt requests).
+    2. First 3-backtick fenced block (common model habit).
+    3. First non-empty line that isn't recognised scaffolding
+       (``Detailed thoughts``, ``Task:``, ``Worklog:``, …).
+
+    Returns the single-line message, or None if nothing usable found.
+    """
+    for fence in ("`" * 5, "`" * 3):
+        match = re.search(
+            re.escape(fence) + r"([\s\S]*?)" + re.escape(fence), text
+        )
+        if match:
+            block = match.group(1).strip()
+            if block:
+                return block.split("\n")[0].strip() or None
+    for line in text.split("\n"):
+        stripped = line.strip().strip("`").strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith(_COMMIT_MSG_SKIP_PREFIXES):
+            continue
+        return stripped
+    return None
+
+
+#: Reminder injected (at most once per incident) when a model response
+#: contains neither a command nor a completion block — an almost
+#: certainly unintended session end.  It explains both output
+#: mechanisms and that this is the only warning before the session ends.
+NO_OUTPUT_REMINDER = (
+    "Feedback: Your previous response contained no commands and no "
+    "completion block, so the session is about to end — which you "
+    "almost certainly did not intend. You have two ways to produce "
+    "output:\n"
+    "1. To keep working, issue one or more commands as visible lines "
+    "of the form 'Command: name args', each optionally followed by a "
+    "5-backtick payload block. Command output is returned to you in a "
+    "'=== Tool Results ===' message.\n"
+    "2. To intentionally finish the task, end your response with a "
+    "completion block wrapped in 5 backticks:\n"
+    f"`````\n"
+    "Completion: <description of what you accomplished>\n"
+    "Success: True or False\n"
+    f"`````\n"
+    "This is your only warning: if your next response again contains "
+    "neither commands nor a completion block, the session will end. "
+    "Please respond to your task now."
+)
+
+
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
     print_sigterm()
@@ -248,6 +382,95 @@ def read_configuration(configuration_name):
     return read_yaml_file(config_path)
 
 
+# ── Context guard ─────────────────────────────────────────────────────
+
+#: Header line identifying the context-guard block inside the first
+#: user message of a session.
+CONTEXT_GUARD_HEADER = "=== Context Guard (session start) ==="
+
+#: Header line identifying the task block of the first user message.
+TASK_HEADER = "=== Task ==="
+
+#: Header line identifying a tool-results user message.
+TOOL_RESULTS_HEADER = "=== Tool Results ==="
+
+#: Example opening turn appended to the first user message of every new
+#: session.  Written exactly as the agent would write it, it acts as a
+#: few-shot anchor: before planning, explore the directory structure.
+#: It is static and lives in the first user message, so resume never
+#: touches or duplicates it.
+EXAMPLE_FIRST_RESPONSE = (
+    "Task: Understand project structure and user request before "
+    "updating the task to be more specific.\n"
+    "End conditions: To be determined once the scope of work is "
+    "understood.\n"
+    'Worklog: "Exploring directory structure."\n'
+    "Detailed thoughts and Plans: Before I create a detailed plan I "
+    "should explore the directory structure to understand what I am "
+    "working with.\n"
+    "\n"
+    'Command: run_console_command "tree -L 2"'
+)
+
+
+def build_task_message(task):
+    """Wrap *task* in an explicit task block.
+
+    The first user message of a session is the only user-authored text
+    in the conversation; labelling it makes it unambiguous against the
+    tool-result user messages that follow.
+    """
+    return f"{TASK_HEADER}\n{task}\n=== End Task ==="
+
+
+def build_tool_results_message(command_response):
+    """Wrap *command_response* in an explicit tool-results block.
+
+    Tool output is delivered to the model as a ``user`` message (the
+    chat APIs have no tool role), so without a label a bare ``ok`` reads
+    as if the human typed it.  The guard makes the origin explicit.
+    """
+    return f"{TOOL_RESULTS_HEADER}\n{command_response}\n=== End Tool Results ==="
+
+
+def build_context_guard():
+    """Build the context guard prepended to the first user message.
+
+    The guard carries everything that used to live in the system prompt
+    — timestamp, working directory, platform, shell, user — plus the
+    folder-memory snapshot (episodes + notes) and the notes-compact hint.
+    It is captured exactly once per session: on resume the original
+    guard is kept untouched (see :meth:`Agent.load_context`) so the
+    Anthropic prompt-cache prefix is never invalidated.
+    """
+    lines = [
+        CONTEXT_GUARD_HEADER,
+        f"System Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"Working Directory: {os.getcwd()}",
+        f"Operating System: {platform.platform()}",
+        f"Shell: {get_default_shell()}",
+        f"User: {os.environ.get('USER', 'unknown')}",
+        "Note: these values were captured when this session started and "
+        "may be stale after a resume; re-check them with a console "
+        "command if they matter.",
+    ]
+
+    memory_view = format_memory_view()
+    if memory_view:
+        lines.append("")
+        lines.append(memory_view)
+
+    if notes_need_compact():
+        lines.append("")
+        lines.append(
+            f"NOTE: Your project notes have exceeded {MAX_NOTES_CHARS} characters. "
+            "Please use the `note rewrite` command to make them more compact "
+            "(approximately half their current size)."
+        )
+
+    return "\n".join(lines)
+
+
 class Agent:
     """An autonomous agent powered by an LLM backend.
 
@@ -293,16 +516,17 @@ class Agent:
         # Priority: explicit -m flag > local_model (env/flag) > AGENT_MODEL > default
         if model is not None:
             # Explicit model via -m: auto-detect online vs local
-            detected_provider = _ONLINE_MODELS.get(model)
+            detected_provider, local_base_url = resolve_model(
+                model, local_host, local_port
+            )
+            self.model_name = model
             if detected_provider is not None:
                 # Known online model — auto-select provider
-                self.model_name = model
                 provider = detected_provider
                 base_url = configuration.get("base_url", None)
             else:
                 # Unknown model name — treat as local
-                self.model_name = model
-                base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+                base_url = local_base_url
         elif local_model:
             self.model_name = local_model
             base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
@@ -316,6 +540,7 @@ class Agent:
                 "openai": "gpt-5.3-codex",
                 "gemini": "gemini-3.1-pro-preview",
                 "kimi": "kimi-k3",
+                "deepseek": "deepseek-v4-pro",
             }
             self.model_name = provider_defaults.get(provider, "claude-opus-4-6")
             base_url = configuration.get("base_url", None)
@@ -335,42 +560,36 @@ class Agent:
             **backend_kwargs,
         )
 
-        # Set up system prompt with environment information.
-        # NOTE: This prompt is persisted in save_context() and restored on
-        # resume so that the prompt-cache prefix stays identical.  Any
-        # dynamic content (e.g. the timestamp below) would otherwise
-        # invalidate the entire Anthropic prompt cache on resumption.
+        # Set up the system prompt.  It is intentionally IMMUTABLE: no
+        # timestamps, no working directory, no memory snapshot — nothing
+        # that varies between runs.  Its Anthropic prompt-cache entry
+        # therefore stays valid across every session in every project,
+        # and resume never needs to choose between freshness and cache
+        # validity.  All per-run environment context lives in the
+        # context guard (below) instead.
         self.system_prompt = configuration["system_prompt"]
-        os_info = platform.platform()
-        self.system_prompt += f"\nOperating System: {os_info}"
-        self.system_prompt += f"\nShell: {get_default_shell()}"
-        self.system_prompt += f"\nSystem Date: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-        self.system_prompt += f"\nWorking Directory: {os.getcwd()}"
-        self.system_prompt += f"\nUser: {os.environ.get('USER', 'unknown')}"
 
-        # Append folder memory (episodes + notes) after the system prompt.
-        # This gives the agent context about previous work in this project.
-        memory_view = format_memory_view()
-        if memory_view:
-            self.system_prompt += f"\n\n{memory_view}"
-
-        # Check if notes need compacting and add a hint to the prompt.
-        if notes_need_compact():
-            self.system_prompt += (
-                f"\n\nNOTE: Your project notes have exceeded {MAX_NOTES_CHARS} characters. "
-                "Please use note_rewrite to make them more compact (approximately half their current size)."
-            )
+        # Build the context guard — a snapshot of the environment and
+        # folder memory captured once, at session start — and prepend it
+        # to the first user message.  Memory is thus loaded on every new
+        # session, while the volatile text sits in the cheap front of
+        # the conversation rather than in the cached system prefix.
+        context_guard = build_context_guard()
 
         # Set remaining attributes
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
-        self.context.append(_form_message("user", self.task))
+        task_block = build_task_message(task)
+        first_message = f"{context_guard}\n\n{task_block}" if context_guard else task_block
+        self.context.append(_form_message("user", first_message))
         self.compute_budget = compute_budget
         self.iterations = 0
         self.start_time = None
         self._last_assistant_response = None
         self._loop_count = 0
+        self._empty_response_count = 0
+        self._no_output_reminded = False
 
         # Register the LLM backend for the summarize tool so that
         # the tools layer can make one-shot LLM calls without a circular import.
@@ -403,13 +622,49 @@ class Agent:
         from .agent_pool import AgentPool
 
         self._agent_pool = AgentPool()
+        self._agent_pool.model = self.model_name
         _register_pool(self._agent_pool)
 
-    def _iterate(self):
+    def _seed_first_turn(self):
+        """Execute the example first turn: explore directory structure.
+
+        Appends the example assistant response, runs `tree -L 2`, and
+        feeds the output back as a framed tool-results user message.
+        On resume this is a no-op — the seed is part of the saved
+        context and must not be duplicated.
+        """
+        from .tools.functions import run_console_command
+        from .ui import safe_console_print
+
+        # Display the example assistant response to the user
+        safe_console_print("\n" + EXAMPLE_FIRST_RESPONSE + "\n", style="stream")
+
+        # Append the example assistant response
+        self.context.append(_form_message("assistant", EXAMPLE_FIRST_RESPONSE))
+
+        # Execute the tree command for real
+        tree_output = run_console_command("tree -L 2")
+        framed = build_tool_results_message(tree_output)
+        self.context.append(_form_message("user", framed))
+
+    def _iterate(self, free_form=False):
         """Perform one iteration of the conversation with Claude.
 
+        Args:
+            free_form: When True, the response is treated as free-form
+                text rather than a command turn: it is not scanned for
+                ``Command:`` lines (nothing is executed), the
+                completion-block and no-output-reminder guards are
+                skipped, and the anti-loop check does not apply.  Used
+                by internal one-shot calls (episode summary, commit
+                message) whose replies are plain prose by design —
+                running them through the command pipeline made the
+                harness complain "neither commands nor a completion
+                block" and inject a spurious reminder.
+
         Returns:
-            bool: True if the agent should continue running, False otherwise
+            bool: True if the agent should continue running, False
+            otherwise.  Always False in free-form mode.
         """
         print_iteration_header(
             self.iterations, self.client.cost, self.compute_budget,
@@ -420,8 +675,35 @@ class Agent:
         )
         self.iterations += 1
 
-        # Generate response from Claude
-        response = self.client.generate_response(self.system_prompt, self.context)
+        # Generate response from the LLM.  A blank turn (only thinking
+        # tokens, no visible text) must NOT end the session — the model
+        # simply failed to emit content, usually because it wrote its
+        # commands into a reasoning block.  Feed the failure back so it
+        # can retry; only give up after several consecutive blanks.
+        try:
+            response = self.client.generate_response(self.system_prompt, self.context)
+        except EmptyResponseError:
+            self._empty_response_count += 1
+            if self._empty_response_count >= 3:
+                raise
+            print_error(
+                f"Model returned no text content "
+                f"(attempt {self._empty_response_count}/3). Injecting feedback.",
+                None,
+            )
+            empty_feedback = (
+                "Feedback: Your previous response contained no text content — "
+                "it was completely blank. A blank response is interpreted as a "
+                "request to end the session, which is almost certainly not what "
+                "you intended. This usually happens when commands or replies "
+                "are written into reasoning/thinking instead of visible output. "
+                "You must always produce visible text, and commands must be "
+                "issued as 'Command: name args' lines in your visible response — "
+                "never inside thinking. Please respond to your task now."
+            )
+            self.context.append(_form_message("user", empty_feedback))
+            return True
+        self._empty_response_count = 0
 
         if not response:
             return False
@@ -436,7 +718,7 @@ class Agent:
             print_clipped(clipped, response)
 
         # Anti-looping check: detect if the LLM produced the exact same output twice in a row
-        if self._last_assistant_response is not None and response == self._last_assistant_response:
+        if not free_form and self._last_assistant_response is not None and response == self._last_assistant_response:
             self._loop_count += 1
             if self._loop_count >= 3:
                 raise RuntimeError("Looping error: LLM produced identical response 3 times in a row.")
@@ -461,6 +743,13 @@ class Agent:
         self.context.append(_form_message("assistant", response))
         self._last_assistant_response = response
         self._loop_count = 0
+
+        if free_form:
+            # Internal one-shot call: the reply is plain prose.  Nothing
+            # to execute, no guards to run — the caller extracts what it
+            # needs from the assistant message just appended.
+            return False
+
         command_response, image_media_tuple_array = process_content(response)
 
         # Determine if we should continue running.  This must be checked
@@ -468,17 +757,24 @@ class Agent:
         # "End." sentinel is mutated and the agent fails to terminate
         # even when no commands were found.
         command_called = command_response != "End."
+        completion_found = extract_completion(response) is not None
 
         # Check compute budget
         if self.client.cost > 0.80 * self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
             print_budget_warning(self.client.cost, self.compute_budget)
 
+        # Label the tool output so it is unmistakably tool-generated
+        # rather than user-authored.  The loop-control sentinel above
+        # uses the raw command_response, so wrapping here cannot break
+        # termination.
+        framed_response = build_tool_results_message(command_response)
+
         # Add user message to context (with or without images)
         if len(image_media_tuple_array) == 0:
-            message = _form_message("user", command_response)
+            message = _form_message("user", framed_response)
         else:
-            message = _form_message_with_images("user", command_response, image_media_tuple_array)
+            message = _form_message_with_images("user", framed_response, image_media_tuple_array)
         self.context.append(message)
 
         # Large command outputs (e.g. file reads) are expensive to
@@ -487,6 +783,33 @@ class Agent:
         if len(command_response) >= self.LARGE_MESSAGE_CACHE_THRESHOLD:
             self.client.mark_for_caching(message)
             self.client.trim_cache_blocks(self.context)
+
+        # Accidental-stop guard: a response with neither commands nor a
+        # completion block almost certainly was not meant to end the
+        # session — the model simply forgot both output mechanisms.
+        # Give it ONE reminder explaining both mechanisms and one chance
+        # to self-correct; if the next response is again content-free,
+        # let the session end as it normally would.  A response that
+        # does contain a command or a completion block counts as
+        # intentional and ends (or continues) normally, and also re-arms
+        # the reminder so each incident gets its own single warning.
+        if command_called or completion_found:
+            self._no_output_reminded = False
+        elif self._no_output_reminded:
+            print_error(
+                "Model produced neither commands nor a completion block "
+                "again after one reminder. Ending the session.",
+                None,
+            )
+        else:
+            self._no_output_reminded = True
+            print_error(
+                "Model response contained neither commands nor a "
+                "completion block. Injecting reminder (only warning).",
+                None,
+            )
+            self.context.append(_form_message("user", NO_OUTPUT_REMINDER))
+            return True
 
         return command_called
 
@@ -624,32 +947,15 @@ class Agent:
             "Do not include any commands — just the summary text."
         )
         self.context.append(_form_message("user", feedback))
-        self._iterate()
+        try:
+            self._iterate(free_form=True)
+        except Exception as e:
+            logging.warning("Episode-summary iteration failed: %s", e)
+            return None
         for msg in reversed(self.context):
             if msg["role"] == "assistant":
                 return msg["content"][0]["text"].strip()
         return None
-
-    def request_completion(self) -> bool:
-        """Ask the LLM for a completion block if none was found.
-
-        Appends a feedback message requesting a completion block and
-        runs one more iteration.
-
-        Returns True if an iteration was performed, False if budget
-        was already exhausted.
-        """
-        if self.client.cost > self.compute_budget:
-            return False
-        feedback = (
-            "Feedback: No completion block was found in your response. "
-            "Please provide a completion block with "
-            "'Completion: <description>' and 'Success: True/False' "
-            "at the end of your response."
-        )
-        self.context.append(_form_message("user", feedback))
-        self._iterate()
-        return True
 
     def request_commit_message(self) -> str | None:
         """Ask the LLM for a git commit message.
@@ -662,17 +968,31 @@ class Agent:
         """
         if self.client.cost > self.compute_budget:
             return None
+        fence = "`" * 5
         feedback = (
             "Feedback: Your work has changed files in the repository. "
-            "Please provide a concise git commit message on a single line. "
-            "Do not include any other content or commands — just the commit message."
+            "Please provide a concise git commit message on a single "
+            "line, wrapped in five backticks on their own lines like "
+            f"this:\n{fence}\nyour commit message here\n{fence}\n"
+            "Do not include any other content or commands — no Task, "
+            "Worklog, or Detailed thoughts lines, just the fenced "
+            "commit message."
         )
         self.context.append(_form_message("user", feedback))
-        self._iterate()
-        # Extract the last assistant response as the commit message
+        try:
+            self._iterate(free_form=True)
+        except Exception as e:
+            # A failure here (loop detection, retry exhaustion) must not
+            # crash the CLI after the session completed successfully.
+            logging.warning("Commit-message iteration failed: %s", e)
+            return None
+        # Extract the commit message from the last assistant response.
+        # The raw first line cannot be trusted (the model opens every
+        # turn with scaffolding), so use fenced-block extraction with a
+        # scaffolding-skipping fallback.
         for msg in reversed(self.context):
             if msg["role"] == "assistant":
-                return msg["content"][0]["text"].strip()
+                return _extract_commit_message(msg["content"][0]["text"])
         return None
 
     def save_context(self):
@@ -720,6 +1040,25 @@ class Agent:
         # same file.
         self.session_id = sid
 
+        # Resume is deliberately cache-pure: the restored context is
+        # only ever appended to, never mutated.  In particular the
+        # original context guard in the first user message (timestamp,
+        # working directory, memory snapshot) is left in place so the
+        # cached prefix stays byte-identical.  Memory is NOT re-loaded
+        # here — only the replaced task message at the tail differs
+        # from the previous run.
+        first = self.context[0] if self.context else None
+        if (
+            first is not None
+            and first["role"] == "user"
+            and first.get("content")
+            and CONTEXT_GUARD_HEADER not in first["content"][0].get("text", "")
+        ):
+            logging.info(
+                "load_context: resumed session predates the context-guard "
+                "format; leaving context untouched (cache-pure resume)."
+            )
+
         # Remove the last user message and replace with current task
         if self.context and self.context[-1]["role"] == "user":
             self.context.pop()
@@ -729,7 +1068,7 @@ class Agent:
                 "Appending new task without removing last message.",
                 self.context[-1]["role"] if self.context else "<empty>",
             )
-        new_message = _form_message("user", self.task)
+        new_message = _form_message("user", build_task_message(self.task))
         self.context.append(new_message)
         # Let the backend annotate the new message for caching (e.g.
         # Anthropic adds cache_control blocks) and trim stale markers.
@@ -790,20 +1129,18 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
+    else:
+        # Seed new sessions with a real first turn: explore directory.
+        agent._seed_first_turn()
 
     agent.run()
-    completion_result = None
-    if len(agent.context) > 2:
-        final_content = agent.context[-2]['content'][0]['text']
-        completion_result = extract_completion(final_content)
-        if completion_result is None:
-            # Give the agent one more chance to provide a completion block.
-            try:
-                if agent.request_completion() and len(agent.context) > 2:
-                    final_content = agent.context[-2]['content'][0]['text']
-                    completion_result = extract_completion(final_content)
-            except Exception as e:
-                logging.warning("Completion-retry iteration failed: %s", e)
+    # The completion block is not guaranteed to sit at context[-2]:
+    # if the agent's final reply ends with a Worklog line or a trailing
+    # Command, the loop runs one more iteration and the completion
+    # slides one message earlier.  Scan recent assistant messages
+    # newest-to-oldest so a correctly written completion is never
+    # reported as a failure merely because of its position.
+    completion_result = _find_latest_completion(agent.context)
 
     completion = completion_result.text if completion_result else "Error"
     success = completion_result.success if completion_result else False
@@ -820,7 +1157,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
             add_episode(episode_summary, session_id=agent.session_id)
 
             # After storing, check if we need to squash old episodes.
-            if get_episode_count() >= 8:
+            if get_episode_count() >= EPISODES_BEFORE_SQUASH:
                 squash_prompt = read_configuration("memory.yaml").get(
                     "squash_prompt",
                     "Compress these episode summaries into one concise paragraph.",
@@ -840,17 +1177,29 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     if not nogit and is_git_repo():
         clean, _ = check_git_clean()
         if not clean:
+            # Capture the file list up-front so the commit is not an
+            # unreviewable black box (risk: git add -A sweeps everything).
+            changed_files = get_all_changed_files()
             commit_msg = agent.request_commit_message()
             if commit_msg:
-                # Take only the first line as the commit message
-                first_line = commit_msg.split("\n")[0].strip()
                 author_name = agent.model_name
                 author_email = f"agent@{platform.node()}"
-                ok, err = git_add_and_commit(first_line, author_name=author_name, author_email=author_email)
+                ok, err = git_add_and_commit(commit_msg, author_name=author_name, author_email=author_email)
                 if ok:
-                    safe_console_print(f"  ⚡  Auto-committed: [green]{first_line}[/] [dim]by {author_name} <{author_email}>[/]", style="info")
+                    safe_console_print(f"  ⚡  Auto-committed: [green]{commit_msg}[/] [dim]by {author_name} <{author_email}>[/]", style="info")
+                    for changed in changed_files:
+                        safe_console_print(f"      {changed}", style="dim")
                 else:
                     safe_console_print(f"  ⚠  Auto-commit failed: {err}", style="warning")
+                    safe_console_print("  ⚠  Uncommitted changes remain in the working tree.", style="warning")
+            else:
+                # The user must be told — a silent skip leaves dirty files
+                # they may never notice (e.g. budget exhausted, LLM down).
+                safe_console_print(
+                    "  ⚠  Uncommitted changes remain in the working tree "
+                    "(no commit message was generated).",
+                    style="warning",
+                )
 
     return completion, success, agent.session_id
 
@@ -862,7 +1211,10 @@ def main():
     # side-effect.
     signal.signal(signal.SIGTERM, sigterm_handler)
     parser = argparse.ArgumentParser(description="Autonomous AI agent")
-    parser.add_argument('command', type=str, help='A command string like "update my system"')
+    parser.add_argument(
+        'command', type=str, nargs='?',
+        help='A command string like "update my system".  Optional when '
+             'using --list-models.')
     parser.add_argument('-b', '--compute-budget', type=float, default=1.0, help='Compute budget in dollars')
     parser.add_argument('-r', '--restore', action='store_true',
                         help='Restore the latest session for the current directory')
@@ -885,8 +1237,23 @@ def main():
                         help='Agent definition YAML file (default: basic_agent.yaml)')
     parser.add_argument('--nogit', action='store_true',
                         help='Disable git status check and auto-commit')
+    parser.add_argument(
+        '--list-models', nargs='?', const='__all__', default=None,
+        metavar='PROVIDER',
+        help="List available models and exit.  Optionally filter by "
+             "provider (e.g. --list-models anthropic).",
+    )
 
     args = parser.parse_args()
+
+    # --list-models: show table and exit (no git check, no agent startup).
+    if args.list_models is not None:
+        provider = args.list_models if args.list_models != '__all__' else None
+        print_model_table(provider)
+        return
+
+    if not args.command:
+        parser.error("the following argument is required: command")
 
     # Pre-flight: ensure git working tree is clean (unless --nogit)
     if not args.nogit and is_git_repo():
