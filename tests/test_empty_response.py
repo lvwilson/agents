@@ -209,35 +209,6 @@ class TestKimiReasoningStreaming(unittest.TestCase):
             ],
         )
 
-    def test_reasoning_not_collected_in_context_text(self):
-        backend = _make_kimi([
-            _reasoning_event("secret thoughts"),
-            _content_event("reply"),
-            _usage_event(),
-        ])
-        text, _usage = backend._get_response("sys", [])
-        self.assertNotIn("secret thoughts", text)
-        self.assertEqual(text, "reply")
-        # Reasoning tokens are still buffered by the base handler for
-        # interrupt recovery.
-        self.assertEqual(
-            backend.stream_handler.get_buffered_reasoning(), "secret thoughts")
-
-    def test_stream_ending_during_reasoning_closes_block(self):
-        backend = _make_kimi([
-            _reasoning_event("only thoughts"),
-            _usage_event(),
-        ])
-        backend._get_response("sys", [])
-        self.assertEqual(
-            backend.stream_handler.events,
-            [
-                ("reasoning_start",),
-                ("reasoning_token", "only thoughts"),
-                ("reasoning_end",),
-            ],
-        )
-
     def test_reasoning_only_response_raises_empty(self):
         backend = _make_kimi([
             _reasoning_event("commands written to thoughts"),

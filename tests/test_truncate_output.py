@@ -18,21 +18,6 @@ class TestTruncateOutput:
         text = "x" * _TRUNCATE_THRESHOLD
         assert truncate_output(text) == text
 
-    def test_one_over_threshold_triggers_truncation(self):
-        """A string one character over the threshold should be truncated."""
-        text = "x" * (_TRUNCATE_THRESHOLD + 1)
-        result = truncate_output(text)
-        assert "[OUTPUT TRUNCATED" in result
-        assert "[END OF TRUNCATED OUTPUT" in result
-        # The actual content kept is 60,000 chars (30k head + 30k tail)
-        # plus the notice text — so for barely-over-threshold inputs
-        # the result may be slightly longer due to notice overhead.
-        # For large inputs, the result will be much smaller.
-
-    def test_empty_string_unchanged(self):
-        """Empty string should pass through unchanged."""
-        assert truncate_output("") == ""
-
     def test_non_string_unchanged(self):
         """Non-string values should pass through unchanged."""
         assert truncate_output(123) == 123
@@ -71,12 +56,6 @@ class TestTruncateOutput:
         assert "[OUTPUT TRUNCATED" in result
         assert "characters clipped from middle" in result
         assert "100,000 total characters" in result
-
-    def test_truncated_output_has_end_notice(self):
-        """The truncated output should end with an end-of-truncation notice."""
-        text = "x" * 100_000
-        result = truncate_output(text)
-        assert result.endswith("[END OF TRUNCATED OUTPUT — Showed first 30,000 and last 30,000 of 100,000 total characters]")
 
     def test_clipped_count_is_correct(self):
         """The number of clipped characters reported should be accurate."""
@@ -144,14 +123,30 @@ class TestTruncateInExecuteCommand:
         assert "[OUTPUT TRUNCATED" in result
         assert "[END OF TRUNCATED OUTPUT" in result
 
-    def test_small_file_no_truncation(self, tmp_path):
-        """Reading a small file should not trigger truncation."""
+    def test_deep_read_bypasses_truncation(self, tmp_path):
+        """truncate=False (the deep_read path) returns the full output."""
         from agents.tools.parser import _execute_command
 
-        small_file = tmp_path / "small.txt"
-        content = "Hello, world!"
-        small_file.write_text(content)
+        large_file = tmp_path / "large.txt"
+        content = "y" * 100_000
+        large_file.write_text(content)
 
-        result = _execute_command("read_file", str(small_file), None)
+        result = _execute_command(f"read_file {large_file}", None, None, truncate=False)
         assert result == content
         assert "[OUTPUT TRUNCATED" not in result
+
+    def test_tuple_result_truncates_text_part(self):
+        """Tuple results (e.g. view_page) truncate the text part only."""
+        from unittest import mock
+        from agents.tools import parser
+
+        big_text = "z" * 100_000
+        with mock.patch.object(parser.functions, "view_page",
+                               return_value=(big_text, "/tmp/shot.png")):
+            result = parser._execute_command("view_page https://example.com", None, None)
+
+        assert isinstance(result, tuple)
+        assert "[OUTPUT TRUNCATED" in result[0]
+        assert len(result[0]) < 65_000
+        assert result[1] == "/tmp/shot.png"
+

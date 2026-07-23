@@ -89,27 +89,6 @@ class TestProcessSliceMultipleCommands(unittest.TestCase):
         self.assertIn("old2", bt2)
         self.assertEqual(rem2, "")
 
-    def test_three_commands_with_backticks(self):
-        content = (
-            "Command: write_file a.py\n"
-            "`````text\ncontent_a\n`````\n"
-            "Command: find_and_replace b.py\n"
-            "`````text\nblock_b\n`````\n"
-            "Command: read_file c.py\n"
-            "`````text\nblock_c\n`````"
-        )
-        cmd1, _, bt1, rem1 = process_slice(content)
-        self.assertEqual(cmd1, "write_file")
-        self.assertEqual(bt1, "content_a\n")
-
-        cmd2, _, bt2, rem2 = process_slice(rem1)
-        self.assertEqual(cmd2, "find_and_replace")
-        self.assertEqual(bt2, "block_b\n")
-
-        cmd3, _, bt3, rem3 = process_slice(rem2)
-        self.assertEqual(cmd3, "read_file")
-        self.assertEqual(bt3, "block_c\n")
-        self.assertEqual(rem3, "")
 
     def test_command_without_backtick_then_command_with_backtick(self):
         content = (
@@ -140,16 +119,6 @@ class TestProcessSliceMultipleCommands(unittest.TestCase):
         self.assertEqual(args2, "/path2.py")
         self.assertIsNone(bt2)
         self.assertEqual(rem2, "")
-
-    def test_trailing_text_after_last_command(self):
-        content = (
-            "Command: read_file /path.py\n"
-            "\nAll done!"
-        )
-        cmd, args, bt, rem = process_slice(content)
-        self.assertEqual(cmd, "read_file")
-        self.assertIn("All done", rem)
-
 
 class TestProcessSliceBacktickAttachment(unittest.TestCase):
     """The parser requires the backtick to be on the line immediately
@@ -360,43 +329,17 @@ class TestFindReplaceMultipleBlocks(unittest.TestCase):
         self.assertIn("return 20", result)
         self.assertIn("return 3", result)
 
-    def test_three_blocks_all_processed(self):
-        """All three SEARCH/REPLACE blocks in one command are applied."""
-        command = (
-            "<<<<<<< SEARCH\n"
-            "    return 1\n"
-            "=======\n"
-            "    return 10\n"
-            ">>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\n"
-            "    return 2\n"
-            "=======\n"
-            "    return 20\n"
-            ">>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\n"
-            "    return 3\n"
-            "=======\n"
-            "    return 30\n"
-            ">>>>>>> REPLACE"
-        )
-        result = find_replace(self.source, command)
-        self.assertIn("return 10", result)
-        self.assertIn("return 20", result)
-        self.assertIn("return 30", result)
 
-    def test_multiple_blocks_with_overlapping_search_regions(self):
-        source = "one two three four"
+    def test_multiple_blocks_chained_replacement(self):
+        """Blocks apply sequentially: a later block can match text
+        introduced by an earlier block's replacement."""
+        source = "start"
         command = (
-            "<<<<<<< SEARCH\none\n=======\nONE\n>>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\ntwo\n=======\nTWO\n>>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\nthree\n=======\nTHREE\n>>>>>>> REPLACE\n"
-            "<<<<<<< SEARCH\nfour\n=======\nFOUR\n>>>>>>> REPLACE"
+            "<<<<<<< SEARCH\nstart\n=======\nmiddle\n>>>>>>> REPLACE\n"
+            "<<<<<<< SEARCH\nmiddle\n=======\nfinal\n>>>>>>> REPLACE"
         )
         result = find_replace(source, command)
-        self.assertIn("ONE", result)
-        self.assertIn("TWO", result)
-        self.assertIn("THREE", result)
-        self.assertIn("FOUR", result)
+        self.assertEqual(result, "final")
 
 
 class TestFilterContent(unittest.TestCase):

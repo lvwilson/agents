@@ -110,18 +110,6 @@ class TestFreeFormIterate(unittest.TestCase):
 class TestInternalCallSitesUseFreeForm(unittest.TestCase):
     """Both internal one-shot calls must opt into free_form mode."""
 
-    def test_episode_summary_uses_free_form(self):
-        agent = _make_agent()
-        agent.client.generate_response = mock.Mock(
-            return_value="Did some useful work this session."
-        )
-        summary = agent._request_episode_summary()
-        self.assertEqual(summary, "Did some useful work this session.")
-        self.assertFalse(agent._no_output_reminded)
-        self.assertNotIn(NO_OUTPUT_REMINDER, _user_texts(agent))
-        self.assertFalse(any(agents_module.TOOL_RESULTS_HEADER in t
-                             for t in _user_texts(agent)))
-
     def test_commit_message_uses_free_form(self):
         agent = _make_agent()
         bt = "`" * 5

@@ -184,33 +184,46 @@ def read_file(file_path):
 def write_file(file_path, code):
     """Write *code* to *file_path*, creating directories as needed.
 
-    Returns a status message including a unified diff of the changes.
+    Returns a concise status message with line count, byte size, and
+    (for existing files) lines added/removed from the diff.
     """
     directory = os.path.dirname(file_path)
     if directory and not os.path.exists(directory):
         os.makedirs(directory, exist_ok=True)
 
-    try:
-        with open(file_path, "r") as f:
-            original_content = f.read()
-    except FileNotFoundError:
-        original_content = ""
-
-    original_length = len(original_content)
+    existing = os.path.isfile(file_path)
     new_length = len(code)
+    lines = len(code.splitlines())
 
-    diff = "\n".join(difflib.unified_diff(
-        original_content.splitlines(), code.splitlines(),
-        lineterm="", fromfile="original", tofile="new",
-    ))
+    if existing:
+        try:
+            with open(file_path, "r") as f:
+                original_content = f.read()
+        except FileNotFoundError:
+            original_content = ""
+    else:
+        original_content = ""
 
     try:
         with open(file_path, "w") as f:
             f.write(code)
-        return (f"{file_path} successfully written. Original length: {original_length}, "
-                f"New length: {new_length}.\n\nDiff:\n{diff}")
     except Exception as e:
         return f"{file_path} write error: {e}"
+
+    if existing and original_content:
+        added = removed = 0
+        for line in difflib.unified_diff(
+            original_content.splitlines(), code.splitlines(),
+            lineterm="", fromfile="original", tofile="new",
+        ):
+            if line.startswith("+") and not line.startswith("+++"):
+                added += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                removed += 1
+        return (f"{file_path} written: {lines} lines, {new_length} bytes "
+                f"(+{added}/-{removed})")
+
+    return f"{file_path} written: {lines} lines, {new_length} bytes"
 
 
 def append_to_file(file_path, log_message):

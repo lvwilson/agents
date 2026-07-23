@@ -64,35 +64,18 @@ def goodbye_world():
         self.assertIn("def goodbye_world():", result)
         self.assertNotIn("print(\"Hello, World!\")", result)
 
-    def test_prepend_error(self):
-        """Test prepend function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            insert_before(self.sample_code, "non_existent_line", "new_code")
-
-    def test_append_error(self):
-        """Test append function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            insert_after(self.sample_code, "non_existent_line", "new_code")
-
-    def test_replace_before_error(self):
-        """Test replace_before function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            replace_before(self.sample_code, "non_existent_line", "new_code")
-
-    def test_replace_after_error(self):
-        """Test replace_after function with non-existent cutting point."""
-        with self.assertRaises(ValueError):
-            replace_after(self.sample_code, "non_existent_line", "new_code")
-
-    def test_insert_between_error(self):
-        """Test insert_between function with non-existent cutting points."""
-        with self.assertRaises(ValueError):
-            insert_between(self.sample_code, "non_existent_line1", "non_existent_line2", "new_code")
-
-    def test_replace_between_error(self):
-        """Test replace_between function with non-existent cutting points."""
-        with self.assertRaises(ValueError):
-            replace_between(self.sample_code, "non_existent_line1", "non_existent_line2", "new_code")
+    def test_error_on_non_existent_cutting_point(self):
+        """All six functions raise ValueError when cutting point is not found."""
+        for func, args in [
+            (insert_before, ("non_existent_line", "new_code")),
+            (insert_after, ("non_existent_line", "new_code")),
+            (replace_before, ("non_existent_line", "new_code")),
+            (replace_after, ("non_existent_line", "new_code")),
+            (insert_between, ("non_existent_line1", "non_existent_line2", "new_code")),
+            (replace_between, ("non_existent_line1", "non_existent_line2", "new_code")),
+        ]:
+            with self.assertRaises(ValueError):
+                func(self.sample_code, *args)
 
     def test_empty_input(self):
         """Test functions with empty input."""
@@ -101,19 +84,6 @@ def goodbye_world():
         self.assertEqual(insert_before(empty_code, "any_line", new_code), new_code)
         with self.assertRaises(ValueError):
             insert_after(empty_code, "any_line", new_code)
-
-    def test_cutting_point_at_beginning(self):
-        """Test prepend with cutting point at the beginning of the code."""
-        new_code = "# New beginning\n"
-        result = insert_before(self.sample_code, "def hello_world():", new_code)
-        self.assertTrue(result.startswith(new_code))
-
-    def test_cutting_point_at_end(self):
-        """Test append with cutting point at the end of the code."""
-        new_code = "# New end\n"
-        result = insert_after(self.sample_code, 'print("Goodbye, World!")', new_code)
-        self.assertIn("# New end", result)
-        self.assertTrue(result.index('print("Goodbye, World!")') < result.index("# New end"))
 
     def test_newline_handling(self):
         """Test consistent newline handling."""

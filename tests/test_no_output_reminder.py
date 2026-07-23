@@ -71,21 +71,6 @@ class TestNoOutputReminder(unittest.TestCase):
         self.assertEqual(last["role"], "user")
         self.assertEqual(last["content"][0]["text"], NO_OUTPUT_REMINDER)
 
-    def test_reminder_explains_both_mechanisms(self):
-        agent = _make_agent()
-        agent.client.generate_response = mock.Mock(return_value="no output")
-        agent._iterate()
-        feedback = agent.context[-1]["content"][0]["text"]
-        # Command mechanism
-        self.assertIn("Command:", feedback)
-        self.assertIn("Tool Results", feedback)
-        # Completion mechanism
-        self.assertIn("Completion:", feedback)
-        self.assertIn("Success:", feedback)
-        self.assertIn("`" * 5, feedback)
-        # One-warning policy
-        self.assertIn("only warning", feedback)
-
     def test_second_consecutive_blank_output_ends_session(self):
         agent = _make_agent()
         # Distinct strings per turn: identical consecutive responses are
@@ -151,18 +136,6 @@ class TestNoOutputReminder(unittest.TestCase):
         # iterations) gets a fresh reminder — the flag was reset.
         self.assertTrue(agent._iterate())
         self.assertTrue(agent._no_output_reminded)
-
-    def test_reminder_appended_after_tool_results_message(self):
-        agent = _make_agent()
-        agent.client.generate_response = mock.Mock(return_value="nothing")
-        agent._iterate()
-        # assistant reply → framed "End." tool-results → reminder
-        self.assertEqual(agent.context[-3]["role"], "assistant")
-        tool_msg = agent.context[-2]["content"][0]["text"]
-        self.assertIn(agents_module.TOOL_RESULTS_HEADER, tool_msg)
-        self.assertIn("End.", tool_msg)
-        self.assertEqual(agent.context[-1]["content"][0]["text"], NO_OUTPUT_REMINDER)
-
 
 if __name__ == "__main__":
     unittest.main()

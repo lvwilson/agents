@@ -18,9 +18,10 @@ class TestListAvailableModels(unittest.TestCase):
     def test_aggregation_shape_and_inheritance(self):
         entries = list_available_models()
         providers = {e["provider"] for e in entries}
-        self.assertEqual(
-            providers, {"anthropic", "deepseek", "gemini", "kimi", "minimax", "openai"}
-        )
+        # Required providers must all be present; new backends may be added
+        # without breaking this test (superset is fine).
+        for required in ("anthropic", "deepseek", "gemini", "kimi", "minimax", "openai"):
+            self.assertIn(required, providers)
         # Every entry exposes the documented keys.
         for e in entries:
             for key in ("provider", "model", "display", "input_cost",
