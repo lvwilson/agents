@@ -21,11 +21,6 @@ class AnthropicBackend(LLMBackend):
     """Claude backend with streaming, prompt caching, and retry logic."""
 
     MODEL_PRICING = {
-        "claude-3-5-sonnet-20240620":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
-        "claude-3-5-sonnet-20241022":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
-        "claude-3-7-sonnet-20250219":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
-        "claude-sonnet-4-20250514":    {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
-        "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
         "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
         "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00, "cache_read_cost": 0.50},
         "claude-opus-5":               {"input_token_cost": 5.00, "output_token_cost": 25.00, "cache_read_cost": 0.50},
@@ -33,11 +28,6 @@ class AnthropicBackend(LLMBackend):
     }
 
     MODEL_DISPLAY_NAMES = {
-        "claude-3-5-sonnet-20240620":  "Claude 3.5 Sonnet",
-        "claude-3-5-sonnet-20241022":  "Claude 3.5 Sonnet v2",
-        "claude-3-7-sonnet-20250219":  "Claude 3.7 Sonnet",
-        "claude-sonnet-4-20250514":    "Claude Sonnet 4",
-        "claude-sonnet-4-5-20250929":  "Claude Sonnet 4.5",
         "claude-sonnet-4-6":           "Claude Sonnet 4.6",
         "claude-opus-4-6":             "Claude Opus 4.6",
         "claude-opus-5":               "Claude Opus 5",
@@ -45,22 +35,22 @@ class AnthropicBackend(LLMBackend):
     }
 
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-        "claude-3-5-sonnet-20240620":  200_000,
-        "claude-3-5-sonnet-20241022":  200_000,
-        "claude-3-7-sonnet-20250219":  200_000,
-        "claude-sonnet-4-20250514":    200_000,
-        "claude-sonnet-4-5-20250929":  200_000,
         "claude-sonnet-4-6":           200_000,
         "claude-opus-4-6":             200_000,
         "claude-opus-5":               1_000_000,
-        "claude-fable-5":              200_000,
+        "claude-fable-5":              1_000_000,
+    }
+
+    # Max output tokens per model (sync Messages API)
+    MODEL_MAX_OUTPUT: dict[str, int] = {
+        "claude-sonnet-4-6":           128_000,
+        "claude-opus-4-6":             128_000,
+        "claude-opus-5":               128_000,
+        "claude-fable-5":              128_000,
     }
 
     # Models that support the thinking extension (reasoning tokens)
     THINKING_MODELS = {
-        "claude-3-7-sonnet-20250219",
-        "claude-sonnet-4-20250514",
-        "claude-sonnet-4-5-20250929",
         "claude-sonnet-4-6",
         "claude-opus-4-6",
         "claude-opus-5",
@@ -78,7 +68,6 @@ class AnthropicBackend(LLMBackend):
 
     # Default thinking configuration
     DEFAULT_THINKING_BUDGET = 8192
-    MAX_OUTPUT_TOKENS = 128_000
 
     @staticmethod
     def _get_thinking_enabled() -> bool:
@@ -156,11 +145,12 @@ class AnthropicBackend(LLMBackend):
         # Validate thinking budget against context window and max_tokens
         if self._supports_thinking_api and self._thinking_enabled:
             context_window = self.MODEL_CONTEXT_WINDOWS.get(model, 200_000)
+            max_output = self.MODEL_MAX_OUTPUT.get(model, 128_000)
             # budget_tokens must be < max_tokens and reasonable vs context window
             self._thinking_budget = max(1024, min(
                 self._thinking_budget,
                 context_window // 4,
-                self.MAX_OUTPUT_TOKENS - 1,
+                max_output - 1,
             ))
 
     # ── Prompt-cache helpers ─────────────────────────────────────────
@@ -308,11 +298,9 @@ class AnthropicBackend(LLMBackend):
         # Translate flat image format → Anthropic nested source format.
         api_messages = self._format_messages(context)
 
-        # TODO: max_tokens varies by backend (64K here, 16K for OpenAI/Gemini).
-        # Consider making this configurable via the backend or constructor.
         stream_kwargs = dict(
             model=self.model,
-            max_tokens=self.MAX_OUTPUT_TOKENS,
+            max_tokens=self.MODEL_MAX_OUTPUT.get(self.model, 128_000),
             system=system_value,
             messages=api_messages,
         )

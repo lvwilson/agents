@@ -76,11 +76,6 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 # of these, the provider is auto-detected and the -o flag is not required.
 _ONLINE_MODELS: dict[str, str] = {
     # Anthropic
-    "claude-3-5-sonnet-20240620": "anthropic",
-    "claude-3-5-sonnet-20241022": "anthropic",
-    "claude-3-7-sonnet-20250219": "anthropic",
-    "claude-sonnet-4-20250514": "anthropic",
-    "claude-sonnet-4-5-20250929": "anthropic",
     "claude-sonnet-4-6": "anthropic",
     "claude-opus-4-6": "anthropic",
     "claude-opus-5": "anthropic",
