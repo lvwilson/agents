@@ -28,6 +28,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
         "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
         "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00, "cache_read_cost": 0.50},
+        "claude-opus-5":               {"input_token_cost": 5.00, "output_token_cost": 25.00, "cache_read_cost": 0.50},
         "claude-fable-5":              {"input_token_cost": 10.00, "output_token_cost": 50.00, "cache_read_cost": 1.00},
     }
 
@@ -39,6 +40,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  "Claude Sonnet 4.5",
         "claude-sonnet-4-6":           "Claude Sonnet 4.6",
         "claude-opus-4-6":             "Claude Opus 4.6",
+        "claude-opus-5":               "Claude Opus 5",
         "claude-fable-5":              "Claude Fable 5",
     }
 
@@ -50,6 +52,7 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929":  200_000,
         "claude-sonnet-4-6":           200_000,
         "claude-opus-4-6":             200_000,
+        "claude-opus-5":               1_000_000,
         "claude-fable-5":              200_000,
     }
 
@@ -60,12 +63,14 @@ class AnthropicBackend(LLMBackend):
         "claude-sonnet-4-5-20250929",
         "claude-sonnet-4-6",
         "claude-opus-4-6",
+        "claude-opus-5",
     }
 
     # Models that require adaptive thinking type (vs "enabled")
     ADAPTIVE_THINKING_MODELS = {
         "claude-sonnet-4-6",
         "claude-opus-4-6",
+        "claude-opus-5",
     }
 
     # Models that do not support the temperature parameter
@@ -73,7 +78,7 @@ class AnthropicBackend(LLMBackend):
 
     # Default thinking configuration
     DEFAULT_THINKING_BUDGET = 8192
-    MAX_OUTPUT_TOKENS = 64000
+    MAX_OUTPUT_TOKENS = 128_000
 
     @staticmethod
     def _get_thinking_enabled() -> bool:

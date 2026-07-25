@@ -83,6 +83,7 @@ _ONLINE_MODELS: dict[str, str] = {
     "claude-sonnet-4-5-20250929": "anthropic",
     "claude-sonnet-4-6": "anthropic",
     "claude-opus-4-6": "anthropic",
+    "claude-opus-5": "anthropic",
     "claude-fable-5": "anthropic",
     "MiniMax-M2.5": "anthropic",
     # OpenAI
