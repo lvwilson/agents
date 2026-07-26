@@ -64,7 +64,7 @@ class AnthropicBackend(LLMBackend):
     }
 
     # Models that do not support the temperature parameter
-    NO_TEMPERATURE_MODELS = {"claude-fable-5"}
+    NO_TEMPERATURE_MODELS = {"claude-fable-5", "claude-opus-5"}
 
     # Default thinking configuration
     DEFAULT_THINKING_BUDGET = 8192
