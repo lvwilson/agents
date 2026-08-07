@@ -115,9 +115,13 @@ def run_console_command(command: str, backtick_content: str = None) -> str:
     def _read_output(fd, output_list):
         try:
             while True:
-                data = os.read(fd, io.DEFAULT_BUFFER_SIZE).decode()
-                if not data:
+                raw = os.read(fd, io.DEFAULT_BUFFER_SIZE)
+                if not raw:
                     break
+                try:
+                    data = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    data = raw.decode("latin-1")
                 _get_tty().write(data)
                 _get_tty().flush()
                 output_list.append(data)
@@ -171,14 +175,34 @@ def run_console_command(command: str, backtick_content: str = None) -> str:
 
 # ── File I/O tools ─────────────────────────────────────────────────
 
+def _read_file_safe(file_path):
+    """Read a file as UTF-8, falling back to latin-1 on decode errors.
+
+    Returns ``(content, None)`` on success or ``(None, error_msg)`` on failure.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read(), None
+    except UnicodeDecodeError:
+        try:
+            with open(file_path, "r", encoding="latin-1") as f:
+                return f.read(), None
+        except Exception as e:
+            return None, f"{file_path} read error (latin-1 fallback): {e}"
+    except Exception as e:
+        return None, f"{file_path} read error: {e}"
+
+
 def read_file(file_path):
     """Read and return the entire contents of a file.
 
     :param file_path: Path to the file.
     :return: File contents as a string.
     """
-    with open(file_path, "r") as f:
-        return f.read()
+    content, err = _read_file_safe(file_path)
+    if err:
+        return err
+    return content
 
 
 def write_file(file_path, code):
@@ -196,11 +220,9 @@ def write_file(file_path, code):
     lines = len(code.splitlines())
 
     if existing:
-        try:
-            with open(file_path, "r") as f:
-                original_content = f.read()
-        except FileNotFoundError:
-            original_content = ""
+        original_content, err = _read_file_safe(file_path)
+        if err:
+            return err
     else:
         original_content = ""
 
@@ -231,11 +253,9 @@ def append_to_file(file_path, log_message):
 
     Returns a status message including a unified diff of the changes.
     """
-    try:
-        with open(file_path, "r") as f:
-            original_content = f.read()
-    except FileNotFoundError:
-        original_content = ""
+    original_content, err = _read_file_safe(file_path)
+    if err:
+        return err
 
     original_length = len(original_content)
 
@@ -264,11 +284,9 @@ def find_and_replace(file_path, command):
 
     Returns a status message with a unified diff of the changes.
     """
-    try:
-        with open(file_path, "r") as f:
-            original_content = f.read()
-    except Exception as e:
-        return f"{file_path} read error: {e}"
+    original_content, err = _read_file_safe(file_path)
+    if err:
+        return err
 
     modified_content = findreplace.find_replace(original_content, command)
 
@@ -289,11 +307,7 @@ def find_and_replace(file_path, command):
 
 def _read_or_error(file_path):
     """Read a file, returning ``(content, None)`` or ``(None, error_msg)``."""
-    try:
-        with open(file_path, "r") as f:
-            return f.read(), None
-    except Exception as e:
-        return None, f"{file_path} read error: {e}"
+    return _read_file_safe(file_path)
 
 
 def _write_or_error(file_path, content):
@@ -345,11 +359,13 @@ def replace_text_between_matching_lines(file_path, line1, line2, new_code):
 
 def read_code_signatures_and_docstrings(file_path):
     """Return function/class signatures and docstrings from *file_path*."""
+    source, err = _read_file_safe(file_path)
+    if err:
+        return err
     try:
-        with open(file_path, "r") as f:
-            return codemanipulator.get_signatures_and_docstrings(f.read())
+        return codemanipulator.get_signatures_and_docstrings(source)
     except Exception as e:
-        return f"{file_path} read error: {e}"
+        return f"{file_path} parse error: {e}"
 
 
 def replace_docstring_at_address(file_path, address, new_docstring):
@@ -366,11 +382,13 @@ def replace_docstring_at_address(file_path, address, new_docstring):
 
 def read_code_at_address(file_path, address):
     """Return the source code at *address* inside *file_path*."""
+    source, err = _read_file_safe(file_path)
+    if err:
+        return err
     try:
-        with open(file_path, "r") as f:
-            return codemanipulator.read_code_at_address(f.read(), address)
+        return codemanipulator.read_code_at_address(source, address)
     except Exception as e:
-        return f"{file_path} read error: {e}"
+        return f"{file_path} parse error: {e}"
 
 
 def replace_code_at_address(file_path, address, new_code):
