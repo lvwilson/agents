@@ -148,6 +148,27 @@ def process_content(content):
                 command_response = (command_response or "ok") + "\n"
             else:
                 command_response = (result or "ok") + "\n"
+        elif command.command == "mcp_call":
+            result = _execute_command(command.command, command.arguments, command.backtick_content)
+            if isinstance(result, tuple):
+                command_response, images = result
+                for image_b64, media_type in (images or []):
+                    if media_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+                        command_response = (command_response or "") + f"\n[Unsupported image type: {media_type}]"
+                        continue
+                    try:
+                        raw = base64.b64decode(image_b64)
+                    except Exception as e:
+                        command_response = (command_response or "") + f"\n[Image decode failed: {e}]"
+                        continue
+                    resized_b64, ok_type = _resize_image_bytes(raw)
+                    if ok_type:
+                        image_data_tuple_array.append((resized_b64, ok_type))
+                    else:
+                        command_response = (command_response or "") + f"\n[Image resize failed: {resized_b64}]"
+                command_response = (command_response or "ok") + "\n"
+            else:
+                command_response = (result or "ok") + "\n"
         elif command.command == "deep_read":
             # deep_read wraps another command, bypassing truncation
             inner_result = _execute_command(
@@ -173,16 +194,16 @@ def process_content(content):
 
 # ── Image handling ──────────────────────────────────────────────────
 
-def _load_and_resize_image(image_path):
-    """Load an image, resize for LLM vision, return (base64, media_type)."""
+def _resize_image_bytes(data):
+    """Resize raw image bytes for LLM vision, return (base64, media_type).
+
+    Returns ``(error_message, None)`` when the data is not a valid image
+    or its format is unsupported.
+    """
     try:
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"The file at {image_path} does not exist.")
-        image = Image.open(image_path)
-    except FileNotFoundError as e:
-        return str(e), None
+        image = Image.open(io.BytesIO(data))
     except UnidentifiedImageError:
-        return "The file is not a valid image.", None
+        return "The image data is not a valid image.", None
     except Exception as e:
         return f"An error occurred: {e}", None
 
@@ -211,6 +232,21 @@ def _load_and_resize_image(image_path):
         return f"{media_type} is an unsupported media type.", None
 
     return resized_image_base64, media_type
+
+
+def _load_and_resize_image(image_path):
+    """Load an image file, resize for LLM vision, return (base64, media_type)."""
+    try:
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"The file at {image_path} does not exist.")
+        with open(image_path, "rb") as f:
+            data = f.read()
+    except FileNotFoundError as e:
+        return str(e), None
+    except Exception as e:
+        return f"An error occurred: {e}", None
+
+    return _resize_image_bytes(data)
 
 
 def _view_images(arguments):

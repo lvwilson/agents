@@ -722,6 +722,9 @@ def mcp_call(*args):
 
     The backtick block contains JSON arguments for the tool.
     If the tool takes no arguments, the backtick block can be omitted.
+
+    If the tool returns images (e.g. cua-driver screenshots), they are
+    displayed to you inline alongside the text response.
     """
     import json as _json
     from .mcp_client import get_manager

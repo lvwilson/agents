@@ -179,17 +179,27 @@ class MCPManager:
     def call_tool(self, server_name, tool_name, arguments=None):
         """Call a tool on a server. *arguments* is a dict.
 
-        Returns the text content from the MCP response.
+        Returns ``(text, images)`` where *images* is a list of
+        ``(base64_data, mime_type)`` tuples extracted from image content
+        blocks.  *text* combines all text content blocks plus the
+        structured content (as JSON) when present — tools like cua-driver
+        put actionable handles (snapshot ids, element tokens) there.
         """
         h = self._get_handle(server_name)
         result = self._run_on(h, h.session.call_tool(tool_name, arguments or {}))
         parts = []
+        images = []
         for item in result.content:
-            if hasattr(item, 'text'):
+            if getattr(item, "type", None) == "image":
+                images.append((item.data, item.mimeType))
+            elif hasattr(item, "text"):
                 parts.append(item.text)
             else:
                 parts.append(str(item))
-        return "\n".join(parts) if parts else "ok"
+        structured = getattr(result, "structuredContent", None)
+        if structured:
+            parts.append("structured: " + json.dumps(structured, default=str))
+        return ("\n".join(parts) if parts else "ok"), images
 
     def shutdown(self):
         """Disconnect all servers and stop their event loops."""
