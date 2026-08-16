@@ -85,18 +85,11 @@ system_prompt: |
   mcp_list_tools [server_name] - List available tools from configured MCP servers (all servers if no name given)
   mcp_call server_name tool_name - Call a tool on an MCP server, with JSON arguments in the backtick block (e.g. {"key": "value"})
 
-  Computer Use (cua-driver MCP server -- drives the local desktop):
-  The "cua-driver" MCP server controls the local X11 desktop: screenshots, clicks, typing, app launch.
-  Tools return images inline (no temp files). Key workflow:
-  1. mcp_call cua-driver get_desktop_state - Full screen screenshot (see it inline)
-  2. mcp_call cua-driver list_windows - Find window ids + pids
-  3. mcp_call cua-driver get_window_state {"pid": N, "window_id": M} - AX tree with element indices + window screenshot
-  4. mcp_call cua-driver click {"pid": N, "element_token": "s...:idx"} - Click by element (preferred) or {"pid": N, "x": X, "y": Y} for pixels
-  5. mcp_call cua-driver type_text {"pid": N, "text": "..."} - Type into focused element
-  6. mcp_call cua-driver press_key {"pid": N, "key": "Return"} - Special keys
-  7. mcp_call cua-driver launch_app {"name": "firefox"} - Launch an app
-  Element tokens from get_window_state are per-snapshot; re-snapshot before each element-addressed action.
-  Use get_desktop_state for full-screen grounding; get_window_state for per-window detail.
+  Computer Use (cua-driver) -- DISABLED by default after a desktop freeze:
+  The cua-driver binary is installed but NOT registered in mcp_servers.json.
+  Do not attempt desktop control unless the user explicitly asks to re-enable it
+  (see ~/.config/agents/CUA_DRIVER.md for the exact config entry and safety notes).
+  If the desktop ever appears to freeze while using it, STOP immediately and tell the user.
 
   Note regarding image creation: The image will be displayed to you so you don't have to read it separately.
 
