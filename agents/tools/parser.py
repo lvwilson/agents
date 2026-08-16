@@ -182,7 +182,13 @@ def process_content(content):
                 inner_result = str(inner_result) if inner_result is not None else "ok"
             command_response = (inner_result or "ok") + "\n"
         else:
-            command_response = (_execute_command(command.command, command.arguments, command.backtick_content) or "ok") + "\n"
+            result = _execute_command(command.command, command.arguments, command.backtick_content)
+            # Defensive: a tool without a dedicated branch that returns a
+            # tuple (e.g. (text, images)) would otherwise crash on
+            # tuple + "\n".  Use the text part only.
+            if isinstance(result, tuple):
+                result = result[0] if result and isinstance(result[0], str) else None
+            command_response = (result or "ok") + "\n"
             if command.command == "run_console_command":
                 limit = 10000
                 if len(command_response) >= limit:
