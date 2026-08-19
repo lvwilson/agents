@@ -71,7 +71,7 @@ Add the relevant keys for the providers you intend to use to your `.bashrc` (Lin
 
 Optional configuration for local/remote LLM servers:
 
-    export LOCAL_MODEL='llama3.1'        # Model name for --local mode
+    export LOCAL_MODEL='qwen3.8-27b'        # Model name for --local mode
     export LOCAL_LLM_PORT=11434          # Port for local API server (default: 8000)
     export LOCAL_LLM_HOST='192.168.1.50' # Hostname for remote LLM server (default: localhost)
 
@@ -136,7 +136,7 @@ If the directory is **not** a Git repository, the harness behaves normally with 
 
 You can run against OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000`.
 
-    LOCAL_MODEL=llama3.1 agents --local "Explain quantum mechanics"
+    LOCAL_MODEL=qwen3.8-27b agents --local "Explain quantum mechanics"
 
 You can change the port using the `-p` or `--port` flag, or by setting the `LOCAL_LLM_PORT` environment variable:
 
@@ -148,11 +148,11 @@ You can change the port using the `-p` or `--port` flag, or by setting the `LOCA
 
 To connect to a remote LLM server, use the `-H` or `--host` flag, or set the `LOCAL_LLM_HOST` environment variable:
 
-    LOCAL_MODEL=llama3.1 agents --local -H 192.168.1.50 "Explain quantum mechanics"
+    LOCAL_MODEL=qwen3.8-27b agents --local -H 192.168.1.50 "Explain quantum mechanics"
 
     # Or set the host via environment variable (useful in .bashrc)
     export LOCAL_LLM_HOST=192.168.1.50
     export LOCAL_LLM_PORT=8000
-    LOCAL_MODEL=llama3.1 agents --local "Explain quantum mechanics"
+    LOCAL_MODEL=qwen3.8-27b agents --local "Explain quantum mechanics"
 
 The `-H` flag takes precedence over `LOCAL_LLM_HOST`, and `-p` takes precedence over `LOCAL_LLM_PORT`, when both are specified.

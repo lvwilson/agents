@@ -248,7 +248,7 @@ python agents.py -r "continue the task"
 AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-5.3-codex python agents.py "task"
 
 # Local model
-LOCAL_MODEL=llama3.1 python agents.py --local -p 11434 "task"
+LOCAL_MODEL=qwen3.8-27b python agents.py --local -p 11434 "task"
 
 # Pipe input
 echo "file contents" | python agents.py "analyze this"
