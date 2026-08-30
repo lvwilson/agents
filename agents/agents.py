@@ -51,6 +51,11 @@ from .session import (
     load_session,
 )
 from .llm_backend import InterruptedResponse, EmptyResponseError
+from .loop_detector import (
+    LoopDetector,
+    LoopDetectedError,
+    LoopGuardedStreamHandler,
+)
 from .ui import (
     RichStreamHandler,
     print_banner,
@@ -306,6 +311,26 @@ NO_OUTPUT_REMINDER = (
 )
 
 
+#: Maximum number of times a single iteration may abort a looping
+#: generation and retry it before giving up (raising).  Each abort
+#: discards the partial response and re-issues the generation with a
+#: break-the-loop nudge, so a model that loops on every attempt is
+#: stopped after a bounded number of wasted generations rather than
+#: looping forever.
+MAX_LOOP_RETRIES = 3
+
+
+#: Feedback injected after a looping generation is terminated, so the
+#: model breaks out of the repetition on the retry.
+LOOP_BREAK_FEEDBACK = (
+    "Feedback: Your previous response was terminated because it fell "
+    "into a loop — the same block of text was repeated over and over. "
+    "The terminated output was discarded and is NOT part of this "
+    "conversation. Do not repeat that content. Respond to your task "
+    "freshly and make concrete progress toward finishing it."
+)
+
+
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
     print_sigterm()
@@ -548,11 +573,18 @@ class Agent:
         if "temperature" in configuration:
             backend_kwargs["temperature"] = configuration["temperature"]
 
+        # Loop detection: a shared detector wrapped around the stream
+        # handler sees every visible token of every generation and can
+        # abort a runaway (looping) generation mid-stream.  See
+        # agents/loop_detector.py.
+        self.loop_detector = LoopDetector()
         self.client = create_backend(
             provider,
             model=self.model_name,
             base_url=base_url,
-            stream_handler=RichStreamHandler(),
+            stream_handler=LoopGuardedStreamHandler(
+                RichStreamHandler(), self.loop_detector
+            ),
             **backend_kwargs,
         )
 
@@ -586,6 +618,9 @@ class Agent:
         self._loop_count = 0
         self._empty_response_count = 0
         self._no_output_reminded = False
+        # How many looping generations have been terminated (and redone)
+        # since the last clean response.  Bounded by MAX_LOOP_RETRIES.
+        self._loop_terminations = 0
 
         # Register the LLM backend for the summarize tool so that
         # the tools layer can make one-shot LLM calls without a circular import.
@@ -699,7 +734,33 @@ class Agent:
             )
             self.context.append(_form_message("user", empty_feedback))
             return True
+        except LoopDetectedError as e:
+            # A loop was detected mid-stream.  The partial (looping)
+            # response was never added to context.  Log it as an error,
+            # nudge the model to break the loop, and redo the generation.
+            # Bounded: after MAX_LOOP_RETRIES consecutive terminations we
+            # give up rather than loop forever.
+            self._loop_terminations += 1
+            msg = (
+                f"Loop detected mid-generation "
+                f"(repetition score {e.detection.score:.2f}); terminating "
+                f"and retrying ({self._loop_terminations}/{MAX_LOOP_RETRIES}). "
+                "Partial output was discarded."
+            )
+            logging.error(msg)
+            print_error(msg, None)
+            if self._loop_terminations >= MAX_LOOP_RETRIES:
+                raise RuntimeError(
+                    "Looping error: the model kept producing looping output; "
+                    f"generation was terminated {self._loop_terminations} "
+                    "times in a row."
+                ) from e
+            self.context.append(_form_message("user", LOOP_BREAK_FEEDBACK))
+            return True
         self._empty_response_count = 0
+        # A generation that completed (not aborted mid-stream) re-arms the
+        # loop-termination budget.
+        self._loop_terminations = 0
 
         if not response:
             return False

@@ -1,0 +1,93 @@
+Task: Remove the forced redirect to preferences after login; expose preferences as a link from the dashboard.
+End conditions: Login routes users by progress (first-timers → preferences, returning users → dashboard/ready), dashboard has an "Edit your details" link, tests green, committed.
+Worklog: "Read extensions.py (CSRF = form field must match session token). Applying the fix + dashboard link + CSS + new test."
+Detailed thoughts and Plans: The forced redirect is in `app/web/__init__.py:login()` — `redirect(url_for('web.preferences'))` after every web login. I'll change it to `redirect(_home_for(conn, user))`, which already routes correctly (no name/couple → preferences; has progress → dashboard/ready). Then add a subtle "Edit your details" link under the dashboard intro, a minimal global link-color CSS rule (specificity-safe: existing `.brand`/`.site-nav a`/`.linklike` rules all override it), and a test covering both redirect cases.
+
+Command: find_and_replace app/web/__init__.py
+`````Python
+<<<<<<< SEARCH
+        session['user_id'] = user['id']
+        return redirect(url_for('web.preferences'))
+    finally:
+        conn.close()
+
+
+@web.post('/logout')
+=======
+        session['user_id'] = user['id']
+        return redirect(_home_for(conn, user))
+    finally:
+        conn.close()
+
+
+@web.post('/logout')
+>>>>>>> REPLACE
+`````
+Command: find_and_replace app/templates/dashboard.html
+`````Html
+<<<<<<< SEARCH
+<h1>Your progress</h1>
+<p class="muted">
+  This page updates in real time. It will let you know as soon as your partner
+  has registered and completed everything.
+</p>
+=======
+<h1>Your progress</h1>
+<p class="muted">
+  This page updates in real time. It will let you know as soon as your partner
+  has registered and completed everything.
+</p>
+<p class="muted"><a href="{{ url_for('web.preferences') }}">Edit your details</a></p>
+>>>>>>> REPLACE
+`````
+Command: find_and_replace app/static/style.css
+`````Css
+<<<<<<< SEARCH
+* { box-sizing: border-box; }
+=======
+* { box-sizing: border-box; }
+
+a { color: var(--accent); }
+>>>>>>> REPLACE
+`````
+Command: find_and_replace tests/test_api.py
+`````Python
+<<<<<<< SEARCH
+def test_api_404_shape(client):
+    resp = client.get('/api/nope')
+    assert resp.status_code == 404
+    assert resp.get_json()['error']['code'] == 'not_found'
+=======
+def test_api_404_shape(client):
+    resp = client.get('/api/nope')
+    assert resp.status_code == 404
+    assert resp.get_json()['error']['code'] == 'not_found'
+
+
+def test_web_login_redirects_by_progress(client):
+    """First-time users land on preferences; returning users on their page."""
+    # New user: no name/couple yet -> preferences.
+    token = csrf(client)
+    resp = client.post('/login',
+                       data={'email': 'carol@example.com', 'password': 'secret1',
+                             'csrf_token': token},
+                       follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers['Location'].endswith('/preferences')
+
+    # Complete first-time setup (name + partner) via the API.
+    set_prefs(client, 'carol@example.com', 'secret1', 'Carol', 'dave@example.com')
+
+    # Log out, then log back in through the web form -> dashboard, not
+    # preferences (the user has already entered their details).
+    token = csrf(client)
+    client.post('/logout', data={'csrf_token': token}, follow_redirects=False)
+    token = csrf(client)
+    resp = client.post('/login',
+                       data={'email': 'carol@example.com', 'password': 'secret1',
+                             'csrf_token': token},
+                       follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers['Location'].endswith('/dashboard')
+>>>>>>> REPLACE
+

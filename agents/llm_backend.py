@@ -12,6 +12,8 @@ import time
 from abc import ABC, abstractmethod
 from typing import Callable, TypeVar
 
+from .loop_detector import LoopDetectedError
+
 _T = TypeVar("_T")
 
 
@@ -246,6 +248,15 @@ class LLMBackend(ABC):
                 sh.on_stream_end()
                 partial = sh.get_buffered_text()
                 raise InterruptedResponse(partial)
+
+            except LoopDetectedError:
+                # A loop was detected mid-stream.  This is not a
+                # transient failure — retrying the same request would
+                # just stream the same loop again.  Propagate it to the
+                # agent, which discards the partial response and redoes
+                # the generation.
+                sh.on_stream_end()
+                raise
 
             except Exception as e:
                 sh.on_stream_end()

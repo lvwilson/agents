@@ -249,11 +249,19 @@ def print_budget_exceeded(cost, compute_budget):
     ))
 
 
-def print_error(exception, trace_str):
-    """Display an error panel with traceback."""
+def print_error(exception, trace_str=None):
+    """Display an error panel with an optional traceback.
+
+    ``trace_str`` may be ``None`` (or empty) when there is no traceback to
+    show — e.g. a loop termination, which is a controlled stop rather than
+    an exception with a stack.
+    """
+    body = f"[error]{exception}[/]"
+    if trace_str:
+        body += f"\n[muted]{trace_str}[/]"
     console.print()
     console.print(Panel(
-        f"[error]{exception}[/]\n[muted]{trace_str}[/]",
+        body,
         title="[bold error]✗  Error[/]",
         border_style="bright_red",
         padding=(0, 1),
