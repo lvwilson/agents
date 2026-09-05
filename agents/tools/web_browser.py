@@ -42,11 +42,14 @@ _FALSE_VALUES = ("0", "false", "no", "off")
 
 # ── Fingerprint constants (Phase 2) ────────────────────────────────
 #
-# _CHROME_VERSION is the single place the emulated Chrome major version
-# is defined.  Bump it periodically to track the stable channel (the
-# UA string, and anything else that should stay in step with it, are
-# all derived from this one constant).
-_CHROME_VERSION = "138.0.0.0"
+# _CHROME_VERSION is the FALLBACK Chrome major version.  When the launched
+# engine's version is readable (the default case), the UA is derived from
+# THAT (see _engine_major / _get_context_options) so the UA's
+# "Chrome/<major>" stays in lockstep with the engine's auto-generated
+# sec-ch-ua client hints -- the "UA says X but sec-ch-ua says Y" mismatch
+# is a hard, trivially-checked bot tell.  This constant is used only when
+# the engine version is unreadable (tests / probe edge).  Keep it current.
+_CHROME_VERSION = "149.0.0.0"
 
 # Real Chrome UA per platform (no "HeadlessChrome" token).  The
 # lower-case "windows" key doubles as the fallback for unknown
@@ -87,16 +90,39 @@ def _warn(message):
                 pass
 
 
-def _build_auto_user_agent():
+def _engine_major(browser):
+    """Major of the actually-launched Chrome/Chromium engine, or ``None``.
+
+    Reads the launched ``Browser.version`` (e.g. ``"149.0.7827.53"`` ->
+    ``"149"``) so the UA's ``Chrome/<major>`` matches the engine's
+    auto-generated ``sec-ch-ua`` client hints.  A non-string ``version``
+    (e.g. a test ``MagicMock``) yields ``None`` so the ``_CHROME_VERSION``
+    fallback is used.  Never raises.
+    """
+    try:
+        version = getattr(browser, "version", None)
+    except Exception:
+        return None
+    if not isinstance(version, str) or not version:
+        return None
+    m = re.match(r"(\d+)", version)
+    return m.group(1) if m else None
+
+
+def _build_auto_user_agent(engine_major=None):
     """Auto-built user agent: the real Chrome UA string for this platform.
 
-    Derived from ``_CHROME_VERSION`` and the platform templates -- never
-    contains the "HeadlessChrome" token.  Unknown platforms fall back to
-    the Windows template.
+    Built from the platform templates -- never contains the
+    "HeadlessChrome" token.  When *engine_major* is given (the actually
+    launched engine's major, see ``_engine_major``), that version is used
+    so the UA stays in lockstep with the engine's ``sec-ch-ua``; otherwise
+    the ``_CHROME_VERSION`` fallback is used.  Unknown platforms fall back
+    to the Windows template.
     """
     template = _CHROME_UA_TEMPLATES.get(
         sys.platform.lower(), _CHROME_UA_TEMPLATES[_DEFAULT_UA_PLATFORM_KEY])
-    return template.format(version=_CHROME_VERSION)
+    version = f"{engine_major}.0.0.0" if engine_major else _CHROME_VERSION
+    return template.format(version=version)
 
 
 def _running_as_root():
@@ -252,6 +278,7 @@ class WebBrowser:
         self._proxy_pool = []
         self._proxy_idx = -1
         self._active_proxy = None
+        self._engine_major = None
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
@@ -314,6 +341,7 @@ class WebBrowser:
         self._proxy_pool = []
         self._proxy_idx = -1
         self._active_proxy = None
+        self._engine_major = None
 
         if self._playwright is None:
             self._playwright = sync_playwright().start()
@@ -335,6 +363,19 @@ class WebBrowser:
             # Path 1: persistent profile (cookies + storage survive the
             # process, so repeat visits look like a returning visitor).
             os.makedirs(cfg["profile"], exist_ok=True)
+            # The persistent launch fuses browser + context creation, so the
+            # engine version must be known BEFORE the context options (UA) are
+            # built.  A throwaway headless probe launch (same channel/args)
+            # reveals the real engine version so the UA stays in lockstep with
+            # sec-ch-ua; if it fails we fall back to the constant.
+            probe = self._chromium_launch(channel, args)
+            try:
+                self._engine_major = _engine_major(probe)
+            finally:
+                try:
+                    probe.close()
+                except Exception:
+                    pass
             # Context options are launch-level for persistent contexts:
             # the very same fingerprint options as new_context() above.
             ctx_kwargs = self._get_context_options()
@@ -366,6 +407,7 @@ class WebBrowser:
                 # proxy -- the fixed-proxy kwarg therefore does not apply
                 # here (ctx_opts without proxy).  No context yet.
                 self._browser = self._chromium_launch(channel, args)
+                self._engine_major = _engine_major(self._browser)
                 return
             # Empty/unreadable pool: fall through to the fixed direct path.
 
@@ -375,8 +417,9 @@ class WebBrowser:
         # creation, screen, device scale, Accept-Language) are applied to
         # EVERY launch path so no code path can drift back to bare
         # Playwright defaults.
-        ctx_opts = self._get_context_options()
         self._browser = self._chromium_launch(channel, args)
+        self._engine_major = _engine_major(self._browser)
+        ctx_opts = self._get_context_options()
         self._ctx = self._browser.new_context(**ctx_opts)
 
     def _get_context_options(self, include_fixed_proxy=True):
@@ -392,7 +435,10 @@ class WebBrowser:
         its own per-navigation proxy) -- see *include_fixed_proxy*.
         """
         cfg = self._cfg
-        user_agent = cfg["user_agent"] or _build_auto_user_agent()
+        # Auto UA tracks the launched engine's major (lockstep with
+        # sec-ch-ua); an explicit WEB_USER_AGENT always wins.
+        user_agent = cfg["user_agent"] or _build_auto_user_agent(
+            getattr(self, "_engine_major", None))
         locale = cfg["locale"]
         opts = {
             "user_agent": user_agent,
@@ -582,6 +628,7 @@ class WebBrowser:
         self._proxy_pool = []
         self._proxy_idx = -1
         self._active_proxy = None
+        self._engine_major = None
         self._cfg = None
         return "Browser closed."
 

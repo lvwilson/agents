@@ -158,22 +158,22 @@ class TestAutoUserAgent(unittest.TestCase):
             ua = _build_auto_user_agent()
         self.assertEqual(
             ua,
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36")
+            wbmod._CHROME_UA_TEMPLATES["linux"].format(
+                version=wbmod._CHROME_VERSION))
 
     def test_darwin_platform_template(self):
         with patch.object(wbmod, "sys") as mock_sys:
             mock_sys.platform = "darwin"
             ua = _build_auto_user_agent()
         self.assertIn("Macintosh; Intel Mac OS X 10_15_7", ua)
-        self.assertIn("Chrome/138.0.0.0", ua)
+        self.assertIn(f"Chrome/{wbmod._CHROME_VERSION}", ua)
 
     def test_windows_platform_template(self):
         with patch.object(wbmod, "sys") as mock_sys:
             mock_sys.platform = "win32"
             ua = _build_auto_user_agent()
         self.assertIn("Windows NT 10.0; Win64; x64", ua)
-        self.assertIn("Chrome/138.0.0.0", ua)
+        self.assertIn(f"Chrome/{wbmod._CHROME_VERSION}", ua)
 
     def test_unknown_platform_falls_back_to_windows_template(self):
         with patch.object(wbmod, "sys") as mock_sys:
@@ -188,7 +188,8 @@ class TestAutoUserAgent(unittest.TestCase):
         self.assertNotIn("HeadlessChrome", ua)
 
     def test_version_constant_single_source(self):
-        """Bumping _CHROME_VERSION is the one place the UA version changes."""
+        """Bumping _CHROME_VERSION is the one place the FALLBACK UA
+        version changes (no engine major given)."""
         with patch.object(wbmod.sys, "platform", "linux"), \
              patch.object(wbmod, "_CHROME_VERSION", "129.0.0.0"):
             ua = _build_auto_user_agent()
@@ -202,6 +203,118 @@ class TestAutoUserAgent(unittest.TestCase):
             with self.subTest(platform=platform):
                 with patch.object(wbmod.sys, "platform", platform):
                     self.assertNotIn("Version/", _build_auto_user_agent())
+
+
+class TestEngineLockstepUA(unittest.TestCase):
+    """The auto UA tracks the actually-launched engine's major so the
+    "Chrome/<major>" token stays in lockstep with the engine's
+    auto-generated sec-ch-ua client hints (a mismatch is a trivial bot
+    tell).  The _CHROME_VERSION constant is only the fallback for when
+    the engine version is unreadable (mocked browsers)."""
+
+    def test_engine_major_parsing(self):
+        from agents.tools.web_browser import _engine_major
+        m = MagicMock()
+        m.version = "149.0.7827.53"
+        self.assertEqual(_engine_major(m), "149")
+        m = MagicMock()
+        m.version = "145.0.7632.6"
+        self.assertEqual(_engine_major(m), "145")
+        m = MagicMock()  # default attribute: not a str -> fallback
+        self.assertIsNone(_engine_major(m))
+        m = MagicMock()
+        m.version = None
+        self.assertIsNone(_engine_major(m))
+        m = MagicMock()
+        m.version = "garbage"
+        self.assertIsNone(_engine_major(m))
+
+    def test_build_auto_user_agent_with_engine_major(self):
+        with patch.object(wbmod.sys, "platform", "linux"):
+            ua = _build_auto_user_agent("149")
+        self.assertIn("Chrome/149.0.0.0", ua)
+        with patch.object(wbmod.sys, "platform", "linux"):
+            ua = _build_auto_user_agent(None)
+        self.assertIn(f"Chrome/{wbmod._CHROME_VERSION}", ua)
+
+    def test_engine_major_wins_over_constant_on_fixed_path(self):
+        """Engine '145.x' must beat the (newer) constant in the UA."""
+        sync, playwright, chromium, browser, created = _make_playwright_mock()
+        browser.version = "145.0.7632.6"  # real string: engine readable
+        with patch("agents.tools.web_browser.sync_playwright", sync), \
+             patch("agents.tools.web_browser._running_as_root",
+                   return_value=False):
+            with patch.dict(os.environ,
+                            _clean_env(WEB_CHANNEL="chromium"), clear=True):
+                wb = WebBrowser()
+                wb.read_page("https://example.com")
+        ua = browser.new_context.call_args.kwargs["user_agent"]
+        self.assertIn("Chrome/145.0.0.0", ua)
+        self.assertNotIn(f"Chrome/{wbmod._CHROME_VERSION}", ua)
+
+    def test_engine_major_applies_on_all_context_paths(self):
+        """Fixed, rotating, and persistent contexts all carry the
+        engine-derived UA."""
+        # fixed path
+        sync, playwright, chromium, browser, created = _make_playwright_mock()
+        browser.version = "145.0.7632.6"
+        with patch("agents.tools.web_browser.sync_playwright", sync):
+            with patch.dict(os.environ,
+                            _clean_env(WEB_CHANNEL="chromium"), clear=True):
+                wb = WebBrowser()
+                wb.read_page("https://example.com")
+        self.assertEqual(wb._engine_major, "145")
+        self.assertIn("Chrome/145.0.0.0",
+                      browser.new_context.call_args.kwargs["user_agent"])
+
+        # rotating path
+        sync, playwright, chromium, browser, created = _make_playwright_mock()
+        browser.version = "145.0.7632.6"
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = pathlib.Path(tmp) / "proxies.txt"
+            pool.write_text("http://proxy-a.example:3128\n"
+                            "http://proxy-b.example:8080\n")
+            with patch("agents.tools.web_browser.sync_playwright", sync):
+                with patch.dict(os.environ,
+                                _clean_env(WEB_PROXY_FILE=str(pool),
+                                           WEB_CHANNEL="chromium"),
+                                clear=True):
+                    wb = WebBrowser()
+                    wb.read_page("https://example.com")
+                    wb.read_page("https://example.com/other")
+        for idx, call in enumerate(browser.new_context.call_args_list):
+            with self.subTest(context=idx):
+                self.assertIn("Chrome/145.0.0.0",
+                              call.kwargs["user_agent"])
+
+        # persistent path (probe launch reveals the engine version)
+        sync, playwright, chromium, browser, created = _make_playwright_mock()
+        browser.version = "145.0.7632.6"
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = pathlib.Path(tmp) / "profile"
+            with patch("agents.tools.web_browser.sync_playwright", sync):
+                with patch.dict(os.environ,
+                                _clean_env(WEB_BROWSER_PROFILE=str(profile),
+                                           WEB_CHANNEL="chromium"),
+                                clear=True):
+                    wb = WebBrowser()
+                    wb.read_page("https://example.com")
+                    wb.close()
+        kwargs = chromium.launch_persistent_context.call_args.kwargs
+        self.assertIn("Chrome/145.0.0.0", kwargs["user_agent"])
+
+    def test_explicit_web_user_agent_still_wins(self):
+        """WEB_USER_AGENT overrides even the engine-derived UA."""
+        sync, playwright, chromium, browser, created = _make_playwright_mock()
+        browser.version = "145.0.7632.6"
+        with patch("agents.tools.web_browser.sync_playwright", sync):
+            with patch.dict(os.environ, _clean_env(
+                    WEB_CHANNEL="chromium",
+                    WEB_USER_AGENT="Pinned/9.9 User"), clear=True):
+                wb = WebBrowser()
+                wb.read_page("https://example.com")
+        self.assertEqual(browser.new_context.call_args.kwargs["user_agent"],
+                         "Pinned/9.9 User")
 
 
 # ── Context options on every launch path ───────────────────────────
