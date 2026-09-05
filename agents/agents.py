@@ -315,6 +315,36 @@ NO_OUTPUT_REMINDER = (
 )
 
 
+#: Raw tool-call opening tag.  Models trained on the OpenAI
+#: tool-calling format emit a raw tool-call block (open and close tags
+#: with a JSON payload) when they want to run a tool; this harness has
+#: no parser for that format and never executes it.
+TOOL_CALL_MARKER = "<tool_call>"
+
+
+#: Reminder injected (at most once per incident, sharing the
+#: one-reminder budget of :data:`NO_OUTPUT_REMINDER`) when a response
+#: carries a raw tool-call tag AND no command and no completion block:
+#: the model is speaking a format this harness cannot parse.
+TOOL_CALL_REMINDER = (
+    "Feedback: Your previous response contained a raw <tool_call> "
+    "tool-call block, but this harness does not support <tool_call> "
+    "tool-call syntax, so nothing could be executed from it. Commands "
+    "here are plain visible lines of the form 'Command: name args', "
+    "each optionally followed by a 5-backtick payload block starting on "
+    "the line below the command; command output returns to you in a "
+    "'=== Tool Results ===' message. If you intended to run the tool "
+    "from that block, re-issue it as a 'Command: name args' line. To "
+    "intentionally finish the task instead, end your response with a "
+    "completion block wrapped in 5 backticks: a 'Completion: <description "
+    "of what you accomplished>' line immediately after the opening "
+    "backticks, then a 'Success: True or False' line. This is your only "
+    "warning: if your next response again contains neither commands nor "
+    "a completion block, the session will end. Please respond to your "
+    "task now."
+)
+
+
 #: Maximum number of times a single iteration may abort a looping
 #: generation and retry it before giving up (raising).  Each abort
 #: discards the partial response and re-issues the generation with a
@@ -892,6 +922,20 @@ class Agent:
                 "again after one reminder. Ending the session.",
                 None,
             )
+        elif TOOL_CALL_MARKER in response:
+            # A raw tool-call block with no Command line: the model is
+            # speaking a format this harness never parses.  Give a
+            # targeted correction instead of the generic no-output
+            # reminder (same one-reminder budget per incident).
+            self._no_output_reminded = True
+            print_error(
+                "Model response contained a raw tool-call block with "
+                "no commands or completion block. Injecting tool-call "
+                "reminder (only warning).",
+                None,
+            )
+            self.context.append(_form_message("user", TOOL_CALL_REMINDER))
+            return True
         else:
             self._no_output_reminded = True
             print_error(
