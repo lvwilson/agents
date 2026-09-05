@@ -32,10 +32,9 @@ from .tools import register_pool as _register_pool
 # Local imports
 from .backends import create_backend
 from .config import (
-    HOME_AGENT_SQUAT_WARNING,
     PROVIDER_DEFAULT_MODELS,
-    home_agent_status,
     load_agent_config,
+    report_home_config,
 )
 from .cli.model_table import print_model_table
 from .git_utils import (
@@ -1792,12 +1791,12 @@ def main():
     if not args.command:
         parser.error("the following argument is required: command")
 
-    # Visible warning when the global ~/.agent config is squatted by a
-    # non-file (most commonly a stale directory): without this notice
-    # the backend pin silently disappears and every project without its
-    # own .agent file quietly falls back to the default backend.
-    if home_agent_status() == "squat":
-        safe_console_print(HOME_AGENT_SQUAT_WARNING, style="warning")
+    # Global backend config: run the one-time ~/.agent ->
+    # ~/.agents/agent_config.yaml migration and print any notice
+    # (moved / multi / squat).  A squatted global config path used to
+    # silently drop the backend pin for every project without its own
+    # .agent file; the notice makes that state visible.
+    report_home_config()
 
     # Pre-flight: ensure git working tree is clean (unless --nogit)
     if not args.nogit and is_git_repo():

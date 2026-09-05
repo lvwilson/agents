@@ -1,4 +1,4 @@
 # Agent LLM backend config — project-level pin; overrides the global
-# ~/.agent file and the AGENT_* environment variables.
+# ~/.agents/agent_config.yaml and the AGENT_* environment variables.
 provider: cerebras
 model: qwen-3.8-27b

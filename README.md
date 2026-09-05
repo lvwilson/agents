@@ -86,17 +86,19 @@ Agents are configured via YAML files (e.g., `basic_agent.yaml`). You can overrid
 ### Backend Configuration (the `.agent` file)
 
 The easiest way to pick a backend is a small **`.agent`** YAML file.  Put one in your
-project directory (it is picked up from any subdirectory) or in your home directory
-(``~/.agent``) for a global default.  Only the keys you need are required:
+project directory (it is picked up from any subdirectory of that directory).  For a
+global default applicable to every project, write it to
+**`~/.agents/agent_config.yaml`** — the same state directory that holds sessions,
+memory and the browser profile.  Only the keys you need are required:
 
 ```yaml
-# .agent — use Cerebras' Qwen 3.8 27B
+# .agent — project pin, e.g. use Cerebras' Qwen 3.8 27B
 provider: cerebras
 model: qwen-3.8-27b
 ```
 
 ```yaml
-# .agent — any OpenAI-compatible server (vLLM, llama.cpp, Ollama, …)
+# ~/.agents/agent_config.yaml — any OpenAI-compatible server (vLLM, llama.cpp, Ollama, …)
 provider: openai
 model: qwen3.8-27b
 base_url: http://localhost:8000/v1
@@ -117,9 +119,15 @@ temperature: 0.3
 | `temperature` | Sampling temperature (per-backend default if omitted). |
 
 **Resolution order** (highest wins, per key): `--provider` / `--model` flags → project
-`.agent` → `~/.agent` → `AGENT_MODEL_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` env
-vars → the agent YAML → provider default.  API keys always come from the environment
-(`CLAUDE_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, …) — never from the file.
+`.agent` → global `~/.agents/agent_config.yaml` → `AGENT_MODEL_PROVIDER` /
+`AGENT_MODEL` / `AGENT_BASE_URL` env vars → the agent YAML → provider default.
+API keys always come from the environment (`CLAUDE_API_KEY`, `OPENAI_API_KEY`,
+`CEREBRAS_API_KEY`, …) — never from the files.
+
+Note: the old global location `~/.agent` (a bare file in the home directory) is
+deprecated.  On the first CLI run it is moved to `~/.agents/agent_config.yaml`;
+until then it is still read, and if both files exist the new location wins and a
+warning tells you to clean up the leftover.
 
 ### Web browsing & stealth
 

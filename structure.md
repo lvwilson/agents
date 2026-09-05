@@ -39,7 +39,7 @@ agents/                          ← repo root
 │   │   ├── kimi_backend.py      ← KimiBackend — OpenAI-compatible (moonshot)
 │   │   └── minimax_backend.py   ← MinimaxBackend — Anthropic-compatible endpoint
 │   │
-│   ├── config.py                ← `.agent` config file (project > home > env)
+│   ├── config.py                ← `.agent`/agent_config.yaml config (project > global > env)
 │   │
 │   ├── tools/                   ← Tooling layer (command parsing & execution)
 │   │   ├── __init__.py          ← Public API: process_content, filter_content, strip_end_session, terminate_process
@@ -68,7 +68,7 @@ agents/                          ← repo root
 ### `agents/agents.py` — Entry Point & Agent Orchestrator
 
 - **`Agent` class** — The central orchestrator. Holds conversation context, system prompt, LLM backend, and budget.
-  - `__init__()` — Loads the `.agent` config + YAML config, resolves provider/model/base_url/temperature (CLI flags > `.agent` > env vars > YAML > provider default), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
+  - `__init__()` — Loads the `.agent` config + YAML config, resolves provider/model/base_url/temperature (CLI flags > project `.agent` > global `~/.agents/agent_config.yaml` > env vars > YAML > provider default), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
   - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, folds the step into the session metrics via `client.record_step_metrics()` (free-form turns included), runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
   - `run()` — Loops `_iterate()` until the loop ends (explicit `end_session` command, a command-free response after one reminder, KeyboardInterrupt, or error); at 100% budget it runs one final free-form wrap-up turn (no commands processed) so the model can record the work done and emit its completion block, then ends.
   - `save_context()` / `load_context()` — Pause/resume of full conversation state including token counts, costs, and the session metrics rollup (so a resumed session keeps the whole-task tokens/rate/cost-per-hour).
@@ -261,9 +261,12 @@ All conversation state uses this Anthropic-derived format (other backends transl
 | `AGENT_TEMPERATURE` | Override temperature | No |
 | `LOCAL_MODEL` | Model name for local inference | Required with `--local` flag |
 
-The `.agent` YAML file (project dir or `~/.agent`) is the primary backend config:
-`provider`, `model`, `base_url`, `temperature`.  It overrides the env vars above and
-is overridden by the `--provider` / `--model` flags.  See `agents/config.py`.
+The `.agent`/`agent_config.yaml` YAML files are the primary backend config: project
+`.agent` (upward search from cwd) and global `~/.agents/agent_config.yaml`.
+Keys: `provider`, `model`, `base_url`, `temperature`.  They override the env vars
+above (global over the legacy `~/.agent` home file, which the first CLI run
+auto-migrates) and are overridden by the `--provider` / `--model` flags.
+See `agents/config.py`.
 
 #### Web browser env config
 
