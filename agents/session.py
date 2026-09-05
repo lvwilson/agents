@@ -7,6 +7,11 @@ session ID so that ``-r`` can resume without an explicit ID.
 
 Sessions persist across reboots.  Stale sessions older than
 ``MAX_SESSION_AGE_DAYS`` are pruned on every save.
+
+Legacy sessions saved under the previous store (``/tmp/agents-$USER/``,
+used before the move to ``~/.agents/sessions/``) are migrated on the
+next save, so a session that was live at upgrade time can still be
+resumed with ``-r`` (see :func:`_migrate_legacy_sessions`).
 """
 
 import json
@@ -39,6 +44,16 @@ def _index_path():
 def _session_path(session_id):
     """Return the JSON file path for a given session ID."""
     return os.path.join(_sessions_dir(), f"{session_id}.json")
+
+
+def _legacy_sessions_dir():
+    """Return the previous session store path (``/tmp/agents-$USER/``).
+
+    Only used by :func:`_migrate_legacy_sessions` to find sessions that
+    were saved before the move to ``~/.agents/sessions/``.
+    """
+    user = os.environ.get("USER", "unknown")
+    return os.path.join("/tmp", f"agents-{user}")
 
 
 def _ensure_sessions_dir():
@@ -138,14 +153,76 @@ def get_latest_session_for_dir(working_dir):
     return None
 
 
+# ── Legacy migration ─────────────────────────────────────────────────
+
+def _migrate_legacy_sessions():
+    """One-time migration from the previous ``/tmp/agents-$USER/`` store.
+
+    Called on every save, but cheap when there is nothing to do: it is a
+    no-op when the legacy directory does not exist.  Otherwise, any
+    session files (and index entries pointing at them) that we do not
+    already have are copied into the current store.  Existing files are
+    never overwritten, and the legacy copies are left in place — ``/tmp``
+    cleans them up on its own.
+    """
+    legacy_dir = _legacy_sessions_dir()
+    if not os.path.isdir(legacy_dir):
+        return
+
+    d = _sessions_dir()
+    for fname in os.listdir(legacy_dir):
+        if not fname.endswith('.json') or fname == 'index.json':
+            continue
+        dest = os.path.join(d, fname)
+        if os.path.exists(dest):
+            continue
+        try:
+            with open(os.path.join(legacy_dir, fname), 'r') as f:
+                data = f.read()
+            tmp = dest + '.tmp'
+            with open(tmp, 'w') as f:
+                f.write(data)
+            os.chmod(tmp, _FILE_PERMISSIONS)
+            os.replace(tmp, dest)
+        except OSError:
+            continue
+
+    # Merge legacy index entries that point at files which now exist,
+    # without overwriting newer per-directory index entries — this is
+    # what makes ``-r`` work for migrated sessions.
+    legacy_index_path = os.path.join(legacy_dir, 'index.json')
+    if os.path.exists(legacy_index_path):
+        try:
+            with open(legacy_index_path, 'r') as f:
+                old_index = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return
+        index = _read_index()
+        changed = False
+        for wd, entry in old_index.items():
+            if wd in index:
+                continue
+            sid = entry.get('session_id')
+            if sid and os.path.exists(os.path.join(d, f'{sid}.json')):
+                index[wd] = {
+                    'session_id': sid,
+                    'timestamp': entry.get('timestamp', time.time()),
+                }
+                changed = True
+        if changed:
+            _write_index(index)
+
+
 # ── Save / Load ──────────────────────────────────────────────────────
 
 def save_session(session_id, working_dir, state):
     """Persist *state* dict to the session file for *session_id*.
 
-    Also updates the directory index and prunes stale sessions.
+    Also runs the one-time legacy migration, updates the directory
+    index, and prunes stale sessions.
     """
     _ensure_sessions_dir()
+    _migrate_legacy_sessions()
     state = {
         'session_id': session_id,
         'working_dir': working_dir,

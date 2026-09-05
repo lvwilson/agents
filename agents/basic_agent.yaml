@@ -71,6 +71,12 @@ system_prompt: |
   Notes are persisted across sessions in a per-folder memory store.
   If notes grow too large (>10000 chars) you will be prompted to rewrite them more compactly.
 
+  Docs Commands (indexed local document/code sources; use `docs [list]` to see what is indexed):
+  docs [list] - List indexed sources
+  docs search <query> - Fuzzy search across all indexed sources
+  docs tree <source> [scope] [depth] - Browse the tree of an indexed source
+  docs view <source> <file> - View the full content of an indexed document
+
   Sub-Agent Commands:
   create_agent name ["description"] - Create a sub-agent. Backtick block: the role/persona instructions (required).
   list_agents - List all registered sub-agents

@@ -115,7 +115,6 @@ TEXT_EXTENSIONS = {
     ".babelrc",
     ".vimrc", ".vim",
     ".tmux", ".tmux.conf",
-    ".editorconfig",
     ".npmrc", ".npmignore",
     ".yarnrc",
     ".bowerrc",
@@ -125,15 +124,14 @@ TEXT_EXTENSIONS = {
     ".ipynb",
     # Other
     ".feature", ".gherkin",
-    ".ron",
     ".lock", ".sum",
-    ".svg",
 }
 
-# Directories to skip when indexing
+# Directories to skip when indexing (files are filtered by
+# TEXT_EXTENSIONS, so this set must contain directory names only).
 SKIP_DIRS = {
     ".git", ".svn", ".hg", "__pycache__", "node_modules", ".venv",
-    "venv", "env", ".env", ".tox", ".mypy_cache", ".ruff_cache",
+    "venv", "env", ".tox", ".mypy_cache", ".ruff_cache",
     ".pytest_cache", ".idea", ".vscode", ".vs", "build", "dist",
     "target", "out", ".next", ".nuxt", ".output", "coverage",
     ".eggs", ".cache", ".DS_Store",
