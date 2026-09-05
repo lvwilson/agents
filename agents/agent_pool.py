@@ -95,7 +95,7 @@ class AgentPool:
         self,
         name: str,
         task: str,
-        budget: float = 1.00,
+        budget: float = 2.00,
         timeout: int = 300,
     ) -> str:
         """Run a sub-agent on a task and return its stdout output.
@@ -111,7 +111,7 @@ class AgentPool:
         Args:
             name: Name of a registered sub-agent.
             task: The task to give the sub-agent.
-            budget: Compute budget in dollars (default $1.00).
+            budget: Compute budget in dollars (default $2.00).
             timeout: Maximum wall-clock seconds (default 300).
 
         Returns:

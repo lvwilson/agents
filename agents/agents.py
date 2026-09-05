@@ -537,7 +537,7 @@ class Agent:
     # subsequent API calls don't re-process the same large payload.
     LARGE_MESSAGE_CACHE_THRESHOLD = 10_000
 
-    def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
+    def __init__(self, configuration_name, task, compute_budget=2.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
                  session_id=None, model=None, provider=None):
         """Initialize the Agent.
@@ -1355,7 +1355,7 @@ def main():
         'command', type=str, nargs='?',
         help='A command string like "update my system".  Optional when '
              'using --list-models.')
-    parser.add_argument('-b', '--compute-budget', type=float, default=1.0, help='Compute budget in dollars')
+    parser.add_argument('-b', '--compute-budget', type=float, default=2.0, help='Compute budget in dollars')
     parser.add_argument('-r', '--restore', action='store_true',
                         help='Restore the latest session for the current directory')
     parser.add_argument('-s', '--session', type=str, default=None,

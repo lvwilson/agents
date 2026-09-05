@@ -60,7 +60,7 @@ system_prompt: |
   Sub-Agent Commands:
   create_agent name ["description"] - Create a sub-agent. Backtick block: the role/persona instructions (required).
   list_agents - List all registered sub-agents
-  run_agent name [budget] [timeout] - Run a sub-agent on a task. Backtick block: the task description. Returns the sub-agent's stdout output. Budget defaults to $1.00. Timeout in seconds defaults to 300.
+  run_agent name [budget] [timeout] - Run a sub-agent on a task. Backtick block: the task description. Returns the sub-agent's stdout output. Budget defaults to $2.00. Timeout in seconds defaults to 300.
 
   Sub-agents run as separate processes with fully isolated contexts and their own tool access.
   They are useful for: delegating sub-tasks, exploring approaches without polluting your context, and keeping costs down
