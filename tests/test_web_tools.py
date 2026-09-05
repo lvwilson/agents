@@ -30,6 +30,10 @@ def _make_browser_with_mocks():
     browser._browser = MagicMock()
     browser._browser.is_connected.return_value = True
     browser._playwright = MagicMock()
+    # This fixture wires browser state manually and bypasses _launch()
+    # (where _cfg is set), so pin the Phase 3 pacing delay to 0 to keep
+    # the tests from hitting the real jittered sleep.
+    browser._cfg = {"request_delay": 0.0}
 
     return browser, mock_page
 

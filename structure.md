@@ -173,7 +173,7 @@ The `tools` subpackage handles all command parsing and execution. It knows nothi
 - **`codemanipulator.py`** — AST-based Python code manipulation. Uses `ast.NodeTransformer` to read/replace/insert/remove code at dot-separated addresses (e.g. `ClassName.method_name`). Formats output with `black`.
 - **`code_scissors.py`** — Line-based text cutting operations: `insert_before`, `insert_after`, `replace_before`, `replace_after`, `replace_between`.
 - **`findreplace.py`** — Parses SEARCH/REPLACE blocks and performs string replacement.
-- **`web_browser.py`** — Playwright-powered headless browser singleton. Provides navigation, text/HTML reading, clicking, typing, screenshots, JavaScript execution, and element waiting.
+- **`web_browser.py`** — Playwright-powered headless browser singleton (web browsing, stealth-hardened). Provides navigation, text/HTML reading, clicking, typing, screenshots, JavaScript execution, and element waiting. All stealth settings are env-only via `_env_config()` (read once per (re)launch, bad values warn to the TTY and fall back — never crash): proxy (`WEB_PROXY` fixed / `WEB_PROXY_FILE` per-navigation round-robin context rebuild), opt-in persistent profile (`WEB_BROWSER_PROFILE`, `launch_persistent_context`), fingerprint hardening (auto real-Chrome UA from the `_CHROME_VERSION` constant, `WEB_USER_AGENT`/`WEB_LOCALE`/`WEB_TIMEZONE` overrides, viewport-at-creation + screen + matching `Accept-Language`, stealth-gated launch args, channel selection with Chrome→bundled-Chromium fallback, vendored `_STEALTH_INIT_JS` applied once per page creation, all gated by `WEB_STEALTH`), and behavioral pacing (`WEB_REQUEST_DELAY`, jittered wait after navigation / before interactive actions; reads of the current page never wait).
 - **`summarize.py`** — LLM-powered file/folder summarization with mtime-based caching. The LLM backend is injected via `register_llm()` (called by `Agent.__init__`).
 
 ### `agents/basic_agent.yaml` — Default Agent Configuration
@@ -263,6 +263,25 @@ All conversation state uses this Anthropic-derived format (other backends transl
 The `.agent` YAML file (project dir or `~/.agent`) is the primary backend config:
 `provider`, `model`, `base_url`, `temperature`.  It overrides the env vars above and
 is overridden by the `--provider` / `--model` flags.  See `agents/config.py`.
+
+#### Web browser env config
+
+Parsed by `WebBrowser._env_config()` in `agents/tools/web_browser.py`
+(tool-level settings live in the shell env, never in `.agent`).  Bad values warn
+and fall back to safe defaults — they never crash the agent.  Full user-facing
+documentation: README → "Web browsing & stealth".
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WEB_PROXY` | – | Browser proxy (`http`/`https`/`socks5`); also feeds `web_search` (DDGS). |
+| `WEB_PROXY_FILE` | – | One proxy per line; round-robin per navigation; wins over `WEB_PROXY` and over a persistent profile. |
+| `WEB_BROWSER_PROFILE` | off | `1` → `~/.agents/browser_profile/`, or an explicit path; persistent cookies/storage. |
+| `WEB_CHANNEL` | `auto` | `auto`/`chrome` try the installed Chrome (fallback bundled on launch failure); `chromium` forces bundled. |
+| `WEB_USER_AGENT` | auto-built | UA override; default is the real-Chrome UA for the platform. |
+| `WEB_LOCALE` | `en-US` | Context locale + matching `Accept-Language` header. |
+| `WEB_TIMEZONE` | `Etc/UTC` | Context `timezone_id` (set to match the proxy geography). |
+| `WEB_REQUEST_DELAY` | `0.5` | Mean jittered delay after navigation / before actions; `0` disables. |
+| `WEB_STEALTH` | `1` | `0` skips the init script + automation launch flag (diffing vs. pre-hardening). |
 
 ---
 

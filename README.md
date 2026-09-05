@@ -43,7 +43,7 @@ The tooling layer knows nothing about Claude, conversation history, or budgets.
 | **Text Code Manipulation** | Find-and-replace blocks, line-based cut/insert operations |
 | **Shell Access** | Full pseudo-terminal command execution with output capture |
 | **Image Handling** | Load, resize, encode images for vision LLMs; generate via external API |
-| **Web Browser** | Playwright-powered headless browser for navigation, reading, clicking, screenshots |
+| **Web Browser** | Playwright-powered headless browser for navigation, reading, clicking, screenshots — stealth-hardened and proxy-capable (see Web browsing & stealth below) |
 | **Summarization** | LLM-powered file and folder summarization with caching |
 
 ## Installation
@@ -120,6 +120,46 @@ temperature: 0.3
 `.agent` → `~/.agent` → `AGENT_MODEL_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` env
 vars → the agent YAML → provider default.  API keys always come from the environment
 (`CLAUDE_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, …) — never from the file.
+
+### Web browsing & stealth
+
+The web browser tool (`read_page`, `read_page_html`, `page_links`, `view_page`,
+`browse_open`, `browse_read`, `browse_click`, `browse_type`, `browse_js`) runs a
+headless Chromium/Chrome that is stealth-hardened (Plan:
+`untracked/web_stealth_plan.md`): a real-Chrome user agent, consistent
+locale/timezone/viewport fingerprints, a small vendored init script that fixes
+the classic headless tells (`navigator.webdriver`, empty `plugins`, missing
+`window.chrome`), and gentle jittered pacing between actions. All settings are
+environment variables (tool-level config lives in the shell env, never in
+`.agent`); bad values warn and fall back to safe defaults — they never crash
+the agent.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WEB_PROXY` | – | Single proxy `scheme://[user:pass@]host:port` for the browser (`http`, `https`, `socks5`). Also feeds `web_search` (DDGS). `WEB_PROXY_FILE` wins if both are set. |
+| `WEB_PROXY_FILE` | – | File with one proxy URL per line (`#` comments and blank lines ignored); round-robin per navigation. Mutually exclusive with a persistent profile (file wins). |
+| `WEB_BROWSER_PROFILE` | off | `1`/`0` or a directory path. `1` enables a persistent browser profile at `~/.agents/browser_profile/` so cookies/storage survive across runs (repeat visits look like a returning visitor). |
+| `WEB_CHANNEL` | `auto` | `auto` (drive the installed Google Chrome when present, fall back to bundled Chromium; an explicit `WEB_CHANNEL=chrome` falls back the same way on launch failure), `chrome` (installed Chrome), or `chromium` (force the bundled build). |
+| `WEB_USER_AGENT` | auto-built | Full user-agent override. Auto-built = the real Chrome UA for this platform from a single version constant (never `HeadlessChrome`). |
+| `WEB_LOCALE` | `en-US` | Context locale **and** the matching `Accept-Language` header (`en-US,en;q=0.9`). |
+| `WEB_TIMEZONE` | `Etc/UTC` | Context `timezone_id`. Set it to match your proxy's geography — an IP in one city with a mismatched timezone is a red flag that no UA can hide. |
+| `WEB_REQUEST_DELAY` | `0.5` | Mean seconds of jittered delay after navigation / before interactive actions (actual wait is `uniform(0.5×d, 1.5×d)`); `0` disables it. |
+| `WEB_STEALTH` | `1` | `1` = apply the stealth init script and the `--disable-blink-features=AutomationControlled` launch arg; `0` = skip both (for debugging/diffing). |
+
+Notes:
+
+- `WEB_PROXY` also feeds `web_search` (DDGS); `DDGS_PROXY` remains as a legacy
+  search-only fallback.
+- A rotating proxy file and a persistent profile are mutually exclusive — the
+  proxy file wins (the browser warns on launch).
+- The three-variable trio `WEB_STEALTH=0` + `WEB_REQUEST_DELAY=0` +
+  `WEB_CHANNEL=chromium` reproduces the pre-hardening configuration (stealth
+  patches and launch flag removed, no pacing, bundled Chromium). With one
+  nuance: the pre-hardening browser passed `--no-sandbox` unconditionally,
+  whereas today it only passes it under root/`sudo`; so under non-root the
+  launch args are `["--disable-gpu"]` (root: `["--no-sandbox",
+  "--disable-gpu"]`), which is closer to a normal desktop than the old
+  blanket `--no-sandbox` was.
 
 So to switch this project to Cerebras you just write the two-line `.agent` above and run:
 

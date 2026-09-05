@@ -50,6 +50,9 @@ def _clean_env(**extra):
     """Env with all stealth vars removed plus any explicit *extra*."""
     env = {k: v for k, v in os.environ.items()
            if k not in _STEALTH_ENV_VARS}
+    # Keep these launch-path tests fast: without a WEB_REQUEST_DELAY the
+    # navigations would hit the real (jittered) pacing sleep.
+    env["WEB_REQUEST_DELAY"] = "0"
     env.update(extra)
     return env
 

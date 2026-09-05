@@ -12,9 +12,11 @@ Exposes two tiers of commands:
 import hashlib
 import json
 import os
+import random
 import re
 import sys
 import atexit
+import time
 import urllib.parse
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -232,6 +234,11 @@ class WebBrowser:
     (``WEB_STEALTH``), and channel selection (``WEB_CHANNEL``):
     ``auto`` drives the installed Chrome when present and falls back to
     the bundled Chromium.
+
+    Phase 3 adds behavioral pacing: a jittered, human-plausible wait
+    (``WEB_REQUEST_DELAY``) after each navigation and before interactive
+    actions, so the click/type rhythm is not mechanical.  ``0`` disables
+    it (pre-Phase-3 behavior).
     """
 
     def __init__(self):
@@ -575,6 +582,22 @@ class WebBrowser:
 
     # ── Building blocks ─────────────────────────────────────────────
 
+    def _pacing_wait(self):
+        """Jittered human-plausible delay (Phase 3).
+
+        Sleeps for ``uniform(delay*0.5, delay*1.5)`` seconds where
+        ``delay`` is ``WEB_REQUEST_DELAY`` (default ``0.5``).  Returns
+        immediately when the delay is ``<= 0``.  The wait lives in the
+        navigation / interactive-action entry points, NOT in ``read_text``
+        itself, so a double-read of an already-loaded page (e.g.
+        ``browse_read`` twice) stays instant -- that's what a human does
+        too.
+        """
+        d = (self._cfg or {}).get("request_delay", 0.5)
+        if d <= 0:
+            return
+        time.sleep(random.uniform(max(0.0, d * 0.5), d * 1.5))
+
     def _navigate_then(self, url, reader, timeout=30000):
         """Navigate to *url*, return reader() result or error string."""
         try:
@@ -583,6 +606,10 @@ class WebBrowser:
             return f"Timeout navigating to {url} after {timeout}ms."
         except Exception as e:
             return f"Navigation error: {e}"
+        # Phase 3: human-plausible pause after navigation (before the
+        # read), so the rhythm is not mechanical.  No wait on navigation
+        # failure (nothing was loaded).
+        self._pacing_wait()
         return reader()
 
     def read_text(self, selector=None):
@@ -706,6 +733,9 @@ class WebBrowser:
         except Exception as e:
             return (f"Navigation error: {e}", None)
 
+        # Phase 3: pause after the load, before the screenshot/read work.
+        self._pacing_wait()
+
         if not file_path:
             url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
             file_path = f"/tmp/web_screenshot_{url_hash}.png"
@@ -738,6 +768,8 @@ class WebBrowser:
 
     def browse_click(self, selector, timeout=5000):
         """Click element, wait for navigation, then auto-read."""
+        # Phase 3: a human pauses before clicking, not instantly.
+        self._pacing_wait()
         try:
             self.page.click(selector, timeout=timeout)
         except PlaywrightTimeout:
@@ -757,12 +789,18 @@ class WebBrowser:
         """
         tokens = re.split(r'(\[Enter\]|\[Tab\]|\[Escape\])', text)
         pending = []
+        # Phase 3: pace before the FIRST real fill only -- a subsequent
+        # flush (after [Tab]/[Enter]) must not re-wait.
+        will_wait = True
 
         for token in tokens:
             if not token:
                 continue
             if token in ('[Enter]', '[Tab]', '[Escape]'):
                 if pending:
+                    if will_wait:
+                        self._pacing_wait()
+                        will_wait = False
                     error = self._fill(selector, ''.join(pending), timeout)
                     if error:
                         return error
@@ -775,6 +813,9 @@ class WebBrowser:
                 pending.append(token)
 
         if pending:
+            if will_wait:
+                self._pacing_wait()
+                will_wait = False
             error = self._fill(selector, ''.join(pending), timeout)
             if error:
                 return error
