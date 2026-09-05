@@ -199,7 +199,7 @@ def print_iteration_header(step, cost, compute_budget,
     # wall-clock time of its generation).  Shown once measured —
     # i.e. from the second step onwards, since step N's rate is only
     # known after step N-1's generation has completed.
-    if step_tokens_per_sec is not None and step_tokens_per_sec > 0:
+    if isinstance(step_tokens_per_sec, (int, float)) and step_tokens_per_sec > 0:
         token_info += f"  [muted]rate:[/] {format_rate(step_tokens_per_sec)}"
 
     context_bar = build_context_bar(last_total_context_tokens, context_window_tokens)

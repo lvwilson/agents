@@ -69,9 +69,9 @@ agents/                          ← repo root
 
 - **`Agent` class** — The central orchestrator. Holds conversation context, system prompt, LLM backend, and budget.
   - `__init__()` — Loads the `.agent` config + YAML config, resolves provider/model/base_url/temperature (CLI flags > `.agent` > env vars > YAML > provider default), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
-  - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
+  - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, folds the step into the session metrics via `client.record_step_metrics()` (free-form turns included), runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
   - `run()` — Loops `_iterate()` until no commands returned, KeyboardInterrupt, or error; at 100% budget it runs one final free-form wrap-up turn (no commands processed) so the model can record the work done and emit its completion block, then ends.
-  - `save_context()` / `load_context()` — Pickle-based pause/resume of full conversation state including token counts and costs.
+  - `save_context()` / `load_context()` — Pause/resume of full conversation state including token counts, costs, and the session metrics rollup (so a resumed session keeps the whole-task tokens/rate/cost-per-hour).
   - `LARGE_MESSAGE_CACHE_THRESHOLD = 10_000` — Character threshold for requesting backend caching of a user message.
 - **`run_agent()`** — High-level function: creates Agent, optionally restores context, runs, extracts completion block, retries once if no completion found.
 - **`extract_completion()`** — Parses the YAML completion block from the LLM's final response (wrapped in 5 backticks).
@@ -89,19 +89,22 @@ agents/                          ← repo root
 - **`NullStreamHandler`** — Alias for the base `StreamHandler` (no-op).
 - **`RATE_LIMIT` / `TRANSIENT`** — Error classification constants.
 - **`LLMBackend` (ABC)** — Unified interface all providers implement:
-  - **Retry template:** `_run_with_retries(attempt_fn)` — exponential backoff with jitter for rate limits, fixed retry count for transient errors. Manages `on_stream_start`/`on_stream_end` lifecycle.
+  - **Retry template:** `_run_with_retries(attempt_fn)` — exponential backoff with jitter for rate limits, fixed retry count for transient errors. Manages `on_stream_start`/`on_stream_end` lifecycle. Records the wall-clock duration of the *final (successful)* generation in `last_call_duration` (per-attempt timing, so retry back-off sleeps are never counted) — the single choke point every provider flows through.
   - **Abstract:** `generate_response(system_prompt, context)` → `str`, `display_name` property.
-  - **Virtual (with defaults):** `context_window_size` (256K default), `mark_for_caching()`, `trim_cache_blocks()`, `calculate_cost()`.
+  - **Virtual (with defaults):** `context_window_size` (256K default), `mark_for_caching()`, `trim_cache_blocks()`, `calculate_cost()`, `record_step_metrics()`.
+  - **`record_step_metrics()`** — folds one completed generation into the session rollup: accumulates `total_output_tokens` / `total_call_duration` and derives `step_rate_tokens_per_sec` (this step), `output_rate_tokens_per_sec` (whole session), and `cost_per_hour` (cost ÷ elapsed generation time → $/hr at the observed pace). A no-op when `last_call_duration <= 0`.
   - **Subclass hooks:** `_classify_error(e)` → `RATE_LIMIT`|`TRANSIENT`, `_extract_retry_after(e)` → optional seconds.
-  - **State tracking:** `cost`, `cost_without_cache`, `call_count`, `last_input_tokens`, `last_output_tokens`, `last_total_context_tokens`, `peak_context_tokens`.
+  - **State tracking:** `cost`, `cost_without_cache`, `call_count`, `last_input_tokens`, `last_output_tokens`, `last_total_context_tokens`, `peak_context_tokens`, plus the metrics above (`last_call_duration`, `total_output_tokens`, `total_call_duration`, `output_rate_tokens_per_sec`, `cost_per_hour`, `step_rate_tokens_per_sec`).
   - **Retry config constants:** `RETRY_TIMEOUT=300`, `RETRY_BASE_DELAY=1`, `RETRY_MAX_DELAY=60`, `RETRY_BACKOFF_FACTOR=2`, `MAX_ERROR_RETRIES=3`, `TRANSIENT_RETRY_DELAY=2`.
 
 ### `agents/ui.py` — Rich Console UI
 
 - Owns the `Console` instance (writes to `/dev/tty` to keep stdout clean).
 - **Theme:** `agent_theme` with styles for stream, info, success, warning, error, cost, muted.
-- **Display functions:** `print_banner()`, `print_iteration_header()`, `print_summary()`, `print_completion_result()`, `print_budget_warning()`, `print_budget_exceeded()`, `print_error()`, `print_interrupted()`, `print_sigterm()`, `print_clipped()`.
-- **Helpers:** `build_budget_bar()`, `build_context_bar()`, `format_tokens()`, `safe_console_print()`, `create_spinner()`.
+- **Display functions:** `print_banner()`, `print_iteration_header()`, `print_summary()` / `build_final_metrics()`, `print_completion_result()`, `print_budget_warning()`, `print_budget_exceeded()`, `print_error()`, `print_interrupted()`, `print_sigterm()`, `print_clipped()`.
+  - `print_iteration_header()` shows cost, budget bar, and — once a step's rate is measured — the previous step's `rate:` (tokens/second) in the info line.
+  - `build_final_metrics()` (called by `print_summary()`) renders the closing "Session Complete" panel of salient whole-task metrics: cost (with cache-savings %), steps, duration, budget bar, peak context, total output tokens, overall output rate (tok/s), and the estimated **cost per hour**.
+- **Helpers:** `build_budget_bar()`, `build_context_bar()`, `format_tokens()`, `format_rate()`, `format_duration()`, `safe_console_print()`, `create_spinner()`.
 - **`RichStreamHandler(StreamHandler)`** — Interactive terminal implementation of the stream callback protocol. Manages spinner → streaming text transition. This is passed to backends to decouple them from Rich.
 
 ### `agents/backends/__init__.py` — Backend Registry & Factory
