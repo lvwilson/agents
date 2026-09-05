@@ -262,11 +262,11 @@ All conversation state uses this Anthropic-derived format (other backends transl
 | `LOCAL_MODEL` | Model name for local inference | Required with `--local` flag |
 
 The `.agent`/`agent_config.yaml` YAML files are the primary backend config: project
-`.agent` (upward search from cwd) and global `~/.agents/agent_config.yaml`.
-Keys: `provider`, `model`, `base_url`, `temperature`.  They override the env vars
-above (global over the legacy `~/.agent` home file, which the first CLI run
-auto-migrates) and are overridden by the `--provider` / `--model` flags.
-See `agents/config.py`.
+`.agent` (upward search from cwd) and the single canonical global
+`~/.agents/agent_config.yaml` (the retired `~/.agent` home file is no
+longer read).  Keys: `provider`, `model`, `base_url`, `temperature`.
+They override the env vars above and are overridden by the `--provider`
+/ `--model` flags.  See `agents/config.py`.
 
 #### Web browser env config
 

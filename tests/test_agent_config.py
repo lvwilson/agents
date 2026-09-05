@@ -4,14 +4,15 @@ Config files pin the backend (provider / model / base_url /
 temperature):
 
 * **project** — ``.agent``, searched upward from the cwd
-* **global**  — ``~/.agents/agent_config.yaml`` (canonical), with the
-  legacy ``~/.agent`` home-dir file as fallback; the first CLI run
-  after the switch moves the legacy file to the new location
-  (one-time, never deleted, never overwritten).
+* **global**  — ``~/.agents/agent_config.yaml``, the single canonical
+  cross-project pin location
+
+The retired legacy location (a bare ``~/.agent`` file in the home
+directory) is no longer read at all — see
+``test_legacy_home_file_is_ignored``.
 
 Resolution order (highest wins): project ``.agent`` (nearest
-ancestor) > ``~/.agents/agent_config.yaml`` > legacy ``~/.agent`` >
-environment variables.
+ancestor) > ``~/.agents/agent_config.yaml`` > environment variables.
 """
 
 import os
@@ -26,15 +27,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents.config import (  # noqa: E402
     AGENT_FILENAME,
     HOME_AGENT_FILENAME,
-    HOME_AGENT_MOVED_NOTICE,
-    HOME_AGENT_MULTI_WARNING,
     HOME_AGENT_SQUAT_WARNING,
-    LEGACY_HOME_AGENT_FILENAME,
     agent_config_path,
     home_agent_status,
     load_agent_config,
-    migrate_legacy_home_agent,
-    report_home_config,
 )
 
 _ENV_KEYS = ("AGENT_MODEL_PROVIDER", "AGENT_MODEL",
@@ -62,9 +58,9 @@ class _FakeHome:
     """Redirect ``~`` (via ``expanduser``) to an empty temp home dir.
 
     These tests must be hermetic with respect to the developer's real
-    global config (``~/.agent`` / ``~/.agents/agent_config.yaml``) —
-    without this mock, the machine's actual backend pin leaks into
-    assertions about "nothing configured".
+    global config (``~/.agents/agent_config.yaml``) — without this
+    mock, the machine's actual backend pin leaks into assertions about
+    "nothing configured".
     """
 
     def __enter__(self):
@@ -84,6 +80,10 @@ def _write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write(text)
+
+
+def _global_path(home):
+    return os.path.join(home, ".agents", HOME_AGENT_FILENAME)
 
 
 class TestLoadAgentConfig(unittest.TestCase):
@@ -156,8 +156,7 @@ class TestLoadAgentConfig(unittest.TestCase):
         with _CleanEnv(), _FakeHome() as home:
             with tempfile.TemporaryDirectory() as d:
                 os.environ["AGENT_MODEL_PROVIDER"] = "openai"
-                _write(os.path.join(home, ".agents", HOME_AGENT_FILENAME),
-                       "provider: cerebras\n")
+                _write(_global_path(home), "provider: cerebras\n")
                 cfg = load_agent_config(d)
                 self.assertEqual(cfg["provider"], "cerebras")
 
@@ -165,7 +164,7 @@ class TestLoadAgentConfig(unittest.TestCase):
         with _CleanEnv():
             with tempfile.TemporaryDirectory() as d:
                 home = os.path.join(d, "home")
-                _write(os.path.join(home, ".agents", HOME_AGENT_FILENAME),
+                _write(_global_path(home),
                        "provider: openai\nmodel: gpt-5.3\n")
                 project = os.path.join(d, "proj")
                 os.makedirs(project)
@@ -195,87 +194,78 @@ class TestLoadAgentConfig(unittest.TestCase):
                     f.write(":\n  - not: [valid: yaml\n")
                 self.assertEqual(load_agent_config(d), {})
 
-    def test_legacy_home_file_still_loads(self):
-        """Without migration, the legacy ``~/.agent`` is still read."""
-        with _CleanEnv(), _FakeHome() as home:
-            with tempfile.TemporaryDirectory() as d:
-                _write(os.path.join(home, LEGACY_HOME_AGENT_FILENAME),
-                       _LEGACY_SAMPLE)
-                cfg = load_agent_config(d)
-                self.assertEqual(cfg, {"provider": "cerebras",
-                                       "model": "qwen-3.8-27b"})
-                self.assertEqual(agent_config_path(d),
-                                 os.path.join(home,
-                                              LEGACY_HOME_AGENT_FILENAME))
+    def test_legacy_home_file_is_ignored(self):
+        """The retired ``~/.agent`` location is no longer read, period.
 
-    def test_new_global_wins_over_legacy(self):
-        """With both files present, the new location takes precedence."""
+        Regression guard for the debt removal: a plausible-looking
+        ``~/.agent`` file must neither pin the backend, shadow the
+        global config path, nor be reported as it.
+        """
         with _CleanEnv(), _FakeHome() as home:
             with tempfile.TemporaryDirectory() as d:
-                _write(os.path.join(home, LEGACY_HOME_AGENT_FILENAME),
+                _write(os.path.join(home, AGENT_FILENAME), _LEGACY_SAMPLE)
+                # The file is right there, on disk — and completely
+                # dead: no pin, no path, no status impact.
+                self.assertTrue(os.path.isfile(
+                    os.path.join(home, AGENT_FILENAME)))
+                self.assertEqual(load_agent_config(d), {})
+                self.assertIsNone(agent_config_path(d))
+                self.assertEqual(home_agent_status(), "missing")
+
+    def test_legacy_home_file_cannot_shadow_global(self):
+        """Even alongside the live global config, the legacy one is a no-op."""
+        with _CleanEnv(), _FakeHome() as home:
+            with tempfile.TemporaryDirectory() as d:
+                _write(os.path.join(home, AGENT_FILENAME),
                        "provider: openai\nmodel: gpt-5.3\n")
-                _write(os.path.join(home, ".agents", HOME_AGENT_FILENAME),
-                       "provider: cerebras\n")
+                _write(_global_path(home), "provider: cerebras\n")
                 cfg = load_agent_config(d)
-                self.assertEqual(cfg["provider"], "cerebras")
-                # Model only exists in the legacy file…
-                self.assertNotIn("model", cfg)
-                self.assertEqual(agent_config_path(d),
-                                 os.path.join(home, ".agents",
-                                              HOME_AGENT_FILENAME))
+                # Everything comes from the global location alone.
+                self.assertEqual(cfg, {"provider": "cerebras"})
+                self.assertEqual(agent_config_path(d), _global_path(home))
 
 
 class TestHomeAgentStatus(unittest.TestCase):
-    """Status of the global config paths (new + legacy)."""
+    """Status of the canonical global config path."""
 
     def test_status_missing(self):
         with _CleanEnv(), _FakeHome():
             self.assertEqual(home_agent_status(), "missing")
 
-    def test_status_ok_new_location(self):
+    def test_status_ok(self):
         with _CleanEnv(), _FakeHome() as home:
             self.assertEqual(home_agent_status(), "missing")
-            _write(os.path.join(home, ".agents", HOME_AGENT_FILENAME),
-                   "provider: cerebras\n")
+            _write(_global_path(home), "provider: cerebras\n")
             self.assertEqual(home_agent_status(), "ok")
-
-    def test_status_ok_legacy_location(self):
-        with _CleanEnv(), _FakeHome() as home:
-            _write(os.path.join(home, LEGACY_HOME_AGENT_FILENAME),
-                   _LEGACY_SAMPLE)
-            self.assertEqual(home_agent_status(), "ok")
-
-    def test_status_multi_when_both_files(self):
-        with _CleanEnv(), _FakeHome() as home:
-            _write(os.path.join(home, LEGACY_HOME_AGENT_FILENAME),
-                   _LEGACY_SAMPLE)
-            _write(os.path.join(home, ".agents", HOME_AGENT_FILENAME),
-                   "provider: cerebras\n")
-            self.assertEqual(home_agent_status(), "multi")
 
     def test_status_squat_on_directory(self):
-        """A directory named ``~/.agent`` (no new-location file) squats.
+        """A directory squatting the global config path is reported.
 
-        The 2024 incident: a stale venv directory squatted ``~/.agent``
-        and the global pin silently disappeared.  With no file in the
-        new location, the status must still surface that state.
+        The 2024 incident: a stale venv directory squatted the old
+        ``~/.agent`` name (a file path in the home dir) and the global
+        pin silently disappeared.  Squatting the now-canonical path
+        must surface the same way: status ``squat`` and the warning —
+        while the loader ignores the directory.
         """
         with _CleanEnv(), _FakeHome() as home:
-            os.makedirs(os.path.join(home, AGENT_FILENAME))  # a dir!
+            os.makedirs(_global_path(home))  # a dir!
             self.assertEqual(home_agent_status(), "squat")
             # The loader must ignore the squatting directory.
             proj = os.path.join(home, "proj")
             os.makedirs(proj)
             self.assertEqual(load_agent_config(proj), {})
-            self.assertIn("~/.agent", HOME_AGENT_SQUAT_WARNING)
+            self.assertRegex(HOME_AGENT_SQUAT_WARNING,
+                             r"~/\.agents/agent_config\.yaml")
 
-    def test_squat_hidden_by_ok_file(self):
-        """A squatted legacy path is harmless once the new location is used."""
+    def test_squatting_legacy_name_is_just_leftover_junk(self):
+        """A non-file at the retired ``~/.agent`` location is no status at
+        all — it cannot squat the global config anymore."""
         with _CleanEnv(), _FakeHome() as home:
-            os.makedirs(os.path.join(home, AGENT_FILENAME))  # squat
-            _write(os.path.join(home, ".agents", HOME_AGENT_FILENAME),
-                   "provider: cerebras\n")
-            self.assertEqual(home_agent_status(), "ok")
+            os.makedirs(os.path.join(home, AGENT_FILENAME))  # a dir!
+            self.assertEqual(home_agent_status(), "missing")
+            with tempfile.TemporaryDirectory() as d:
+                self.assertEqual(load_agent_config(d), {})
+                self.assertIsNone(agent_config_path(d))
 
     def test_upward_search_skips_directory_named_dot_agent(self):
         """A squatting directory must not stop the upward project search.
@@ -298,92 +288,6 @@ class TestHomeAgentStatus(unittest.TestCase):
                 self.assertEqual(cfg["model"], "gpt-5.3")
                 self.assertEqual(agent_config_path(proj),
                                  os.path.join(base, AGENT_FILENAME))
-
-
-class TestLegacyMigration(unittest.TestCase):
-    """One-time ``~/.agent`` → ``~/.agents/agent_config.yaml`` move."""
-
-    def test_migrate_moves_legacy_file(self):
-        with _CleanEnv(), _FakeHome() as home:
-            legacy = os.path.join(home, LEGACY_HOME_AGENT_FILENAME)
-            new_path = os.path.join(home, ".agents", HOME_AGENT_FILENAME)
-            _write(legacy, _LEGACY_SAMPLE)
-            self.assertEqual(migrate_legacy_home_agent(),
-                             HOME_AGENT_MOVED_NOTICE)
-            self.assertFalse(os.path.exists(legacy))
-            self.assertTrue(os.path.isfile(new_path))
-            with open(new_path) as f:
-                self.assertEqual(f.read(), _LEGACY_SAMPLE)
-            self.assertEqual(home_agent_status(), "ok")
-
-    def test_migrated_file_is_used_by_loader(self):
-        with _CleanEnv(), _FakeHome() as home:
-            _write(os.path.join(home, LEGACY_HOME_AGENT_FILENAME),
-                   _LEGACY_SAMPLE)
-            migrate_legacy_home_agent()
-            with tempfile.TemporaryDirectory() as d:
-                cfg = load_agent_config(d)
-                self.assertEqual(cfg, {"provider": "cerebras",
-                                       "model": "qwen-3.8-27b"})
-                self.assertEqual(agent_config_path(d),
-                                 os.path.join(home, ".agents",
-                                              HOME_AGENT_FILENAME))
-
-    def test_migrate_noop_when_nothing_there(self):
-        with _CleanEnv(), _FakeHome():
-            self.assertIsNone(migrate_legacy_home_agent())
-
-    def test_migrate_noop_when_new_location_used(self):
-        """Never overwrite: leftover legacy file stays, MULTI warning."""
-        with _CleanEnv(), _FakeHome() as home:
-            legacy = os.path.join(home, LEGACY_HOME_AGENT_FILENAME)
-            new_path = os.path.join(home, ".agents", HOME_AGENT_FILENAME)
-            _write(legacy, "provider: gemini\n")
-            _write(new_path, "provider: cerebras\n")
-            self.assertEqual(migrate_legacy_home_agent(),
-                             HOME_AGENT_MULTI_WARNING)
-            self.assertTrue(os.path.isfile(legacy))      # untouched
-            with open(new_path) as f:
-                self.assertEqual(f.read(), "provider: cerebras\n")
-            self.assertEqual(home_agent_status(), "multi")
-            self.assertIn("~/.agents/agent_config.yaml",
-                          HOME_AGENT_MULTI_WARNING)
-            self.assertIn("~/.agent", HOME_AGENT_MULTI_WARNING)
-
-    def test_migrate_skips_squatting_directory(self):
-        with _CleanEnv(), _FakeHome() as home:
-            os.makedirs(os.path.join(home, LEGACY_HOME_AGENT_FILENAME))
-            self.assertIsNone(migrate_legacy_home_agent())
-            self.assertTrue(os.path.isdir(
-                os.path.join(home, LEGACY_HOME_AGENT_FILENAME)))
-            self.assertEqual(home_agent_status(), "squat")
-
-    def test_migrate_is_idempotent(self):
-        with _CleanEnv(), _FakeHome() as home:
-            _write(os.path.join(home, LEGACY_HOME_AGENT_FILENAME),
-                   _LEGACY_SAMPLE)
-            self.assertEqual(migrate_legacy_home_agent(),
-                             HOME_AGENT_MOVED_NOTICE)
-            self.assertIsNone(migrate_legacy_home_agent())
-
-    def test_report_home_config_migrates_silently(self):
-        with _CleanEnv(), _FakeHome() as home:
-            _write(os.path.join(home, LEGACY_HOME_AGENT_FILENAME),
-                   _LEGACY_SAMPLE)
-            # Side effect (migration) happens even when output is muted.
-            report_home_config(verbose=False)
-            self.assertFalse(
-                os.path.exists(os.path.join(home,
-                                            LEGACY_HOME_AGENT_FILENAME)))
-            self.assertTrue(os.path.isfile(
-                os.path.join(home, ".agents", HOME_AGENT_FILENAME)))
-
-    def test_report_home_config_does_not_touch_missing(self):
-        """No global config anywhere: nothing is created or reported."""
-        with _CleanEnv(), _FakeHome() as home:
-            report_home_config(verbose=False)
-            self.assertFalse(os.path.exists(
-                os.path.join(home, ".agents", HOME_AGENT_FILENAME)))
 
 
 if __name__ == "__main__":

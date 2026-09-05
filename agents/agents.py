@@ -1791,11 +1791,10 @@ def main():
     if not args.command:
         parser.error("the following argument is required: command")
 
-    # Global backend config: run the one-time ~/.agent ->
-    # ~/.agents/agent_config.yaml migration and print any notice
-    # (moved / multi / squat).  A squatted global config path used to
+    # Global backend config (~/.agents/agent_config.yaml): report a
+    # squatted global config path — a non-file at that location used to
     # silently drop the backend pin for every project without its own
-    # .agent file; the notice makes that state visible.
+    # .agent file; the notice keeps that state visible.
     report_home_config()
 
     # Pre-flight: ensure git working tree is clean (unless --nogit)

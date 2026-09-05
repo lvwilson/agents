@@ -125,9 +125,8 @@ API keys always come from the environment (`CLAUDE_API_KEY`, `OPENAI_API_KEY`,
 `CEREBRAS_API_KEY`, …) — never from the files.
 
 Note: the old global location `~/.agent` (a bare file in the home directory) is
-deprecated.  On the first CLI run it is moved to `~/.agents/agent_config.yaml`;
-until then it is still read, and if both files exist the new location wins and a
-warning tells you to clean up the leftover.
+retired and no longer read — move any remaining pin from it to
+`~/.agents/agent_config.yaml`, then delete the stale file.
 
 ### Web browsing & stealth
 
