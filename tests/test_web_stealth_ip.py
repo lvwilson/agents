@@ -1,8 +1,7 @@
-"""
-Tests for Phase 1 (IP protection) of the web browser stealth hardening:
+"""Tests for Phase 1 (IP protection) of the web browser stealth hardening:
 fixed proxy (WEB_PROXY), rotating proxy pool (WEB_PROXY_FILE), opt-in
-persistent profile (WEB_BROWSER_PROFILE), malformed-config fallbacks,
-the profile/proxy-file conflict rule, and WEB_PROXY/DDGS_PROXY threading
+persistent profile (WEB_BROWSER_PROFILE), malformed-config fallbacks, the
+profile/proxy-file conflict rule, and WEB_PROXY/DDGS_PROXY threading
 into web_search.
 
 Follows the mock patterns of tests/test_web_tools.py:
@@ -10,6 +9,16 @@ Follows the mock patterns of tests/test_web_tools.py:
 - patch("agents.tools.web_browser.sync_playwright") for launch paths,
 - patch.dict(os.environ, ..., clear=True) with explicit env dicts so
   nothing leaks into other tests.
+
+Phase 2 (fingerprint hardening) updated these tests where the plan
+prescribes new context/launch defaults: every context is now created
+with the full fingerprint option dict (user agent, locale, timezone,
+viewport, screen, device scale, Accept-Language) and the hardened
+launch args.  The Phase 1 test cases below therefore pin
+WEB_CHANNEL=chromium (bundled channel, exactly as this commit asserted)
+and -- where launch args are asserted -- patch _running_as_root() to
+make the args deterministic.  Fingerprint-specific assertions live in
+tests/test_web_fingerprint.py.
 """
 
 import os
@@ -88,28 +97,69 @@ def _make_playwright_mock():
     return sync, playwright, chromium, browser
 
 
+def _expected_context_options(proxy=None):
+    """The full Phase 2 context-option dict these launches now carry.
+
+    Mirrors WebBrowser._get_context_options() at the Phase 2 defaults
+    (locale en-US, Etc/UTC, auto UA) so Phase 1 tests keep asserting
+    the exact call shape without re-deriving the UA template.
+    """
+    from agents.tools import web_browser as wbmod
+    opts = {
+        "user_agent": wbmod._build_auto_user_agent(),
+        "locale": "en-US",
+        "timezone_id": "Etc/UTC",
+        "viewport": {"width": 1280, "height": 900},
+        "screen": {"width": 1280, "height": 900},
+        "device_scale_factor": 1,
+        "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"},
+    }
+    if proxy is not None:
+        opts["proxy"] = proxy
+    return opts
+
+
+def _expected_launch_args(root=False, stealth=True):
+    """The Phase 2 launch args for the pinned (root, stealth) combo."""
+    args = ["--no-sandbox"] if root else []
+    args.append("--disable-gpu")
+    if stealth:
+        args.append("--disable-blink-features=AutomationControlled")
+    return args
+
+
 class TestFixedProxy(unittest.TestCase):
     """WEB_PROXY -> one context per session, created with the proxy dict."""
 
     def test_fixed_proxy_passes_exact_proxy_dict(self):
         sync, playwright, chromium, browser = _make_playwright_mock()
-        with patch("agents.tools.web_browser.sync_playwright", sync):
+        with patch("agents.tools.web_browser.sync_playwright", sync), \
+             patch("agents.tools.web_browser._running_as_root",
+                   return_value=False):
             with patch.dict(os.environ,
-                            _clean_env(WEB_PROXY="http://user:pass@p.example:3128"),
+                            _clean_env(
+                                WEB_PROXY="http://user:pass@p.example:3128",
+                                WEB_CHANNEL="chromium"),
                             clear=True):
                 wb = WebBrowser()
                 result = wb.read_page("https://example.com")
                 self.assertIn("Page body", result)
                 browser.new_context.assert_called_once_with(
-                    proxy={
-                        "server": "http://p.example:3128",
-                        "username": "user",
-                        "password": "pass",
-                    }
+                    **_expected_context_options(
+                        proxy={
+                            "server": "http://p.example:3128",
+                            "username": "user",
+                            "password": "pass",
+                        }
+                    )
                 )
                 # The fixed proxy is created once, not per navigation.
                 wb.read_page("https://example.com/again")
                 self.assertEqual(browser.new_context.call_count, 1)
+                # Launch: bundled channel, Phase 2 hardened args.
+                chromium.launch.assert_called_once_with(
+                    headless=True, channel=None,
+                    args=_expected_launch_args(root=False))
 
 
 class TestRotatingProxyFile(unittest.TestCase):
@@ -131,7 +181,8 @@ class TestRotatingProxyFile(unittest.TestCase):
             pool_file = self._write_pool(pathlib.Path(tmp))
             with patch("agents.tools.web_browser.sync_playwright", sync):
                 with patch.dict(os.environ,
-                                _clean_env(WEB_PROXY_FILE=pool_file),
+                                _clean_env(WEB_PROXY_FILE=pool_file,
+                                           WEB_CHANNEL="chromium"),
                                 clear=True):
                     wb = WebBrowser()
                     result1 = wb.read_page("https://example.com")
@@ -163,7 +214,8 @@ class TestRotatingProxyFile(unittest.TestCase):
             pool_file = self._write_pool(pathlib.Path(tmp))
             with patch("agents.tools.web_browser.sync_playwright", sync):
                 with patch.dict(os.environ,
-                                _clean_env(WEB_PROXY_FILE=pool_file),
+                                _clean_env(WEB_PROXY_FILE=pool_file,
+                                           WEB_CHANNEL="chromium"),
                                 clear=True):
                     wb = WebBrowser()
                     wb.browse_open("https://example.com")  # rotation #1
@@ -181,20 +233,30 @@ class TestMalformedProxyConfig(unittest.TestCase):
         sync, playwright, chromium, browser = _make_playwright_mock()
         with patch("agents.tools.web_browser.sync_playwright", sync):
             with patch.dict(os.environ,
-                            _clean_env(WEB_PROXY="notaurl"), clear=True):
+                            _clean_env(WEB_PROXY="notaurl",
+                                       WEB_CHANNEL="chromium"),
+                            clear=True):
                 wb = WebBrowser()
                 result = wb.read_page("https://example.com")
                 self.assertIn("Page body", result)  # still functions
-                browser.new_context.assert_called_once_with()  # no proxy
                 self.assertIsNone(wb._cfg["proxy"])
+                # Fingerprint options are still applied; no proxy kwarg.
+                call = browser.new_context.call_args
+                self.assertNotIn("proxy", call.kwargs)
+                self.assertIn("user_agent", call.kwargs)
 
     def test_bare_new_context_when_no_proxy_configured(self):
         sync, playwright, chromium, browser = _make_playwright_mock()
         with patch("agents.tools.web_browser.sync_playwright", sync):
-            with patch.dict(os.environ, _clean_env(), clear=True):
+            with patch.dict(os.environ,
+                            _clean_env(WEB_CHANNEL="chromium"), clear=True):
                 wb = WebBrowser()
                 wb.read_page("https://example.com")
-                browser.new_context.assert_called_once_with()
+                call = browser.new_context.call_args
+                # No proxy kwarg, but the full Phase 2 option dict.
+                self.assertNotIn("proxy", call.kwargs)
+                self.assertEqual(call.kwargs,
+                                 _expected_context_options(proxy=None))
 
 
 class TestPersistentProfile(unittest.TestCase):
@@ -205,9 +267,12 @@ class TestPersistentProfile(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             profile_dir = pathlib.Path(tmp) / "profile"
             sync, playwright, chromium, browser = _make_playwright_mock()
-            with patch("agents.tools.web_browser.sync_playwright", sync):
+            with patch("agents.tools.web_browser.sync_playwright", sync), \
+                 patch("agents.tools.web_browser._running_as_root",
+                       return_value=False):
                 with patch.dict(os.environ,
-                                _clean_env(WEB_BROWSER_PROFILE=str(profile_dir)),
+                                _clean_env(WEB_BROWSER_PROFILE=str(profile_dir),
+                                           WEB_CHANNEL="chromium"),
                                 clear=True):
                     wb = WebBrowser()
                     result = wb.read_page("https://example.com")
@@ -217,9 +282,16 @@ class TestPersistentProfile(unittest.TestCase):
                     kwargs = chromium.launch_persistent_context.call_args.kwargs
                     self.assertEqual(kwargs["user_data_dir"], str(profile_dir))
                     self.assertTrue(kwargs["headless"])
-                    self.assertEqual(kwargs["args"], ["--no-sandbox", "--disable-gpu"])
+                    self.assertEqual(kwargs["args"],
+                                     _expected_launch_args(root=False))
                     self.assertEqual(kwargs["channel"], None)
                     self.assertNotIn("proxy", kwargs)  # no fixed proxy set
+                    # Phase 2: the fingerprint options ride along at the
+                    # launch level (persistent contexts take them there).
+                    self.assertEqual(kwargs["user_agent"],
+                                     _expected_context_options()["user_agent"])
+                    self.assertEqual(kwargs["locale"], "en-US")
+                    self.assertEqual(kwargs["timezone_id"], "Etc/UTC")
 
                     # The profile directory is (created) on disk.
                     self.assertTrue(profile_dir.is_dir())
@@ -241,6 +313,7 @@ class TestPersistentProfile(unittest.TestCase):
             with patch("agents.tools.web_browser.sync_playwright", sync):
                 with patch.dict(os.environ,
                                 _clean_env(WEB_BROWSER_PROFILE="1",
+                                           WEB_CHANNEL="chromium",
                                            HOME=tmp), clear=True):
                     wb = WebBrowser()
                     wb.read_page("https://example.com")
@@ -256,15 +329,21 @@ class TestPersistentProfile(unittest.TestCase):
         import tempfile, pathlib
         with tempfile.TemporaryDirectory() as tmp:
             sync, playwright, chromium, browser = _make_playwright_mock()
-            with patch("agents.tools.web_browser.sync_playwright", sync):
+            with patch("agents.tools.web_browser.sync_playwright", sync), \
+                 patch("agents.tools.web_browser._running_as_root",
+                       return_value=False):
                 with patch.dict(os.environ, _clean_env(
                         WEB_BROWSER_PROFILE=str(pathlib.Path(tmp) / "p"),
+                        WEB_CHANNEL="chromium",
                         WEB_PROXY="http://p.example:3128"), clear=True):
                     wb = WebBrowser()
                     wb.read_page("https://example.com")
                     kwargs = chromium.launch_persistent_context.call_args.kwargs
                     self.assertEqual(kwargs["proxy"],
                                      {"server": "http://p.example:3128"})
+                    # Hardened launch args despite the profile/proxy combo.
+                    self.assertEqual(kwargs["args"],
+                                     _expected_launch_args(root=False))
                     wb.close()
 
 
@@ -281,6 +360,7 @@ class TestProxyFileProfileConflict(unittest.TestCase):
             with patch("agents.tools.web_browser.sync_playwright", sync):
                 with patch.dict(os.environ, _clean_env(
                         WEB_PROXY_FILE=str(pool_file),
+                        WEB_CHANNEL="chromium",
                         WEB_BROWSER_PROFILE=str(root / "profile")), clear=True):
                     wb = WebBrowser()
                     result = wb.read_page("https://example.com")
@@ -289,8 +369,11 @@ class TestProxyFileProfileConflict(unittest.TestCase):
                     # Persistent path NOT used; rotation path active.
                     chromium.launch_persistent_context.assert_not_called()
                     self.assertFalse(wb._persistent)
-                    browser.new_context.assert_called_once_with(
-                        proxy={"server": "http://proxy-a.example:3128"})
+                    call = browser.new_context.call_args
+                    self.assertEqual(call.kwargs,
+                                     _expected_context_options(
+                                         proxy={
+                                             "server": "http://proxy-a.example:3128"}))
                     wb.close()
 
 

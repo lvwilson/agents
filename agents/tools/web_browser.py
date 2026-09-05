@@ -10,6 +10,7 @@ Exposes two tiers of commands:
 """
 
 import hashlib
+import json
 import os
 import re
 import sys
@@ -37,6 +38,29 @@ _DEFAULT_REQUEST_DELAY = 0.5
 _TRUE_VALUES = ("1", "true", "yes", "on")
 _FALSE_VALUES = ("0", "false", "no", "off")
 
+# ── Fingerprint constants (Phase 2) ────────────────────────────────
+#
+# _CHROME_VERSION is the single place the emulated Chrome major version
+# is defined.  Bump it periodically to track the stable channel (the
+# UA string, and anything else that should stay in step with it, are
+# all derived from this one constant).
+_CHROME_VERSION = "138.0.0.0"
+
+# Real Chrome UA per platform (no "HeadlessChrome" token).  The
+# lower-case "windows" key doubles as the fallback for unknown
+# platforms.
+_CHROME_UA_TEMPLATES = {
+    "linux": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/{version} Safari/537.36",
+    "darwin": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} "
+              "Safari/537.36",
+    "windows": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} "
+               "Safari/537.36",
+}
+_DEFAULT_UA_PLATFORM_KEY = "windows"
+
 
 def _warn(message):
     """Warn about bad tool config on the TTY (stderr if unavailable).
@@ -59,6 +83,32 @@ def _warn(message):
                 handle.close()
             except OSError:
                 pass
+
+
+def _build_auto_user_agent():
+    """Auto-built user agent: the real Chrome UA string for this platform.
+
+    Derived from ``_CHROME_VERSION`` and the platform templates -- never
+    contains the "HeadlessChrome" token.  Unknown platforms fall back to
+    the Windows template.
+    """
+    template = _CHROME_UA_TEMPLATES.get(
+        sys.platform.lower(), _CHROME_UA_TEMPLATES[_DEFAULT_UA_PLATFORM_KEY])
+    return template.format(version=_CHROME_VERSION)
+
+
+def _running_as_root():
+    """True when the effective uid is 0 (root/CI).  Patch seam for tests.
+
+    ``--no-sandbox`` is added only in this case: it is normally required
+    under root/CI but is an extra tell on a normal desktop box.
+    """
+    try:
+        return os.geteuid() == 0
+    except (AttributeError, OSError):
+        # Non-POSIX platforms (e.g. Windows) have no uid; treat as
+        # non-root -> no --no-sandbox.
+        return False
 
 
 def _valid_proxy_url(url):
@@ -170,7 +220,18 @@ class WebBrowser:
 
     Phase 1 adds IP protection: a fixed proxy (``WEB_PROXY``), a
     rotating proxy pool (``WEB_PROXY_FILE``), and an opt-in persistent
-    profile (``WEB_BROWSER_PROFILE``).  See ``_env_config()``.
+    profile (``WEB_BROWSER_PROFILE``).
+
+    Phase 2 adds fingerprint hardening (all env-only, see
+    ``_env_config()``): a real-Chrome user agent (``WEB_USER_AGENT``,
+    auto-built per platform from ``_CHROME_VERSION`` by default),
+    consistent ``locale`` / ``timezone_id`` / ``viewport`` / ``screen`` /
+    ``device_scale_factor`` context options, a matching
+    ``Accept-Language`` header, stealth-gated launch args and the
+    vendored ``_STEALTH_INIT_JS`` anti-tell init script
+    (``WEB_STEALTH``), and channel selection (``WEB_CHANNEL``):
+    ``auto`` drives the installed Chrome when present and falls back to
+    the bundled Chromium.
     """
 
     def __init__(self):
@@ -201,9 +262,11 @@ class WebBrowser:
                 # context behind.
                 if self._browser is None or not self._browser.is_connected():
                     return
-                self._ctx = self._browser.new_context()
+                self._ctx = self._browser.new_context(**self._get_context_options())
             self._page = self._ctx.new_page()
-            self._page.set_viewport_size({"width": 1280, "height": 900})
+            # Viewport is set at context creation (see
+            # _get_context_options); no separate set_viewport_size here.
+            self._apply_init_script(self._page)
 
     def _maybe_launch(self):
         """Start or restart the Playwright/browser handles when needed."""
@@ -245,26 +308,32 @@ class WebBrowser:
         if self._playwright is None:
             self._playwright = sync_playwright().start()
 
-        # Phase 2 seam: WEB_CHANNEL resolution + args hardening
-        # (--disable-blink-features=AutomationControlled, conditional
-        # --no-sandbox) land here in a later commit; channel/args stay
-        # exactly today's values for this commit.
-        channel = None
-        args = ["--no-sandbox", "--disable-gpu"]
+        # Phase 2 -- fingerprint hardening.
+        #
+        # Channel (WEB_CHANNEL): "chrome" drives the installed Google
+        # Chrome binary (new headless mode, far fewer tells); "chromium"
+        # forces the bundled build; "auto" (default) tries chrome first
+        # and falls back to bundled Chromium on launch failure (see
+        # _chromium_launch / _launch_persistent for the fallback).
+        # --disable-gpu is always kept: on a box without a GPU the
+        # ANGLE/SwiftShader WebGL fingerprint is the honest one, and
+        # spoofing a GPU we cannot rasterize is a worse sign.
+        channel = cfg["channel"]
+        args = self._launch_args(cfg)
 
         if cfg["profile"] is not None:
             # Path 1: persistent profile (cookies + storage survive the
             # process, so repeat visits look like a returning visitor).
             os.makedirs(cfg["profile"], exist_ok=True)
-            ctx_kwargs = {
-                "user_data_dir": cfg["profile"],
-                "headless": True,
-                "channel": channel,
-                "args": args,
-            }
+            # Context options are launch-level for persistent contexts:
+            # the very same fingerprint options as new_context() above.
+            ctx_kwargs = self._get_context_options()
+            ctx_kwargs["user_data_dir"] = cfg["profile"]
+            ctx_kwargs["headless"] = True
+            ctx_kwargs["args"] = args
             if cfg["proxy"]:
                 ctx_kwargs["proxy"] = cfg["proxy"]
-            self._ctx = self._playwright.chromium.launch_persistent_context(**ctx_kwargs)
+            self._ctx = self._launch_persistent(channel, ctx_kwargs)
             self._persistent = True
             return
 
@@ -283,19 +352,121 @@ class WebBrowser:
                 self._proxy_pool = []
             if self._proxy_pool:
                 # Browser handle now; contexts are (re)built by
-                # _rotate_proxy on every navigation.  No context yet.
-                self._browser = self._playwright.chromium.launch(
-                    headless=True, channel=channel, args=args)
+                # _rotate_proxy on every navigation with the per-navigation
+                # proxy -- the fixed-proxy kwarg therefore does not apply
+                # here (ctx_opts without proxy).  No context yet.
+                self._browser = self._chromium_launch(channel, args)
                 return
             # Empty/unreadable pool: fall through to the fixed direct path.
 
         # Path 3: one fixed context for the whole session.
-        self._browser = self._playwright.chromium.launch(
-            headless=True, channel=channel, args=args)
-        if cfg["proxy"]:
-            self._ctx = self._browser.new_context(proxy=cfg["proxy"])
-        else:
-            self._ctx = self._browser.new_context()
+        #
+        # The context options (user agent, locale, timezone, viewport at
+        # creation, screen, device scale, Accept-Language) are applied to
+        # EVERY launch path so no code path can drift back to bare
+        # Playwright defaults.
+        ctx_opts = self._get_context_options()
+        self._browser = self._chromium_launch(channel, args)
+        self._ctx = self._browser.new_context(**ctx_opts)
+
+    def _get_context_options(self, include_fixed_proxy=True):
+        """Build the fingerprint-consistent ``Browser.new_context()`` options.
+
+        ``user_agent``, ``locale``, ``timezone_id``, ``viewport`` (applied
+        AT context creation -- the separate ``set_viewport_size`` call was
+        dropped), ``screen``, ``device_scale_factor`` and a matching
+        ``Accept-Language`` header.  ``WEB_USER_AGENT`` overrides the
+        auto-built real-Chrome UA; ``WEB_LOCALE`` / ``WEB_TIMEZONE``
+        override the defaults.  The fixed-proxy kwarg is included only
+        for the fixed-proxy / persistent paths (the rotation path carries
+        its own per-navigation proxy) -- see *include_fixed_proxy*.
+        """
+        cfg = self._cfg
+        user_agent = cfg["user_agent"] or _build_auto_user_agent()
+        locale = cfg["locale"]
+        opts = {
+            "user_agent": user_agent,
+            "locale": locale,
+            "timezone_id": cfg["timezone"],
+            "viewport": {"width": 1280, "height": 900},
+            "screen": {"width": 1280, "height": 900},
+            "device_scale_factor": 1,
+            "extra_http_headers": {
+                "Accept-Language": self._accept_language_header(locale),
+            },
+        }
+        if include_fixed_proxy and cfg.get("proxy"):
+            opts["proxy"] = cfg["proxy"]
+        return opts
+
+    @staticmethod
+    def _accept_language_header(locale):
+        """Accept-Language matching ``navigator.languages`` for *locale*.
+
+        ``en-US`` -> ``en-US,en;q=0.9`` (region stripped to a ``q=0.9``
+        fallback); locales without a separator (e.g. ``en``) just repeat.
+        """
+        if "-" in locale:
+            base = locale.split("-", 1)[0]
+            return f"{locale},{base};q=0.9"
+        return locale
+
+    def _launch_args(self, cfg):
+        """Browser launch args (Phase 2 hardening).
+
+        ``--disable-gpu`` is always kept: the honest ANGLE/SwiftShader WebGL
+        fingerprint beats a fabricated GPU we can't rasterize.
+        ``--no-sandbox`` is dropped for non-root users (still added under
+        root/CI, where it is normally required).  The automation
+        blink-feature flag is gated by ``WEB_STEALTH`` (``0`` reproduces
+        pre-Phase-2 behavior for diffing).
+        """
+        args = []
+        if _running_as_root():
+            args.append("--no-sandbox")
+        args.append("--disable-gpu")
+        if cfg.get("stealth", True):
+            args.append("--disable-blink-features=AutomationControlled")
+        return args
+
+    def _chromium_launch(self, channel, args):
+        """``chromium.launch`` (non-persistent paths) with the
+        ``WEB_CHANNEL`` fallback.
+
+        ``auto`` (default) and explicit ``chrome`` drive the installed
+        Google Chrome binary (new headless mode, fewest tells);
+        ``chromium`` forces the bundled build.  When a Chrome launch
+        fails (e.g. Chrome is not installed) we warn to the TTY and
+        retry once with the bundled Chromium -- a missing binary must
+        never crash the agent.  A *bundled* launch failure is a real
+        environment problem and propagates.
+        """
+        primary = "chrome" if channel in ("auto", "chrome") else None
+        try:
+            return self._playwright.chromium.launch(
+                headless=True, channel=primary, args=args)
+        except Exception as e:
+            if primary != "chrome":
+                raise  # bundled is the floor: genuine environment failure
+            _warn(f"WEB_CHANNEL={channel}: 'chrome' launch failed ({e}); "
+                  "falling back to bundled Chromium")
+            return self._playwright.chromium.launch(
+                headless=True, channel=None, args=args)
+
+    def _launch_persistent(self, channel, ctx_kwargs):
+        """``chromium.launch_persistent_context`` with the same fallback
+        as :meth:`_chromium_launch`."""
+        primary = "chrome" if channel in ("auto", "chrome") else None
+        try:
+            return self._playwright.chromium.launch_persistent_context(
+                **dict(ctx_kwargs, channel=primary))
+        except Exception as e:
+            if primary != "chrome":
+                raise  # bundled is the floor: genuine environment failure
+            _warn(f"WEB_CHANNEL={channel}: 'chrome' launch failed ({e}); "
+                  "falling back to bundled Chromium")
+            return self._playwright.chromium.launch_persistent_context(
+                **dict(ctx_kwargs, channel=None))
 
     def _rotate_proxy(self):
         """Round-robin to the next proxy and rebuild context+page for it.
@@ -318,13 +489,16 @@ class WebBrowser:
             return
         self._teardown_context()
         proxy = _proxy_kwargs(url)
+        # Rotating path: the fixed proxy is intentionally not part of the
+        # per-navigation context options (it is carried by this rotation).
+        ctx_opts = self._get_context_options(include_fixed_proxy=False)
         if proxy:
-            self._ctx = self._browser.new_context(proxy=proxy)
-        else:
-            # Malformed pool entry: rotate past it via direct egress.
-            self._ctx = self._browser.new_context()
+            ctx_opts = dict(ctx_opts, proxy=proxy)
+        self._ctx = self._browser.new_context(**ctx_opts)
         self._page = self._ctx.new_page()
-        self._page.set_viewport_size({"width": 1280, "height": 900})
+        # Viewport already set at context creation; apply the stealth
+        # init script exactly as for fresh context pages.
+        self._apply_init_script(self._page)
         self._proxy_idx = next_idx
         self._active_proxy = url
 
@@ -339,6 +513,22 @@ class WebBrowser:
                     pass
         self._page = None
         self._ctx = None
+
+    def _apply_init_script(self, page):
+        """Apply the vendored stealth init script to a fresh page.
+
+        Called exactly once per page creation (both the context-creation
+        and the proxy-rotation paths).  ``WEB_STEALTH=0`` skips it
+        entirely (pre-Phase-2 behavior, useful for debugging/diffing).
+        A failure here must never break navigation: warn and continue.
+        """
+        if not (self._cfg or {}).get("stealth", True):
+            return
+        try:
+            page.add_init_script(
+                _stealth_init_script((self._cfg or {}).get("locale")))
+        except Exception as e:
+            _warn(f"could not apply stealth init script: {e}")
 
     @property
     def page(self):
@@ -675,6 +865,172 @@ _INTERACTIVE_ELEMENTS_JS = """() => {
 
     return result;
 }"""
+
+
+# ── Stealth init script (Phase 2) ───────────────────────────────────
+#
+# Vendored, dependency-free anti-tell patch set, applied via
+# page.add_init_script so it runs before page scripts in every frame
+# and on every navigation.  The __LOCALE_LANGUAGES__ sentinel is
+# replaced with a JSON array at first use (see _stealth_init_script()).
+#
+# Deliberately out of scope (stealth plan, section 6): CDP
+# Runtime.enable leaks, font-enumeration parity, canvas noise tuning.
+
+_STEALTH_INIT_JS = """
+(() => {
+  "use strict";
+
+  // 1. navigator.webdriver: real Chrome reports `undefined`, not `true`.
+  try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  } catch (e) {}
+
+  // 2. Plausible navigator.plugins / navigator.mimeTypes sets.  Real
+  //    desktop Chrome exposes several plugins; a length of 0 is a
+  //    strong headless tell.  Keep the two lists consistent with each
+  //    other (n >= 4 each).
+  try {
+    const MIME_TYPES = [
+      { type: 'application/pdf', suffixes: 'pdf',
+        description: 'Portable Document Format' },
+      { type: 'application/x-google-chrome-pdf', suffixes: 'pdf',
+        description: 'Chrome PDF Viewer' },
+      { type: 'application/x-nacl', suffixes: 'nexe',
+        description: 'Native Client Executable' },
+      { type: 'application/x-pnacl', suffixes: 'nexe',
+        description: 'Portable Native Client Executable' },
+    ];
+    const PLUGINS = [
+      { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', mime: 0 },
+      { name: 'Chrome PDF Viewer',
+        filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', mime: 1 },
+      { name: 'Chromium PDF Viewer',
+        filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', mime: 0 },
+      { name: 'PDF Viewer',
+        filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', mime: 1 },
+      { name: 'Chromium PDF Plugin', filename: 'internal-pdf-viewer', mime: 0 },
+      { name: 'Native Client', filename: 'internal-nacl-plugin', mime: 2 },
+    ];
+    const makeMime = (spec) => {
+      const mime = new MimeType();
+      mime.type = spec.type;
+      mime.suffixes = spec.suffixes;
+      mime.description = spec.description;
+      return mime;
+    };
+    const pluginArray = PLUGINS.map((spec) => {
+      const plugin = new Plugin();
+      plugin.name = spec.name;
+      plugin.filename = spec.filename;
+      plugin.description = 'Portable Document Format';
+      plugin[0] = makeMime(MIME_TYPES[spec.mime]);
+      return plugin;
+    });
+    const mimeArray = MIME_TYPES.map(makeMime);
+    Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
+    Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeArray });
+  } catch (e) {}
+
+  // 3. window.chrome: present with the minimal real-Chrome shape,
+  //    including the chrome.loadTimeData internal-API stub.
+  try {
+    if (!window.chrome) {
+      window.chrome = {};
+    }
+    if (!window.chrome.runtime) {
+      window.chrome.runtime = {
+        OnInstalledReason: { CHROME_UPDATE: 'chrome_update',
+                             INSTALL: 'install',
+                             SHARED_MODULE_UPDATE: 'shared_module_update',
+                             UPDATE: 'update' },
+        OnRestartRequiredReason: { APP_UPDATE: 'app_update',
+                                   OS_UPDATE: 'os_update',
+                                   PERIODIC: 'periodic' },
+        PlatformArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64',
+                        X86_32: 'x86-32', X86_64: 'x86-64' },
+        PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux',
+                      MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
+        RequestUpdateCheckStatus: { NO_UPDATE: 'no_update',
+                                    THROTTLED: 'throttled',
+                                    UPDATE_AVAILABLE: 'update_available' },
+      };
+    }
+    if (!window.chrome.app) {
+      window.chrome.app = {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed',
+                        NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run',
+                        READY_TO_RUN: 'ready_to_run',
+                        RUNNING: 'running' },
+      };
+    }
+    window.chrome.loadTimeData = {
+      getString: () => '',
+      getInt: () => 0,
+      getBoolean: () => false,
+      getComputedInt: () => 0,
+      deleteValue: () => {},
+    };
+  } catch (e) {}
+
+  // 4. navigator.languages: aligned with the pinned context locale
+  //    (matches the Accept-Language header).
+  try {
+    Object.defineProperty(navigator, 'languages', {
+      get: () => __LOCALE_LANGUAGES__,
+    });
+  } catch (e) {}
+
+  // 5. Permissions: headless Chrome reports the notifications
+  //    permission as 'denied'; a fresh real browser says 'prompt'.
+  try {
+    const originalQuery =
+      navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: 'prompt' })
+        : originalQuery(parameters)
+    );
+  } catch (e) {}
+
+  // 6. WebGL unmasked vendor/renderer: a software-rasterizing box
+  //    honestly reports ANGLE + SwiftShader.  Keep the pair consistent
+  //    -- do not fabricate a GPU this box cannot actually rasterize.
+  try {
+    const UNMASKED_VENDOR_WEBGL = 0x9245;
+    const UNMASKED_RENDERER_WEBGL = 0x9246;
+    const originalGetParameter =
+      WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (parameter) {
+      if (parameter === UNMASKED_VENDOR_WEBGL) {
+        return 'Google Inc. (Google)';
+      }
+      if (parameter === UNMASKED_RENDERER_WEBGL) {
+        return 'ANGLE (Google, SwiftShader Device, OpenGL 4.0.0)';
+      }
+      return originalGetParameter.call(this, parameter);
+    };
+  } catch (e) {}
+})();
+"""
+
+
+def _stealth_init_script(locale=None):
+    """Return ``_STEALTH_INIT_JS`` with ``navigator.languages`` pinned.
+
+    ``en-US`` -> ``["en-US", "en"]`` (region-stripped fallback),
+    ``pt`` -> ``["pt"]``, unset -> the default ``["en-US", "en"]``.
+    """
+    if not locale:
+        languages = ["en-US", "en"]
+    elif "-" in locale:
+        languages = [locale, locale.split("-", 1)[0]]
+    else:
+        languages = [locale]
+    return _STEALTH_INIT_JS.replace(
+        "__LOCALE_LANGUAGES__", json.dumps(languages))
 
 
 # ── Element formatters ──────────────────────────────────────────────
