@@ -21,6 +21,11 @@ import yaml
 # Tools (command parsing and execution)
 from .tools import process_content, filter_content, terminate_process
 from .tools import get_default_shell
+from .tools.parser import (
+    END_SESSION_RE,
+    END_SESSION_REJECTED_NOTICE,
+    strip_end_session,
+)
 from .tools import register_llm as _register_summarize_llm
 from .tools import register_pool as _register_pool
 
@@ -187,7 +192,9 @@ def extract_completion(text, backticks=5) -> Optional[CompletionResult]:
     """
     # Create the pattern for matching the backtick-wrapped section
     backtick_pattern = '`' * backticks
-    pattern = rf"{backtick_pattern}(Completion:[\s\S]*?Success:\s*(True|False)[\s\S]*?){backtick_pattern}"
+    # \s* after the opening fence: the canonical prompt form puts the
+    # fence on its own line with 'Completion:' on the next line.
+    pattern = rf"{backtick_pattern}\s*(Completion:[\s\S]*?Success:\s*(True|False)[\s\S]*?){backtick_pattern}"
 
     # Search for the pattern in the text
     match = re.search(pattern, text, re.DOTALL)
@@ -227,9 +234,15 @@ def _find_latest_completion(context, scan_limit=5):
         contains a valid completion block.
     """
     checked = 0
+    newest_assistant_text = None
     for message in reversed(context):
         if message.get("role") != "assistant":
             continue
+        if newest_assistant_text is None:
+            try:
+                newest_assistant_text = message["content"][0]["text"]
+            except (KeyError, IndexError, TypeError):
+                newest_assistant_text = None
         checked += 1
         if checked > scan_limit:
             break
@@ -240,6 +253,17 @@ def _find_latest_completion(context, scan_limit=5):
         result = extract_completion(text)
         if result is not None:
             return result
+    # Fallback: an explicit end_session in the *newest* assistant message
+    # means the model intentionally ended the session.  The prompt always
+    # asks for the completion note in the payload, but a bare
+    # 'Command: end_session' should still record as success rather than
+    # 'Error'.  Only the newest message is checked: a REJECTED
+    # end_session (issued alongside other commands) may still appear in
+    # an older turn's transcript, but only the final turn's sentinel is
+    # a real end — scanning back would mis-record rejected attempts as
+    # successes.
+    if newest_assistant_text is not None and END_SESSION_RE.search(newest_assistant_text):
+        return CompletionResult(text="Task ended via end_session.", success=True)
     return None
 
 
@@ -292,27 +316,30 @@ def _extract_commit_message(text):
 
 
 #: Reminder injected (at most once per incident) when a model response
-#: contains neither a command nor a completion block — an almost
+#: contains neither a command nor an end_session command — an almost
 #: certainly unintended session end.  It explains both output
 #: mechanisms and that this is the only warning before the session ends.
 NO_OUTPUT_REMINDER = (
     "Feedback: Your previous response contained no commands and no "
-    "completion block, so the session is about to end — which you "
+    "end_session command, so the session is about to end — which you "
     "almost certainly did not intend. You have two ways to produce "
     "output:\n"
     "1. To keep working, issue one or more commands as visible lines "
     "of the form 'Command: name args', each optionally followed by a "
     "5-backtick payload block. Command output is returned to you in a "
     "'=== Tool Results ===' message.\n"
-    "2. To intentionally finish the task, end your response with a "
-    "completion block wrapped in 5 backticks:\n"
+    "2. To intentionally finish the task, respond with the explicit "
+    "end_session command as the ONLY command in that response, with "
+    "the completion note in the 5-backtick payload block:\n"
+    "Command: end_session\n"
     f"`````\n"
     "Completion: <description of what you accomplished>\n"
     "Success: True or False\n"
     f"`````\n"
-    "This is your only warning: if your next response again contains "
-    "neither commands nor a completion block, the session will end. "
-    "Please respond to your task now."
+    "Do not combine end_session with any other command — it would "
+    "be rejected. This is your only warning: if your next response "
+    "again contains neither commands nor an end_session command, the "
+    "session will end. Please respond to your task now."
 )
 
 
@@ -325,8 +352,8 @@ TOOL_CALL_MARKER = "<tool_call>"
 
 #: Reminder injected (at most once per incident, sharing the
 #: one-reminder budget of :data:`NO_OUTPUT_REMINDER`) when a response
-#: carries a raw tool-call tag AND no command and no completion block:
-#: the model is speaking a format this harness cannot parse.
+#: carries a raw tool-call tag AND no command and no end_session
+#: command: the model is speaking a format this harness cannot parse.
 TOOL_CALL_REMINDER = (
     "Feedback: Your previous response contained a raw <tool_call> "
     "tool-call block, but this harness does not support <tool_call> "
@@ -336,13 +363,14 @@ TOOL_CALL_REMINDER = (
     "the line below the command; command output returns to you in a "
     "'=== Tool Results ===' message. If you intended to run the tool "
     "from that block, re-issue it as a 'Command: name args' line. To "
-    "intentionally finish the task instead, end your response with a "
-    "completion block wrapped in 5 backticks: a 'Completion: <description "
-    "of what you accomplished>' line immediately after the opening "
-    "backticks, then a 'Success: True or False' line. This is your only "
-    "warning: if your next response again contains neither commands nor "
-    "a completion block, the session will end. Please respond to your "
-    "task now."
+    "intentionally finish the task instead, respond with the explicit "
+    "'Command: end_session' line as the ONLY command in that response, "
+    "with the completion note in the 5-backtick payload block: a "
+    "'Completion: <description of what you accomplished>' line "
+    "immediately after the opening backticks, then a 'Success: True or "
+    "False' line. This is your only warning: if your next response "
+    "again contains neither commands nor an end_session command, the "
+    "session will end. Please respond to your task now."
 )
 
 
@@ -481,8 +509,9 @@ PLANNING_MODE_DIRECTIVE = (
 PLAN_APPROVED_FEEDBACK = (
     "Feedback: The user APPROVED the plan in the terminal. Planning "
     "mode is now off — all commands are available again. Proceed with "
-    "the approved plan, do the real work, and end the session with a "
-    "completion block when the task is complete."
+    "the approved plan, do the real work, and end the session with the "
+    "explicit end_session command (with your completion note in its "
+    "payload block) when the task is complete."
 )
 
 #: Feedback template used after a rejection.  The {feedback} marker is
@@ -896,9 +925,10 @@ class Agent:
         Args:
             free_form: When True, the response is treated as free-form
                 text rather than a command turn: it is not scanned for
-                ``Command:`` lines (nothing is executed), the
-                completion-block and no-output-reminder guards are
-                skipped, and the anti-loop check does not apply.  Used
+                ``Command:`` lines (nothing is executed — including an
+                explicit end_session command), the completion-block and
+                no-output-reminder guards are skipped, and the
+                anti-loop check does not apply.  Used
                 by internal one-shot calls (episode summary, commit
                 message) whose replies are plain prose by design —
                 running them through the command pipeline made the
@@ -984,9 +1014,26 @@ class Agent:
         # are accounted for — they are real LLM spend.
         self.client.record_step_metrics()
 
-        # Filter response content
-        response_length = len(response)
-        response = filter_content(response)
+        # Explicit end_session handling.  The command never reaches the
+        # command pipeline: on its own it ends the session (as a
+        # completion block used to); queued alongside other commands it
+        # is REJECTED — the other commands still run (so the model
+        # reflects on their fresh output) and a notice tells the model
+        # to re-issue end_session by itself.  No pending state: each
+        # end_session attempt is resolved within its own turn.  The
+        # strip happens before filter_content so the filter never clips
+        # a queued read command that precedes the end_session line.
+        stripped_response, end_session_requested = strip_end_session(response)
+
+        # Filter response content.  The transcript keeps the FULL turn
+        # (sentinel line + completion payload intact): run_agent()
+        # extracts the completion from the context after the loop ends,
+        # so stripping the payload from the stored message would make
+        # every clean end_session ending report as a failure.  Only the
+        # text handed to the dispatch pipeline has the sentinel removed.
+        response_length = len(stripped_response)
+        context_response = filter_content(response)
+        response = filter_content(stripped_response)
         filtered_length = len(response)
 
         if response_length > filtered_length:
@@ -1015,8 +1062,12 @@ class Agent:
             self._last_assistant_response = None
             return True
 
-        # Add response to context and process it
-        self.context.append(_form_message("assistant", response))
+        # Add response to context and process it.  The transcript keeps
+        # context_response — the unstripped turn (see above) — so a
+        # clean end_session ending is extractable from the context, and
+        # free-form turns (budget wrap-up, summaries) are stored as the
+        # model wrote them.
+        self.context.append(_form_message("assistant", context_response))
         self._last_assistant_response = response
         self._loop_count = 0
 
@@ -1050,7 +1101,9 @@ class Agent:
         # approval).
         plan_decision = None
         if self.planning_mode and (
-            PLANNING_REQUEST_RE.search(response) or completion_found
+            PLANNING_REQUEST_RE.search(response)
+            or completion_found
+            or end_session_requested
         ):
             plan_decision = prompt_plan_approval()
             if plan_decision is None:
@@ -1068,6 +1121,14 @@ class Agent:
                     "back to the agent",
                     style="warning",
                 )
+
+        # end_session was requested on the same turn as other commands:
+        # the commands ran anyway, so refuse the end attempt and make
+        # the model reflect on their output before re-issuing it alone.
+        if end_session_requested and command_called:
+            command_response = (
+                END_SESSION_REJECTED_NOTICE + "\n" + command_response
+            )
 
         # Check compute budget
         if self.client.cost > 0.80 * self.compute_budget:
@@ -1120,7 +1181,11 @@ class Agent:
         # does contain a command or a completion block counts as
         # intentional and ends (or continues) normally, and also re-arms
         # the reminder so each incident gets its own single warning.
-        if command_called or completion_found:
+        if (
+            command_called
+            or completion_found
+            or (end_session_requested and not command_called)
+        ):
             self._no_output_reminded = False
         elif self._no_output_reminded:
             print_error(
@@ -1158,6 +1223,11 @@ class Agent:
         # re-ask.  An interrupt already returned False.
         if plan_decision is not None:
             return True
+
+        # end_session standing on its own is an explicit intentional
+        # stop — end the loop here (as a completion block used to).
+        if end_session_requested and not command_called:
+            return False
 
         return command_called
 
@@ -1201,6 +1271,15 @@ class Agent:
         its completion block.  The session then ends through the
         normal pipeline (completion extraction, save,
         episode/commit steps).
+
+        Ending the session
+        ------------------
+        The session ends when the model issues the explicit
+        ``end_session`` command as the sole command of a response (a
+        legacy completion block also ends it, for compatibility).  If
+        ``end_session`` is queued alongside other commands the end
+        attempt is REJECTED: the other commands run and the model is
+        told to reflect on their output and re-issue end_session alone.
         """
         self.start_time = time.time()
         self._interrupt_requested = False

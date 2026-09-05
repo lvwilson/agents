@@ -42,8 +42,8 @@ agents/                          ← repo root
 │   ├── config.py                ← `.agent` config file (project > home > env)
 │   │
 │   ├── tools/                   ← Tooling layer (command parsing & execution)
-│   │   ├── __init__.py          ← Public API: process_content, filter_content, terminate_process
-│   │   ├── parser.py            ← Command parser — extracts commands from LLM output
+│   │   ├── __init__.py          ← Public API: process_content, filter_content, strip_end_session, terminate_process
+│   │   ├── parser.py            ← Command parser — extracts commands from LLM output, resolves the end_session sentinel
 │   │   ├── functions.py         ← Tool implementations (file I/O, shell, code manipulation, web)
 │   │   ├── codemanipulator.py   ← AST-based Python code manipulation
 │   │   ├── code_scissors.py     ← Line-based text cutting operations
@@ -70,16 +70,17 @@ agents/                          ← repo root
 - **`Agent` class** — The central orchestrator. Holds conversation context, system prompt, LLM backend, and budget.
   - `__init__()` — Loads the `.agent` config + YAML config, resolves provider/model/base_url/temperature (CLI flags > `.agent` > env vars > YAML > provider default), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
   - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, folds the step into the session metrics via `client.record_step_metrics()` (free-form turns included), runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
-  - `run()` — Loops `_iterate()` until no commands returned, KeyboardInterrupt, or error; at 100% budget it runs one final free-form wrap-up turn (no commands processed) so the model can record the work done and emit its completion block, then ends.
+  - `run()` — Loops `_iterate()` until the loop ends (explicit `end_session` command, a command-free response after one reminder, KeyboardInterrupt, or error); at 100% budget it runs one final free-form wrap-up turn (no commands processed) so the model can record the work done and emit its completion block, then ends.
   - `save_context()` / `load_context()` — Pause/resume of full conversation state including token counts, costs, and the session metrics rollup (so a resumed session keeps the whole-task tokens/rate/cost-per-hour).
   - `LARGE_MESSAGE_CACHE_THRESHOLD = 10_000` — Character threshold for requesting backend caching of a user message.
-- **`run_agent()`** — High-level function: creates Agent, optionally restores context, runs, extracts completion block, retries once if no completion found.
-- **`extract_completion()`** — Parses the YAML completion block from the LLM's final response (wrapped in 5 backticks).
+- **`run_agent()`** — High-level function: creates Agent, optionally restores context, runs, extracts the completion (block or explicit end_session ending) from the transcript.
+- **`extract_completion()`** — Parses the completion block from the LLM's response (5-backtick-wrapped; `Completion:` on its own line after the fence, or immediately after it).
 - **`main()`** — CLI entry point with argparse. Supports `-b` budget, `-r` restore, `-l` local mode, `-p` port. Reads piped stdin.
 
 **Integration with tools subpackage** (the internal boundary):
-- `process_content(response)` → parses commands from LLM output, executes them, returns `(text_result, image_tuples)`
+- `process_content(response)` → parses commands from LLM output, executes them, returns `(text_result, image_tuples)`. `end_session` is never dispatched: alone it yields the `"End."` sentinel; alongside other commands the end attempt is REJECTED (notice prepended) and the rest run.
 - `filter_content(response)` → trims output when LLM queues multiple read commands
+- `strip_end_session(response)` → removes the end_session line + its payload; returns `(cleaned_text, found)`
 - `terminate_process()` → kills any running subprocess (used in SIGTERM handler)
 - `get_default_shell()` → used in system prompt construction
 
@@ -168,7 +169,7 @@ agents/                          ← repo root
 The `tools` subpackage handles all command parsing and execution. It knows nothing about LLM providers, conversation history, or budgets.
 
 - **`__init__.py`** — Public API: re-exports `process_content`, `filter_content`, `terminate_process`, `get_default_shell`, `register_llm`.
-- **`parser.py`** — Command parser. Extracts `Command:` directives and backtick-delimited payloads from LLM output. `process_content()` dispatches to tool functions. `filter_content()` trims output when multiple read commands are queued.
+- **`parser.py`** — Command parser. Extracts `Command:` directives and backtick-delimited payloads from LLM output. `process_content()` dispatches to tool functions (`end_session` is resolved there, never dispatched). `filter_content()` trims output when multiple read commands are queued. `strip_end_session()` removes the end_session line + payload (the transcript keeps the full turn so the completion stays extractable).
 - **`functions.py`** — All tool implementations: file I/O (`read_file`, `write_file`, `append_to_file`), find-and-replace, line-based text operations (code scissors wrappers), AST code manipulation wrappers, shell execution (`run_console_command` with PTY), `stdout`, `summarize`, and all web browser command wrappers.
 - **`codemanipulator.py`** — AST-based Python code manipulation. Uses `ast.NodeTransformer` to read/replace/insert/remove code at dot-separated addresses (e.g. `ClassName.method_name`). Formats output with `black`.
 - **`code_scissors.py`** — Line-based text cutting operations: `insert_before`, `insert_after`, `replace_before`, `replace_after`, `replace_between`.

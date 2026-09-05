@@ -29,7 +29,9 @@ logger = logging.getLogger(__name__)
 _STDOUT_INSTRUCTION = (
     "\n\nIMPORTANT: When you have finished your task, write your final result "
     "using the stdout tool. This is how your output is returned to the caller. "
-    "Do not use a completion block — just write your findings to stdout and then stop."
+    "Do not use a completion block — write your findings to stdout, then end "
+    "the session with the explicit end_session command (alone, with no other "
+    "commands in that response)."
 )
 
 

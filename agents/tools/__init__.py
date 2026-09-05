@@ -9,12 +9,19 @@ Public API
 ----------
 - ``process_content(text, blocked_commands=None)`` — parse and execute
   commands from LLM output (optionally rejecting a set of command names)
+- ``strip_end_session(text)`` — remove the explicit end_session command
 - ``filter_content(text)`` — trim output when the LLM queues multiple read commands
 - ``terminate_process()`` — terminate any running subprocess
 - ``get_default_shell()`` — return the current user's default shell
 - ``register_llm(fn)`` — register an LLM backend for the summarize tool
 """
 
-from .parser import process_content, filter_content, terminate_process
+from .parser import (
+    process_content,
+    filter_content,
+    strip_end_session,
+    terminate_process,
+    END_SESSION_COMMAND,
+)
 from .functions import get_default_shell, register_pool
 from .summarize import register_llm

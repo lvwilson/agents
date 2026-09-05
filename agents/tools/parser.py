@@ -2,7 +2,9 @@
 Command parser — extracts commands from LLM output, dispatches to tool functions.
 
 This module owns all parsing and dispatch logic:
-- ``process_content()`` — parse and execute commands
+- ``process_content()`` — parse and execute commands (the end_session
+  sentinel is resolved here, never dispatched)
+- ``strip_end_session()`` — remove the explicit end_session command(s)
 - ``filter_content()`` — trim output when multiple read commands are queued
 - ``terminate_process()`` — kill any running subprocess
 """
@@ -84,6 +86,58 @@ def concise_representation(input_string, max_chars):
 STACKABLE_READ_COMMANDS = {'read_file', 'deep_read', 'read_page', 'read_page_html', 'page_links', 'view_page', 'web_search', 'request_approval'}
 
 
+#: Explicit end-of-session command.  It never dispatches to a tool
+#: function: on its own it ends the session, and when it is queued
+#: alongside other commands it is REJECTED — the other commands run
+#: first (so the model reflects on their output) and the model must
+#: then re-issue end_session by itself.
+END_SESSION_COMMAND = "end_session"
+
+#: Matches an end_session command line anywhere in a response,
+#: forgiving about leading whitespace and the case of the name.
+END_SESSION_RE = re.compile(
+    r"^[ \t]*Command:\s*end_session(?:[ \t].*)?$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+_FENCE_5 = "`" * 5
+
+#: Matches an end_session command line plus any directly-attached
+#: 5-backtick payload block (the completion note); used by
+#: :func:`strip_end_session` to remove the whole span.
+_END_SESSION_SPAN_RE = re.compile(
+    r"^[ \t]*Command:\s*end_session(?:[ \t].*)?[ \t]*\r?\n?"
+    r"(?:" + _FENCE_5 + r"(?:[\w#\+\-]+)?\s*[\s\S]*?" + _FENCE_5 + r")?"
+    r"[ \t]*\r?\n?",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+#: Prepended to the tool-result message when end_session was issued
+#: alongside other commands (a rejected end attempt).
+END_SESSION_REJECTED_NOTICE = (
+    "end_session REJECTED: you issued it in the same response as other "
+    "commands, but end_session is only accepted when it is the sole "
+    "command. The other commands were executed — reflect on their "
+    "output below before finishing. When you are done reviewing it, "
+    "respond with 'Command: end_session' (with your completion note in "
+    "the backtick block) and nothing else to end the session."
+)
+
+
+def strip_end_session(content):
+    """Remove every end_session command line from *content*.
+
+    A directly-attached 5-backtick payload (the completion note) is
+    removed together with its command line.
+
+    Returns:
+        tuple: ``(cleaned_content, found)`` where *found* is True if at
+        least one end_session command line was present.
+    """
+    cleaned, count = re.subn(_END_SESSION_SPAN_RE, "", content)
+    return cleaned, count > 0
+
+
 def filter_content(content):
     """Cut output at the final read command or first non-read command after a read command."""
     read_command_encountered = False
@@ -108,6 +162,11 @@ def filter_content(content):
 def process_content(content, blocked_commands=None):
     """Parse and execute all commands from LLM output.
 
+    An explicit ``end_session`` command is never dispatched: on its own
+    it yields the ``"End."`` sentinel (the session ends); alongside
+    other commands it is rejected (a notice is prepended to their
+    output) and the remaining commands run as usual.
+
     Args:
         content: The raw LLM output text.
         blocked_commands: Optional iterable of command names to reject.
@@ -131,6 +190,21 @@ def process_content(content, blocked_commands=None):
 
     response = ""
     image_data_tuple_array = []
+
+    # Explicit end_session handling (self-consistency for direct
+    # callers — Agent._iterate strips it before calling): alone it is
+    # an intentional stop; alongside other commands it is rejected and
+    # the rest run anyway.
+    reject_prefix = ""
+    if any(c.command.lower() == END_SESSION_COMMAND for c in commands):
+        commands = [
+            c for c in commands
+            if c.command.lower() != END_SESSION_COMMAND
+        ]
+        if not commands:
+            return "End.", []
+        reject_prefix = END_SESSION_REJECTED_NOTICE + "\n"
+
     if len(commands) == 0:
         return "End.", []
 
@@ -222,7 +296,7 @@ def process_content(content, blocked_commands=None):
                     concise_command_response = concise_representation(command_response, limit)
                     command_response = f"Truncating command response to {limit} characters...\n" + concise_command_response
         response += command_response
-    return response, image_data_tuple_array
+    return reject_prefix + response, image_data_tuple_array
 
 
 # ── Image handling ──────────────────────────────────────────────────

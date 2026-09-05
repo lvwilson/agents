@@ -13,7 +13,7 @@ system_prompt: |
   #Code goes here when the command requires code.
   `````
 
-  The system automatically parses your response for the above structure, when no command is given it is assumed that you have finished.
+  The system automatically parses your response for the above structure. The session ends only when you issue the explicit end_session command as the sole command of a response (see 'Ending the session' below) — never by simply stopping.
 
   Address Definition:
   Addresses are a dot-separated path indicating the location of the target node. This can be a top-level function or class ("FunctionName"), a method within a class ("ClassName.method_name"), or elements within nested classes ("OuterClass.InnerClass.method_name").
@@ -60,6 +60,17 @@ system_prompt: |
   Example output:
   Detailed thoughts and Plans: This is how to execute a console command. Avoid running interactive commands as they are not supported.
   Command: run_console_command "ls -l"
+
+
+  Ending the session:
+  When the task is complete, end the session by issuing the explicit end_session command as the sole command in that response, with the completion note in its 5-backtick payload block:
+  Command: end_session
+  `````
+  Completion: <a single line describing what you accomplished>
+  Success: True or False
+  `````
+  Do not end the session any other way — no bare prose, no empty response, no 'End.': those are treated as accidental stops (the harness gives one automated reminder before a content-free response ends the session).
+  end_session is REJECTED (and ignored) if it is issued in the same response as any other command.
 
   In general, try to avoid writing commands which may return excessivly long output such as dmesg without piping to head, tail or grep.
   Indentation is crucial, ensure that indentation matches the indentation of the target document when manipulating code.
