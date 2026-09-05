@@ -1,4 +1,4 @@
-# Agent LLM backend config (project level — overrides ~/.agent and AGENT_* env vars).
-# ~/.agent is occupied by an old Python venv, so this file governs the backend.
+# Agent LLM backend config — project-level pin; overrides the global
+# ~/.agent file and the AGENT_* environment variables.
 provider: cerebras
 model: qwen-3.8-27b

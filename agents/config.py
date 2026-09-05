@@ -11,7 +11,10 @@ Resolution order (highest precedence wins, key by key):
 
 1. **Project** ``.agent`` — searched upward from the current directory,
    so a file in the repo root governs every subdirectory.
-2. **Home** ``~/.agent`` — a global default for all projects.
+2. **Home** ``~/.agent`` — a global default for all projects.  If the
+   path exists but is not a regular file (e.g. a stale directory squatting
+   the name), the global config is skipped and a warning is printed at
+   startup (see :func:`home_agent_status`).
 3. **Environment variables** — ``AGENT_MODEL_PROVIDER``, ``AGENT_MODEL``,
    ``AGENT_BASE_URL``, ``AGENT_TEMPERATURE`` (kept for backward
    compatibility; the file overrides them).
@@ -93,6 +96,38 @@ def _home_agent() -> str | None:
     """Return the path of ``~/.agent`` if it exists, else ``None``."""
     candidate = os.path.join(os.path.expanduser("~"), AGENT_FILENAME)
     return candidate if os.path.isfile(candidate) else None
+
+
+def home_agent_status() -> str:
+    """Report the state of the global ``~/:`` config path ``~/.agent``.
+
+    Returns:
+        * ``"ok"`` — a regular file exists and will be loaded.
+        * ``"missing"`` — no file at all (nothing to load).
+        * ``"squat"`` — the path exists but is NOT a regular file (e.g.
+          a stale directory squatting the name).  The global config is
+          silently ignored in this case; :data:`HOME_AGENT_SQUAT_WARNING`
+          explains the fix.
+    """
+    candidate = os.path.join(os.path.expanduser("~"), AGENT_FILENAME)
+    if os.path.isfile(candidate):
+        return "ok"
+    if os.path.exists(candidate):
+        return "squat"
+    return "missing"
+
+
+#: Warning shown at startup when ``~/.agent`` is squatted by a non-file
+#: (historically a stale venv directory): without the notice the backend
+#: pin silently disappears and every project without its own ``.agent``
+#: falls back to the default provider.
+HOME_AGENT_SQUAT_WARNING = (
+    "~/.agent exists but is not a regular file, so the global .agent "
+    "backend config is being IGNORED - every folder without its own "
+    ".agent file falls back to the default backend. Rename the "
+    "directory squatting this name and create a real ~/.agent file "
+    "(e.g. 'provider: cerebras / model: qwen-3.8-27b')."
+)
 
 
 def _read_yaml(path: str) -> dict:
