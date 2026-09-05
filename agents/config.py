@@ -34,6 +34,11 @@ Example with a custom OpenAI-compatible endpoint::
     provider: openai
     model: qwen3.8-27b
     base_url: http://localhost:8000/v1
+
+Note on ``LOCAL_MODEL``: the auto-enable of local mode by the
+``LOCAL_MODEL`` env var (see :func:`agents.agents.main`) yields to any
+``provider`` or ``model`` pinned here — an explicit ``--local`` flag
+still forces local mode.
 """
 
 from __future__ import annotations
@@ -54,6 +59,18 @@ _ENV_MAP: dict[str, str] = {
 }
 
 _VALID_KEYS: tuple[str, ...] = ("provider", "model", "base_url", "temperature")
+
+#: Fallback model per provider, used when no model is pinned anywhere
+#: (``-m`` flag, ``AGENT_MODEL`` env var, or ``.agent`` file).  One
+#: shared constant so the CLI and ``agent-commit`` never drift.
+PROVIDER_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "claude-opus-4-6",
+    "openai": "gpt-5.3-codex",
+    "gemini": "gemini-3.1-pro-preview",
+    "kimi": "kimi-k3",
+    "deepseek": "deepseek-v4-pro",
+    "cerebras": "qwen-3.8-27b",
+}
 
 
 def _find_project_agent(start: str | None = None) -> str | None:

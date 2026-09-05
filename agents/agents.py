@@ -26,7 +26,7 @@ from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
-from .config import load_agent_config
+from .config import load_agent_config, PROVIDER_DEFAULT_MODELS
 from .cli.model_table import print_model_table
 from .git_utils import (
     is_git_repo,
@@ -575,11 +575,13 @@ class Agent:
         agent_cfg = load_agent_config()
 
         # Determine provider.  Priority:
-        #   CLI --provider > .agent > AGENT_MODEL_PROVIDER env > YAML > "anthropic"
+        #   CLI --provider > .agent (project > home > AGENT_MODEL_PROVIDER
+        #   env) > YAML > "anthropic".  ``agent_cfg`` already folds the
+        #   AGENT_* env vars in as its lowest layer, so no separate env
+        #   read is needed here.
         provider = (
             provider
             or agent_cfg.get("provider")
-            or os.environ.get("AGENT_MODEL_PROVIDER")
             or configuration.get("provider")
             or "anthropic"
         )
