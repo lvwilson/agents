@@ -123,6 +123,28 @@ def format_tokens(n):
     return str(n)
 
 
+def format_rate(toks_per_sec):
+    """Format a tokens-per-second rate with one decimal.
+
+    ``None`` / non-numeric renders as ``"—"`` so callers can pass an
+    unmeasured rate without pre-checking before the header.
+    """
+    try:
+        return f"{float(toks_per_sec):.1f} tok/s"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def format_duration(seconds):
+    """Format a duration in seconds as e.g. ``"1m 42s"`` or ``"42s"``."""
+    if seconds is None or seconds <= 0:
+        return "0s"
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 # ── Display functions ────────────────────────────────────────────────
 
 def print_banner(display_name, compute_budget, platform_str, context_window_tokens,
@@ -159,7 +181,8 @@ def print_iteration_header(step, cost, compute_budget,
                            last_input_tokens=0, last_output_tokens=0,
                            last_total_context_tokens=0,
                            cost_without_cache=0.0,
-                           context_window_tokens=256_000):
+                           context_window_tokens=256_000,
+                           step_tokens_per_sec=None):
     """Display the iteration header with cost, budget, and context window info."""
     cost_str = f"${cost:.4f}"
     savings_str = _format_cache_savings(cost, cost_without_cache)
@@ -171,6 +194,13 @@ def print_iteration_header(step, cost, compute_budget,
             f"  [muted]in:[/] {format_tokens(last_input_tokens)}"
             f"  [muted]out:[/] {format_tokens(last_output_tokens)}"
         )
+
+    # Per-step generation rate (this step's output tokens over the
+    # wall-clock time of its generation).  Shown once measured —
+    # i.e. from the second step onwards, since step N's rate is only
+    # known after step N-1's generation has completed.
+    if step_tokens_per_sec is not None and step_tokens_per_sec > 0:
+        token_info += f"  [muted]rate:[/] {format_rate(step_tokens_per_sec)}"
 
     context_bar = build_context_bar(last_total_context_tokens, context_window_tokens)
     context_info = (
@@ -187,36 +217,82 @@ def print_iteration_header(step, cost, compute_budget,
     console.print(Rule(style="dim bright_blue"))
 
 
-def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0,
-                  cost_without_cache=0.0, context_window_tokens=256_000):
-    """Display the final session summary panel."""
-    console.print()
-    minutes, seconds = divmod(int(elapsed), 60)
-    time_str = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+def build_final_metrics(context, cost, steps, elapsed, compute_budget,
+                        peak_context_tokens, cost_without_cache,
+                        context_window_tokens,
+                        total_output_tokens=0,
+                        output_rate_tokens_per_sec=None,
+                        cost_per_hour=None):
+    """Build the final-session metrics panel (the "Session Complete" display).
+
+    Shows the salient metrics of the whole task: cost (with cache
+    savings), step count, duration, budget bar, peak context, total
+    output tokens, overall output rate, and the estimated cost per hour
+    if the task kept running at the observed pace.
+
+    ``context`` is the Rich Console to print to — passed in rather than
+    using the module global so tests can capture output with a plain
+    in-memory Console.
+    """
+    console = context
+    time_str = format_duration(elapsed)
 
     savings_str = _format_cache_savings(cost, cost_without_cache)
-    summary_line = (
-        f"[muted]Cost:[/] [cost]${cost:.4f}[/]{savings_str}  "
-        f"[muted]Steps:[/] {steps}  "
-        f"[muted]Duration:[/] {time_str}  "
-        f"[muted]Budget:[/] {build_budget_bar(cost, compute_budget)}"
-    )
-
+    metrics = [
+        f"[muted]Cost:[/] [cost]${cost:.4f}[/]{savings_str}",
+        f"[muted]Steps:[/] {steps}",
+        f"[muted]Duration:[/] {time_str}",
+        f"[muted]Budget:[/] {build_budget_bar(cost, compute_budget)}",
+    ]
     if peak_context_tokens > 0:
         context_bar = build_context_bar(peak_context_tokens, context_window_tokens)
-        summary_line += (
-            f"  [muted]Peak context:[/] "
+        metrics.append(
+            f"[muted]Peak context:[/] "
             f"{format_tokens(peak_context_tokens)}/{format_tokens(context_window_tokens)}"
             f"  {context_bar}"
         )
+    if total_output_tokens > 0:
+        metrics.append(
+            f"[muted]Output tokens:[/] {format_tokens(total_output_tokens)}"
+        )
+    metrics.append(
+        f"[muted]Output rate:[/] "
+        f"{format_rate(output_rate_tokens_per_sec)}"
+    )
+    if cost_per_hour is not None and cost_per_hour > 0:
+        metrics.append(
+            f"[muted]Est. cost/hour:[/] [cost]${cost_per_hour:.2f}[/]"
+        )
 
+    console.print()
     console.print(Panel(
-        summary_line,
+        "\n".join(metrics),
         title="[bold bright_white]◈  Session Complete  ◈[/]",
         border_style="bright_blue",
         padding=(0, 1),
     ))
     console.print()
+
+
+def print_summary(cost, steps, elapsed, compute_budget, peak_context_tokens=0,
+                  cost_without_cache=0.0, context_window_tokens=256_000,
+                  total_output_tokens=0,
+                  output_rate_tokens_per_sec=None,
+                  cost_per_hour=None):
+    """Display the final session summary + metrics panel."""
+    build_final_metrics(
+        _get_console(),
+        cost=cost,
+        steps=steps,
+        elapsed=elapsed,
+        compute_budget=compute_budget,
+        peak_context_tokens=peak_context_tokens,
+        cost_without_cache=cost_without_cache,
+        context_window_tokens=context_window_tokens,
+        total_output_tokens=total_output_tokens,
+        output_rate_tokens_per_sec=output_rate_tokens_per_sec,
+        cost_per_hour=cost_per_hour,
+    )
 
 
 def print_completion_result(completion, success):
@@ -475,4 +551,3 @@ def prompt_plan_approval() -> PlanDecision | None:
         signal.signal(signal.SIGINT, original_handler)
         if tty_in is not sys.stdin:
             tty_in.close()
-

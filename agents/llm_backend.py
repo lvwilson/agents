@@ -198,6 +198,16 @@ class LLMBackend(ABC):
         self.cost_without_cache: float = 0.0
         self.call_count: int = 0
 
+        # Session throughput / cost-rate metrics (driven by the per-call
+        # duration recorded in _run_with_retries and folded in here via
+        # record_step_metrics()).  See the final-metrics panel in ui.py.
+        self.last_call_duration: float = 0.0
+        self.total_output_tokens: int = 0
+        self.total_call_duration: float = 0.0
+        self.output_rate_tokens_per_sec: float | None = None
+        self.cost_per_hour: float | None = None
+        self.step_rate_tokens_per_sec: float | None = None
+
         # Per-call token bookkeeping
         self.last_input_tokens: int = 0
         self.last_output_tokens: int = 0
@@ -236,12 +246,23 @@ class LLMBackend(ABC):
         start_time = time.monotonic()
         error_retries = 0
         current_delay = self.RETRY_BASE_DELAY
+        # Fresh-generation timestamp: taken just before each attempt
+        # streams, so sleep time spent between retries never inflates
+        # the measured call duration.  Callers must only read
+        # self.last_call_duration on success.
+        fresh_start_time = time.monotonic()
 
         while True:
             try:
+                fresh_start_time = time.monotonic()
                 sh.on_stream_start()
                 result = attempt_fn()
                 sh.on_stream_end()
+                # Record the wall-clock duration of the *final* (successful)
+                # generation so the agent can show live tokens/second.  Only
+                # success should update metrics — a failed/retried attempt is
+                # not a completed step.
+                self.last_call_duration = time.monotonic() - fresh_start_time
                 return result
 
             except KeyboardInterrupt:
@@ -463,3 +484,31 @@ class LLMBackend(ABC):
         override with their own pricing table.
         """
         return 0.0
+
+    def record_step_metrics(self) -> None:
+        """Fold one completed generation into the session metrics.
+
+        Called by the agent after each successful :meth:`generate_response`
+        (including free-form internal turns).  Accumulates the
+        tokens/second and cost-per-hour values the UI displays:
+
+        * per-step rate — this step's output tokens over the wall-clock
+          duration of this generation (shown in the step header);
+        * session rate — all output tokens over all generation time
+          (shown in the final metrics panel);
+        * session cost rate — dollars spent so far over elapsed
+          generation time, i.e. the estimated cost per hour if the task
+          kept going at this pace.
+        """
+        duration = self.last_call_duration
+        if duration <= 0:
+            return
+        self.total_output_tokens += self.last_output_tokens
+        self.total_call_duration += duration
+        if self.last_output_tokens > 0:
+            self.step_rate_tokens_per_sec = self.last_output_tokens / duration
+        if self.total_call_duration > 0:
+            self.output_rate_tokens_per_sec = (
+                self.total_output_tokens / self.total_call_duration
+            )
+        self.cost_per_hour = self.cost / (self.total_call_duration / 3600)

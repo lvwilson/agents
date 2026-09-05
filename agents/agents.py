@@ -915,6 +915,7 @@ class Agent:
             self.client.last_total_context_tokens,
             cost_without_cache=self.client.cost_without_cache,
             context_window_tokens=self.client.context_window_size,
+            step_tokens_per_sec=self.client.step_rate_tokens_per_sec,
         )
         self.iterations += 1
 
@@ -976,6 +977,12 @@ class Agent:
 
         if not response:
             return False
+
+        # Fold this generation into the session metrics (per-step
+        # tokens/s now; the final panel shows the whole-task rollup).
+        # Includes free-form turns so wrap-up / summary / commit calls
+        # are accounted for — they are real LLM spend.
+        self.client.record_step_metrics()
 
         # Filter response content
         response_length = len(response)
@@ -1278,12 +1285,17 @@ class Agent:
         finally:
             signal.signal(signal.SIGINT, original_sigint)
 
-        # Print final summary
+        # Print final summary + whole-task metrics (output rate and
+        # estimated cost-per-hour are None when no generation completed,
+        # which the panel renders as an unmeasured "—" rate / no line).
         elapsed = time.time() - self.start_time
         print_summary(self.client.cost, self.iterations, elapsed, self.compute_budget,
                       self.client.peak_context_tokens,
                       cost_without_cache=self.client.cost_without_cache,
-                      context_window_tokens=self.client.context_window_size)
+                      context_window_tokens=self.client.context_window_size,
+                      total_output_tokens=self.client.total_output_tokens,
+                      output_rate_tokens_per_sec=self.client.output_rate_tokens_per_sec,
+                      cost_per_hour=self.client.cost_per_hour)
 
     def _run_budget_wrap_up(self):
         """Give the model one final, command-free turn after overrun.
@@ -1413,6 +1425,12 @@ class Agent:
             'cost': self.client.cost,
             'cost_without_cache': self.client.cost_without_cache,
             'call_count': self.client.call_count,
+            # So the final metrics panel reflects the whole task across
+            # multiple (resumed) legs, not just the last one.
+            'total_output_tokens': self.client.total_output_tokens,
+            'total_call_duration': self.client.total_call_duration,
+            'output_rate_tokens_per_sec': self.client.output_rate_tokens_per_sec,
+            'cost_per_hour': self.client.cost_per_hour,
             'planning_mode': self.planning_mode,
         }
         save_session(self.session_id, self.working_dir, state)
@@ -1438,6 +1456,10 @@ class Agent:
         self.client.cost = data.get('cost', 0.0)
         self.client.cost_without_cache = data.get('cost_without_cache', 0.0)
         self.client.call_count = data.get('call_count', 0)
+        self.client.total_output_tokens = data.get('total_output_tokens', 0)
+        self.client.total_call_duration = data.get('total_call_duration', 0.0)
+        self.client.output_rate_tokens_per_sec = data.get('output_rate_tokens_per_sec')
+        self.client.cost_per_hour = data.get('cost_per_hour')
         # Planning mode: the saved session's flag is authoritative —
         # a resumed session keeps the mode it was saved in (-p only
         # takes effect for new sessions).
