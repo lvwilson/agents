@@ -278,11 +278,17 @@ python agents.py -r "continue the task"
 # Override provider/model
 AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-5.3-codex python agents.py "task"
 
+# Use Cerebras (via .agent file or flags)
+python agents.py -P cerebras -m qwen-3.8-27b "task"
+
 # Local model
 LOCAL_MODEL=qwen3.8-27b python agents.py --local -p 11434 "task"
 
 # Pipe input
 echo "file contents" | python agents.py "analyze this"
+
+# List all available models (all providers)
+python agents.py --list-models
 ```
 
 ---
@@ -307,6 +313,7 @@ Documented in `issues.md`. Summary:
 - **`pillow`** — Image handling
 - **`openai`** — OpenAI SDK (optional, install for OpenAI provider)
 - **`google-genai`** — Google Gemini SDK (optional, install for Gemini provider)
+- **`cerebras_cloud_sdk`** — Cerebras SDK (optional, install for Cerebras provider)
 - **`black`** — Code formatting (used by AST code manipulator)
 - **`requests`** — HTTP requests (used by image generation)
 - **`playwright`** — Headless browser (optional, install with `pip install -e '.[browser]'`)

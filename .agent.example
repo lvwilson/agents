@@ -1,0 +1,27 @@
+# .agent — backend configuration for this project.
+#
+# Copy this file to `.agent` (in this directory or any parent) or to
+# `~/.agent` (for a global default) and edit.  Only the keys you need
+# are required.  Resolution order (highest wins): --provider/--model
+# flags > project .agent > ~/.agent > AGENT_* env vars > agent YAML.
+#
+# API keys are NEVER read from this file — they come from the
+# environment (CLAUDE_API_KEY, OPENAI_API_KEY, CEREBRAS_API_KEY, ...).
+
+# ── Example 1: Cerebras Inference ────────────────────────────────────
+# provider: cerebras
+# model: qwen-3.8-27b          # or: gpt-oss-120b
+
+# ── Example 2: any OpenAI-compatible server (vLLM, llama.cpp, Ollama) ─
+# provider: openai
+# model: qwen3.8-27b
+# base_url: http://localhost:8000/v1
+
+# ── Example 3: Anthropic (the default) ───────────────────────────────
+# provider: anthropic
+# model: claude-opus-4-6
+# temperature: 0.6
+
+# ── Live config (uncomment / edit) ───────────────────────────────────
+provider: cerebras
+model: qwen-3.8-27b
