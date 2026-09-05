@@ -527,6 +527,9 @@ def web_search(query, max_results=None):
     :param query: Search query string.
     :param max_results: Maximum number of results (default 5).
     :return: Formatted search results with title, URL, and snippet.
+
+    Network egress honors WEB_PROXY (with DDGS_PROXY as a legacy
+    fallback); unset means direct egress exactly as before.
     """
     try:
         from ddgs import DDGS
@@ -536,8 +539,13 @@ def web_search(query, max_results=None):
     n = int(max_results) if max_results else 5
     n = max(1, min(n, 20))
 
+    proxy = os.getenv("WEB_PROXY") or os.getenv("DDGS_PROXY") or None
     try:
-        results = list(DDGS().text(query, max_results=n))
+        if proxy is not None:
+            search = DDGS(proxy=proxy)
+        else:
+            search = DDGS()
+        results = list(search.text(query, max_results=n))
     except Exception as e:
         return f"Search error: {e}"
 
