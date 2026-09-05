@@ -458,8 +458,10 @@ def request_approval(*args):
     Outside planning mode the command is a harmless no-op.
     """
     return (
-        "request_approval acknowledged. Planning mode is not active, so "
-        "there is no plan to approve — continue working on the task."
+        "request_approval acknowledged. If planning mode is active, the "
+        "approval decision follows later in this tool-result message; "
+        "otherwise planning mode is not active and there is no plan to "
+        "approve — continue working on the task."
     )
 
 

@@ -1011,6 +1011,36 @@ class Agent:
         command_called = command_response != "End."
         completion_found = extract_completion(response) is not None
 
+        # Planning mode gate.  Runs BEFORE the tool-results message is
+        # framed and appended, so the decision can be folded into that
+        # message and actually reach the model (see below).  Fires on an
+        # explicit request_approval command, or on a completion block
+        # (safety net for a model that skipped the request).  Approve or
+        # feedback both keep the loop running; Ctrl+C/EOF at the
+        # terminal ends the session cleanly (the plan stays saved, and
+        # -r resumes planning mode as-is — the mode flag only flips on
+        # approval).
+        plan_decision = None
+        if self.planning_mode and (
+            PLANNING_REQUEST_RE.search(response) or completion_found
+        ):
+            plan_decision = prompt_plan_approval()
+            if plan_decision is None:
+                print_interrupted()
+                return False
+            if plan_decision.approved:
+                self.planning_mode = False
+                safe_console_print(
+                    "  \u2713  Plan approved \u2014 continuing in execution mode",
+                    style="success",
+                )
+            else:
+                safe_console_print(
+                    "  \u21a9  Plan not approved \u2014 sending feedback "
+                    "back to the agent",
+                    style="warning",
+                )
+
         # Check compute budget
         if self.client.cost > 0.80 * self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
@@ -1020,6 +1050,23 @@ class Agent:
         # rather than user-authored.  The loop-control sentinel above
         # uses the raw command_response, so wrapping here cannot break
         # termination.
+        # Fold the plan-approval decision (if the gate fired this turn)
+        # into the tool-results message, so the model receives exactly
+        # one user message this turn: the command output plus the
+        # decision.  (str.replace, not str.format, so user notes with
+        # curly braces cannot raise.)
+        if plan_decision is not None:
+            if plan_decision.approved:
+                command_response = (
+                    command_response.rstrip("\n") + "\n" + PLAN_APPROVED_FEEDBACK
+                )
+            else:
+                command_response = (
+                    command_response.rstrip("\n") + "\n"
+                    + PLAN_NOT_APPROVED_FEEDBACK.replace(
+                        "{feedback}", plan_decision.feedback)
+                )
+
         framed_response = build_tool_results_message(command_response)
 
         # Add user message to context (with or without images)
@@ -1077,42 +1124,11 @@ class Agent:
             self.context.append(_form_message("user", NO_OUTPUT_REMINDER))
             return True
 
-        # Planning mode: whenever the agent signals that its plan is
-        # ready — an explicit request_approval command, or a completion
-        # block (safety net for a model that skipped the request) —
-        # pause the loop and ask the user in the terminal.  The decision
-        # is folded into this turn's tool-results message so the model
-        # receives exactly one user message per turn.  Approve →
-        # planning mode turns off and the loop resumes; feedback → it is
-        # fed back and planning continues; Ctrl+C/EOF at the prompt →
-        # the session ends cleanly (the plan is saved, resuming with
-        # -r restores planning mode as-is).
-        if self.planning_mode and (
-            PLANNING_REQUEST_RE.search(response) or completion_found
-        ):
-            decision = prompt_plan_approval()
-            if decision is None:
-                print_interrupted()
-                return False
-            if decision.approved:
-                self.planning_mode = False
-                safe_console_print(
-                    "  ✓  Plan approved — continuing in execution mode",
-                    style="success",
-                )
-                command_response = (
-                    command_response.rstrip("\n") + "\n" + PLAN_APPROVED_FEEDBACK
-                )
-            else:
-                safe_console_print(
-                    "  ↩  Plan not approved — sending feedback back to the agent",
-                    style="warning",
-                )
-                command_response = (
-                    command_response.rstrip("\n") + "\n"
-                    + PLAN_NOT_APPROVED_FEEDBACK.replace(
-                        "{feedback}", decision.feedback)
-                )
+        # Plan-approval gate outcome for this turn (gate ran above,
+        # before the tool-results message was built): continue either
+        # way — approved → execute the plan, feedback → revise and
+        # re-ask.  An interrupt already returned False.
+        if plan_decision is not None:
             return True
 
         return command_called
