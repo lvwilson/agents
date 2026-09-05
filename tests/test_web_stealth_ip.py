@@ -306,6 +306,10 @@ class TestPersistentProfile(unittest.TestCase):
             persistent_ctx = chromium.launch_persistent_context.return_value
             self.assertEqual(persistent_ctx.close.call_count, 1)
             self.assertEqual(playwright.stop.call_count, 1)
+            # Playwright's BrowserContext has NO is_closed() method (only
+            # Page / Browser do): the product must never call it -- a
+            # MagicMock would answer it, but live Playwright raises.
+            persistent_ctx.is_closed.assert_not_called()
             browser.launch.assert_not_called()
 
     def test_persistent_profile_default_location_for_one(self):

@@ -281,7 +281,10 @@ class WebBrowser:
             self._launch()
             return
         if self._persistent:
-            if self._ctx is None or self._ctx.is_closed():
+            # BrowserContext has no is_closed() (only Page/Browser do);
+            # if the context is missing the page property will observe
+            # the same and _launch() below rebuilds it.
+            if self._ctx is None:
                 self._launch()
         elif self._browser is None or not self._browser.is_connected():
             self._launch()
@@ -511,11 +514,13 @@ class WebBrowser:
 
     def _teardown_context(self):
         """Close the current page+context (rotation / relaunch).  Safe."""
+        # Playwright's Page/Context close() is idempotent; note that
+        # BrowserContext has NO is_closed() method (only Page does), so
+        # no liveness check is applied to self._ctx.
         for obj in (self._page, self._ctx):
             if obj is not None:
                 try:
-                    if not obj.is_closed():
-                        obj.close()
+                    obj.close()
                 except Exception:
                     pass
         self._page = None
@@ -546,17 +551,17 @@ class WebBrowser:
         """Close the browser and clean up resources."""
         if self._persistent:
             # Path 1 lifecycle: the persistent context is the single
-            # handle -- close it once, then stop Playwright.
+            # handle -- close it, then stop Playwright.  (Context
+            # close() is idempotent; BrowserContext has no is_closed().)
             if self._ctx is not None:
                 try:
-                    if not self._ctx.is_closed():
-                        self._ctx.close()
+                    self._ctx.close()
                 except Exception:
                     pass
         else:
             for obj, cleanup in [
                 (self._page, lambda o: not o.is_closed() and o.close()),
-                (self._ctx, lambda o: not o.is_closed() and o.close()),
+                (self._ctx, lambda o: o.close()),
                 (self._browser, lambda o: o.is_connected() and o.close()),
             ]:
                 if obj:
@@ -931,8 +936,14 @@ _STEALTH_INIT_JS = """
   //    desktop Chrome exposes several plugins; a length of 0 is a
   //    strong headless tell.  Keep the two lists consistent with each
   //    other (n >= 4 each).
+  //
+  //    NOTE: the built-in Plugin / MimeType constructors reject "new"
+  //    (Illegal constructor in Chromium), so those wrappers cannot be
+  //    built from page JS -- a try/catch around them would fail
+  //    SILENTLY.  Plain arrays of plain objects are used instead; they
+  //    expose the same length / index / item() / namedItem() surface.
   try {
-    const MIME_TYPES = [
+    const MIME_KINDS = [
       { type: 'application/pdf', suffixes: 'pdf',
         description: 'Portable Document Format' },
       { type: 'application/x-google-chrome-pdf', suffixes: 'pdf',
@@ -942,7 +953,13 @@ _STEALTH_INIT_JS = """
       { type: 'application/x-pnacl', suffixes: 'nexe',
         description: 'Portable Native Client Executable' },
     ];
-    const PLUGINS = [
+    const mimeArray = MIME_KINDS.map((m) =>
+      ({ type: m.type, suffixes: m.suffixes, description: m.description }));
+    mimeArray.item = (i) => mimeArray[i] || null;
+    mimeArray.namedItem = (n) =>
+      mimeArray.find((m) => m.type === n) || null;
+
+    const PLUGIN_SPECS = [
       { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', mime: 0 },
       { name: 'Chrome PDF Viewer',
         filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', mime: 1 },
@@ -953,22 +970,21 @@ _STEALTH_INIT_JS = """
       { name: 'Chromium PDF Plugin', filename: 'internal-pdf-viewer', mime: 0 },
       { name: 'Native Client', filename: 'internal-nacl-plugin', mime: 2 },
     ];
-    const makeMime = (spec) => {
-      const mime = new MimeType();
-      mime.type = spec.type;
-      mime.suffixes = spec.suffixes;
-      mime.description = spec.description;
-      return mime;
-    };
-    const pluginArray = PLUGINS.map((spec) => {
-      const plugin = new Plugin();
-      plugin.name = spec.name;
-      plugin.filename = spec.filename;
-      plugin.description = 'Portable Document Format';
-      plugin[0] = makeMime(MIME_TYPES[spec.mime]);
-      return plugin;
+    const pluginArray = PLUGIN_SPECS.map((spec) => {
+      const mime = mimeArray[spec.mime];
+      return {
+        name: spec.name,
+        filename: spec.filename,
+        description: 'Portable Document Format',
+        length: 1,
+        0: mime,
+        item: (i) => (i === 0 ? mime : null),
+      };
     });
-    const mimeArray = MIME_TYPES.map(makeMime);
+    pluginArray.item = (i) => pluginArray[i] || null;
+    pluginArray.namedItem = (n) =>
+      pluginArray.find((p) => p.name === n) || null;
+
     Object.defineProperty(navigator, 'plugins', { get: () => pluginArray });
     Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeArray });
   } catch (e) {}

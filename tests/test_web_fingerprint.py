@@ -253,6 +253,11 @@ class TestContextOptions(unittest.TestCase):
                     wb.read_page("https://example.com")
                     wb.read_page("https://example.com/other")
                 self.assertEqual(browser.new_context.call_count, 2)
+                # Rotation tears contexts down via close() only --
+                # BrowserContext has no is_closed() (live Playwright),
+                # so this must never be called on the context mocks.
+                for ctx in created["contexts"]:
+                    ctx.is_closed.assert_not_called()
                 for idx, server in enumerate(
                         ("http://proxy-a.example:3128",
                          "http://proxy-b.example:8080")):
@@ -581,6 +586,17 @@ class TestStealthScriptContent(unittest.TestCase):
         # length >= 4 for both arrays:
         self.assertGreaterEqual(self.script.count("filename:"), 4)
         self.assertGreaterEqual(self.script.count("type: 'application/"), 4)
+
+    def test_no_illegal_plugin_constructors(self):
+        """Chromium rejects `new Plugin()` / `new MimeType()` (Illegal
+        constructor).  Inside the init script's per-patch try/catch that
+        error is SWALLOWED, so a regression to constructor-based wrappers
+        fails silently (plugins.length stays 0) -- guard against it."""
+        self.assertNotIn("new MimeType(", self.script)
+        self.assertNotIn("new Plugin(", self.script)
+        # ...and the array-like surface must be provided explicitly:
+        self.assertIn(".item = (i) =>", self.script)
+        self.assertIn("namedItem", self.script)
 
     def test_window_chrome_shape(self):
         self.assertIn("window.chrome", self.script)
