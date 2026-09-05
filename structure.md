@@ -70,7 +70,7 @@ agents/                          ← repo root
 - **`Agent` class** — The central orchestrator. Holds conversation context, system prompt, LLM backend, and budget.
   - `__init__()` — Loads the `.agent` config + YAML config, resolves provider/model/base_url/temperature (CLI flags > `.agent` > env vars > YAML > provider default), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
   - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
-  - `run()` — Loops `_iterate()` until no commands returned, budget exceeded, KeyboardInterrupt, or error.
+  - `run()` — Loops `_iterate()` until no commands returned, KeyboardInterrupt, or error; at 100% budget it runs one final free-form wrap-up turn (no commands processed) so the model can record the work done and emit its completion block, then ends.
   - `save_context()` / `load_context()` — Pickle-based pause/resume of full conversation state including token counts and costs.
   - `LARGE_MESSAGE_CACHE_THRESHOLD = 10_000` — Character threshold for requesting backend caching of a user message.
 - **`run_agent()`** — High-level function: creates Agent, optionally restores context, runs, extracts completion block, retries once if no completion found.
@@ -217,7 +217,7 @@ Agent.run() loop:
     │
     ├─► Append assistant + user messages to context
     │
-    ├─► Budget check (75% warning, 100% termination)
+    ├─► Budget check (80% warning, 100% wrap-up turn + termination)
     │
     └─► If command_output == "End." → stop; else → next iteration
 ```

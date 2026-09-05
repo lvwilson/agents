@@ -32,7 +32,7 @@ The tooling layer knows nothing about Claude, conversation history, or budgets.
 - **Configuration Over Code** — Agent behavior is defined in YAML files, not Python. Each config specifies a provider, model, system prompt, and an over-budget warning. New agent archetypes are created by writing prose, not code.
 - **The LLM as the Only Moving Part** — No hardcoded task decomposition, no retry logic, no verification beyond what the LLM chooses to do. The infrastructure faithfully executes commands and stays out of the way.
 - **Context as Conversation** — All state lives in the message history. No external database, no structured memory. Sessions are persisted as JSON files and can be resumed across invocations.
-- **Cost Awareness** — Token usage and dollar cost are tracked in real time, including prompt caching discounts. The agent is warned at 75% budget and terminated at 100%, making autonomous operation safe and bounded.
+- **Cost Awareness** — Token usage and dollar cost are tracked in real time, including prompt caching discounts. The agent is warned at 80% of its budget, and when 100% is hit it is given one final turn that processes no commands — a wrap-up in which it records the work done so far and emits its completion block — before the session ends, keeping autonomous operation safe and bounded.
 
 ### Available Tools
 

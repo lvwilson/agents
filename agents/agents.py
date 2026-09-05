@@ -366,6 +366,27 @@ LOOP_BREAK_FEEDBACK = (
 )
 
 
+#: Final wrap-up directive injected when the session's compute budget
+#: is exceeded.  The agent is given exactly ONE more turn — in
+#: free-form mode, so no ``Command:`` line from the reply is ever
+#: parsed or executed — to record what it accomplished, what remains,
+#: and emit the completion block its system prompt requires.  Without
+#: this turn a budget overrun killed the session mid-task and the run
+#: was reported as a bare failure even when the work was mostly done.
+BUDGET_WRAPUP_PROMPT = (
+    "Feedback: You have now exceeded this session's compute budget. "
+    "This turn is the final message of the session, and no further "
+    "commands will be processed — any 'Command:' lines you include "
+    "will be ignored, not executed. Please wrap up as normal:\n"
+    "1. Summarize in plain text what you completed, what remains "
+    "unfinished (if anything), and what a resumed session should do "
+    "next to continue the task.\n"
+    "2. End your response with the completion block in the exact form "
+    "your system prompt specifies; report Success: False if the task "
+    "is not fully complete."
+)
+
+
 # ── Planning mode ─────────────────────────────────────────────────────
 # (Enabled with --plan / -p: the agent explores the codebase using
 #  read-only commands and writes a plan; it can change no state until
@@ -1162,6 +1183,17 @@ class Agent:
           and the agent waits for user feedback.
         * **Third Ctrl+C** (or Ctrl+C in feedback mode) — the agent
           exits immediately.
+
+        Budget behaviour
+        ----------------
+        When the iteration that just finished pushed the cost over
+        ``compute_budget``, the agent does not stop dead: it runs one
+        final free-form wrap-up turn (see
+        :meth:`_run_budget_wrap_up`) in which no commands are
+        processed, so the model can record what it finished and emit
+        its completion block.  The session then ends through the
+        normal pipeline (completion extraction, save,
+        episode/commit steps).
         """
         self.start_time = time.time()
         self._interrupt_requested = False
@@ -1227,7 +1259,7 @@ class Agent:
                 signal.signal(signal.SIGINT, original_sigint)
 
                 if self.client.cost > self.compute_budget:
-                    print_budget_exceeded(self.client.cost, self.compute_budget)
+                    self._run_budget_wrap_up()
                     break
 
                 # First Ctrl+C was pressed — iteration finished normally,
@@ -1252,6 +1284,56 @@ class Agent:
                       self.client.peak_context_tokens,
                       cost_without_cache=self.client.cost_without_cache,
                       context_window_tokens=self.client.context_window_size)
+
+    def _run_budget_wrap_up(self):
+        """Give the model one final, command-free turn after overrun.
+
+        The session's budget check (in :meth:`run`) fires *after* the
+        iteration that spent the budget, so a hard break there killed
+        the session mid-task: no wrap-up, no completion block, and the
+        run was reported as a bare failure even when the work was
+        mostly done.  Instead the model gets exactly one more
+        free-form generation — :meth:`_iterate` in ``free_form`` mode
+        never parses or executes a ``Command:`` line — in which it
+        records what was done and emits the completion block its
+        system prompt requires.  The reply lands in the context, so
+        :func:`run_agent` / :func:`_find_latest_completion` report it
+        normally.
+
+        For sub-agents (whose only channel back to the parent is the
+        subprocess's stdout, populated via the ``stdout`` tool — which
+        a free-form turn cannot execute), the wrap-up reply is also
+        dumped to real stdout whenever stdout is not a terminal, so
+        the parent receives it instead of "no stdout output".
+        """
+        print_budget_exceeded(self.client.cost, self.compute_budget)
+        safe_console_print(
+            "  \u23f9  Budget exceeded \u2014 running a final wrap-up turn "
+            "(no commands will be processed).",
+            style="warning",
+        )
+        self.context.append(_form_message("user", BUDGET_WRAPUP_PROMPT))
+        try:
+            self._iterate(free_form=True)
+        except KeyboardInterrupt:
+            # Ctrl+C during the final turn: stop now; the session still
+            # ends through the normal post-run pipeline.
+            print_interrupted()
+            return
+        except Exception as e:
+            # A failed wrap-up (loop guard, repeated blank turns, …)
+            # must not crash an otherwise-finished session.
+            logging.warning("Budget wrap-up iteration failed: %s", e)
+            return
+
+        reply = ""
+        for msg in reversed(self.context):
+            if msg["role"] == "assistant":
+                reply = msg["content"][0]["text"].strip()
+                break
+        if reply and not sys.stdout.isatty():
+            sys.stdout.write("\n" + reply + "\n")
+            sys.stdout.flush()
 
     def _request_episode_summary(self) -> str | None:
         """Ask the LLM for a short episode summary of this session.
