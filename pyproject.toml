@@ -19,10 +19,11 @@ formatting = ["black>=24.0"]
 images = ["requests"]
 openai = ["openai"]
 gemini = ["google-genai"]
+cerebras = ["cerebras_cloud_sdk"]
 browser = ["playwright"]
 search = ["ddgs"]
 mcp = ["mcp>=1.0.0"]
-all = ["black>=24.0", "requests", "openai", "google-genai", "playwright", "ddgs", "mcp>=1.0.0"]
+all = ["black>=24.0", "requests", "openai", "google-genai", "cerebras_cloud_sdk", "playwright", "ddgs", "mcp>=1.0.0"]
 
 [project.scripts]
 agents       = "agents.agents:main"

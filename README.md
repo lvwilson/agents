@@ -28,7 +28,7 @@ The tooling layer knows nothing about Claude, conversation history, or budgets.
 
 ## Design Philosophy
 
-- **Model Agnostic** — Supports multiple LLM providers (Anthropic, OpenAI, Gemini) and local models out of the box. Providers are lazy-loaded, so you only need the SDKs for the models you actually use.
+- **Model Agnostic** — Supports multiple LLM providers (Anthropic, OpenAI, Cerebras, Gemini, DeepSeek, Kimi, MiniMax) and local models out of the box. Providers are lazy-loaded, so you only need the SDKs for the models you actually use.
 - **Configuration Over Code** — Agent behavior is defined in YAML files, not Python. Each config specifies a provider, model, system prompt, and an over-budget warning. New agent archetypes are created by writing prose, not code.
 - **The LLM as the Only Moving Part** — No hardcoded task decomposition, no retry logic, no verification beyond what the LLM chooses to do. The infrastructure faithfully executes commands and stays out of the way.
 - **Context as Conversation** — All state lives in the message history. No external database, no structured memory. Sessions are persisted as JSON files and can be resumed across invocations.
@@ -58,6 +58,7 @@ For optional provider support:
 
     pip install -e '.[openai]'     # OpenAI models
     pip install -e '.[gemini]'     # Google Gemini models
+    pip install -e '.[cerebras]'   # Cerebras Inference models
     pip install -e '.[browser]'    # Playwright web browser
     pip install -e '.[all]'        # Everything
 
@@ -68,6 +69,7 @@ Add the relevant keys for the providers you intend to use to your `.bashrc` (Lin
     export CLAUDE_API_KEY='your_anthropic_api_key'
     export OPENAI_API_KEY='your_openai_api_key'
     export GEMINI_API_KEY='your_gemini_api_key'
+    export CEREBRAS_API_KEY='your_cerebras_api_key'
 
 Optional configuration for local/remote LLM servers:
 
@@ -80,6 +82,52 @@ Optional configuration for local/remote LLM servers:
 Agents are configured via YAML files (e.g., `basic_agent.yaml`). You can override the provider and model using environment variables:
 
     AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-4o agents "Write a python script to calculate fibonacci numbers"
+
+### Backend Configuration (the `.agent` file)
+
+The easiest way to pick a backend is a small **`.agent`** YAML file.  Put one in your
+project directory (it is picked up from any subdirectory) or in your home directory
+(``~/.agent``) for a global default.  Only the keys you need are required:
+
+```yaml
+# .agent — use Cerebras' Qwen 3.8 27B
+provider: cerebras
+model: qwen-3.8-27b
+```
+
+```yaml
+# .agent — any OpenAI-compatible server (vLLM, llama.cpp, Ollama, …)
+provider: openai
+model: qwen3.8-27b
+base_url: http://localhost:8000/v1
+```
+
+```yaml
+# .agent — pin a temperature too
+provider: cerebras
+model: gpt-oss-120b
+temperature: 0.3
+```
+
+| Key | Meaning |
+|---|---|
+| `provider` | Backend: `anthropic`, `openai`, `cerebras`, `gemini`, `kimi`, `deepseek`, `minimax`. |
+| `model` | Model name.  Omit to use the provider's default. |
+| `base_url` | Custom endpoint (local / self-hosted / proxy). |
+| `temperature` | Sampling temperature (per-backend default if omitted). |
+
+**Resolution order** (highest wins, per key): `--provider` / `--model` flags → project
+`.agent` → `~/.agent` → `AGENT_MODEL_PROVIDER` / `AGENT_MODEL` / `AGENT_BASE_URL` env
+vars → the agent YAML → provider default.  API keys always come from the environment
+(`CLAUDE_API_KEY`, `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, …) — never from the file.
+
+So to switch this project to Cerebras you just write the two-line `.agent` above and run:
+
+    agents "your task"
+
+or override without editing the file:
+
+    agents -P cerebras -m qwen-3.8-27b "your task"
 
 ### Session Management
 

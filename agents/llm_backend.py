@@ -260,6 +260,16 @@ class LLMBackend(ABC):
 
             except Exception as e:
                 sh.on_stream_end()
+                # Authentication failures are never retryable — fail fast
+                # with a clear message instead of burning retries on bad
+                # credentials.
+                if self._is_auth_error(e):
+                    raise Exception(
+                        f"Authentication failed (HTTP 401): {e}. "
+                        "Check that the correct API key is set in the "
+                        "environment."
+                    ) from e
+
                 classification = self._classify_error(e)
 
                 if classification == RATE_LIMIT:
@@ -301,6 +311,21 @@ class LLMBackend(ABC):
                         f"failed: {e}"
                     )
                     time.sleep(self.TRANSIENT_RETRY_DELAY)
+
+    def _is_auth_error(self, error: Exception) -> bool:
+        """Return True if *error* is an authentication failure (HTTP 401).
+
+        These are never retryable — retrying the same bad credentials only
+        wastes time.  Works across SDKs by inspecting the HTTP status code
+        carried on the exception (both the OpenAI and Cerebras SDKs expose
+        ``error.status_code`` / ``error.response.status_code``).
+        """
+        status = getattr(error, "status_code", None)
+        if status is None:
+            response = getattr(error, "response", None)
+            if response is not None:
+                status = getattr(response, "status_code", None)
+        return status == 401
 
     def _classify_error(self, error: Exception) -> str:
         """Classify *error* for the retry loop.

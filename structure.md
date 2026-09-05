@@ -31,8 +31,15 @@ agents/                          ← repo root
 │   ├── backends/                ← Provider-specific LLM implementations (lazy-loaded)
 │   │   ├── __init__.py          ← Backend registry & factory: create_backend()
 │   │   ├── anthropic_backend.py ← AnthropicBackend — Claude models, prompt caching
-│   │   ├── openai_backend.py    ← OpenAIBackend — GPT models, Responses API
-│   │   └── gemini_backend.py    ← GeminiBackend — Gemini models, server-side context caching
+│   │   ├── openai_backend.py    ← OpenAIBackend — GPT models, Responses API (hosted)
+│   │   ├── openai_compat_backend.py ← OpenAICompatBackend — shared chat-completions base
+│   │   ├── cerebras_backend.py  ← CerebrasBackend — Cerebras Inference (official SDK)
+│   │   ├── gemini_backend.py    ← GeminiBackend — Gemini models, server-side context caching
+│   │   ├── deepseek_backend.py  ← DeepSeekBackend — Anthropic-compatible endpoint
+│   │   ├── kimi_backend.py      ← KimiBackend — OpenAI-compatible (moonshot)
+│   │   └── minimax_backend.py   ← MinimaxBackend — Anthropic-compatible endpoint
+│   │
+│   ├── config.py                ← `.agent` config file (project > home > env)
 │   │
 │   ├── tools/                   ← Tooling layer (command parsing & execution)
 │   │   ├── __init__.py          ← Public API: process_content, filter_content, terminate_process
@@ -61,7 +68,7 @@ agents/                          ← repo root
 ### `agents/agents.py` — Entry Point & Agent Orchestrator
 
 - **`Agent` class** — The central orchestrator. Holds conversation context, system prompt, LLM backend, and budget.
-  - `__init__()` — Loads YAML config, resolves provider/model (env vars override config), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
+  - `__init__()` — Loads the `.agent` config + YAML config, resolves provider/model/base_url/temperature (CLI flags > `.agent` > env vars > YAML > provider default), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
   - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
   - `run()` — Loops `_iterate()` until no commands returned, budget exceeded, KeyboardInterrupt, or error.
   - `save_context()` / `load_context()` — Pickle-based pause/resume of full conversation state including token counts and costs.
@@ -99,8 +106,10 @@ agents/                          ← repo root
 
 ### `agents/backends/__init__.py` — Backend Registry & Factory
 
-- **`_REGISTRY`** — Maps provider name → `(module_path, class_name)`: `"anthropic"`, `"openai"`, `"gemini"`.
-- **`create_backend(provider, model=, base_url=, cache_step=, stream_handler=)`** — Lazy-imports the provider module on first use, instantiates and returns the backend. Keeps startup fast and avoids hard SDK dependencies.
+- **`_REGISTRY`** — Maps provider name → `(module_path, class_name)`: `"anthropic"`, `"openai"`, `"cerebras"`, `"gemini"`, `"deepseek"`, `"kimi"`, `"minimax"`.
+- **`_BASE_URL_OVERRIDES`** — When a provider is given a custom `base_url`, some providers route to an OpenAI-compatible *chat-completions* backend instead of their hosted one.  `openai` + `base_url` → `OpenAICompatBackend` (local servers implement chat completions, not the Responses API).
+- **`create_backend(provider, model=, base_url=, cache_step=, stream_handler=)`** — Lazy-imports the provider module on first use (honouring the base_url override), instantiates and returns the backend. Keeps startup fast and avoids hard SDK dependencies.
+- **`list_available_models(provider_filter=)`** — Aggregates `MODEL_PRICING` / `MODEL_CONTEXT_WINDOWS` / `MODEL_DISPLAY_NAMES` from every registered backend for `--list-models`.
 
 ### `agents/backends/anthropic_backend.py` — Claude Provider
 
@@ -124,6 +133,21 @@ agents/                          ← repo root
 - **Streaming:** Uses `responses.create(stream=True)`, handles `response.output_text.delta` and `response.completed` events.
 - **max_tokens:** 16384.
 - **No prompt caching support** (uses base class no-op `mark_for_caching`/`trim_cache_blocks`).
+
+### `agents/backends/openai_compat_backend.py` — Shared OpenAI-Compatible Base
+
+- **`OpenAICompatBackend(LLMBackend)`** — Common implementation for any OpenAI-compatible **chat-completions** endpoint (`POST /v1/chat/completions` with `stream` + `stream_options={"include_usage": true}`).  Client-agnostic: relies only on `client.chat.completions.create(...)`.
+- **Subclass hooks:** `_rate_limit_error_class()`, `_resolve_credentials(base_url)`, `_build_client(api_key, base_url)`, `_extra_create_kwargs()`.  Default builds the `openai` SDK client from `OPENAI_API_KEY`.
+- **Streaming:** iterates chunks; collects `delta.content`, streams `delta.reasoning` / `delta.reasoning_content` to the reasoning hooks (never into the response), accumulates `delta.tool_calls` for post-response logging, and captures the trailing `usage` chunk.
+- **Used by:** the `openai` provider when a custom `base_url` is set, and by `CerebrasBackend` / `KimiBackend`.
+
+### `agents/backends/cerebras_backend.py` — Cerebras Provider
+
+- **`CerebrasBackend(OpenAICompatBackend)`** — Uses the official `cerebras_cloud_sdk` (`Cerebras` client, `client.chat.completions.create`).  Default base URL `https://api.cerebras.ai`.
+- **Credentials:** `CEREBRAS_API_KEY` env var (placeholder `"local"` for a custom/proxy `base_url` with no key).
+- **Reasoning:** per-model `reasoning_effort` injected via `_extra_create_kwargs()` (`qwen-3.8-27b` → `high`, `gpt-oss-120b` → `medium`); returned separately in `delta.reasoning` and streamed to the UI.
+- **Pricing:** `qwen-3.8-27b` $0.99/M in, $1.49/M out; `gpt-oss-120b` $0.35/M in, $0.75/M out.  Cache reads bill at the full input price (Cerebras caching is a latency feature, not a discount), so `cache_read_cost == input_token_cost`.
+- **Context windows:** `qwen-3.8-27b` 128K, `gpt-oss-120b` 131K.  Max output 40K (paid tier) per model.
 
 ### `agents/backends/gemini_backend.py` — Google Gemini Provider
 
@@ -170,7 +194,7 @@ The `tools` subpackage handles all command parsing and execution. It knows nothi
 User CLI input
     │
     ▼
-Agent.__init__()  ←── YAML config + env vars → create_backend()
+Agent.__init__()  ←── .agent + YAML config + env vars → create_backend()
     │
     ▼
 Agent.run() loop:
@@ -226,9 +250,16 @@ All conversation state uses this Anthropic-derived format (other backends transl
 | `CLAUDE_API_KEY` | Anthropic API key | For Anthropic provider |
 | `OPENAI_API_KEY` | OpenAI API key | For OpenAI provider |
 | `GEMINI_API_KEY` | Google Gemini API key | For Gemini provider |
-| `AGENT_MODEL_PROVIDER` | Override provider (`anthropic`, `openai`, `gemini`) | No (defaults to config) |
-| `AGENT_MODEL` | Override model name | No (defaults to provider default) |
+| `CEREBRAS_API_KEY` | Cerebras API key | For Cerebras provider |
+| `AGENT_MODEL_PROVIDER` | Override provider (`anthropic`, `openai`, `cerebras`, `gemini`, …) | No (defaults to `.agent`/config) |
+| `AGENT_MODEL` | Override model name | No (defaults to `.agent`/provider default) |
+| `AGENT_BASE_URL` | Override base URL | No |
+| `AGENT_TEMPERATURE` | Override temperature | No |
 | `LOCAL_MODEL` | Model name for local inference | Required with `--local` flag |
+
+The `.agent` YAML file (project dir or `~/.agent`) is the primary backend config:
+`provider`, `model`, `base_url`, `temperature`.  It overrides the env vars above and
+is overridden by the `--provider` / `--model` flags.  See `agents/config.py`.
 
 ---
 

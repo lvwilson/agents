@@ -26,6 +26,7 @@ from .tools import register_pool as _register_pool
 
 # Local imports
 from .backends import create_backend
+from .config import load_agent_config
 from .cli.model_table import print_model_table
 from .git_utils import (
     is_git_repo,
@@ -100,6 +101,9 @@ _ONLINE_MODELS: dict[str, str] = {
     "kimi-k3": "kimi",
     # DeepSeek
     "deepseek-v4-pro": "deepseek",
+    # Cerebras
+    "qwen-3.8-27b": "cerebras",
+    "gpt-oss-120b": "cerebras",
 }
 
 
@@ -505,7 +509,7 @@ class Agent:
 
     def __init__(self, configuration_name, task, compute_budget=1.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
-                 session_id=None, model=None):
+                 session_id=None, model=None, provider=None):
         """Initialize the Agent.
 
         Args:
@@ -519,6 +523,10 @@ class Agent:
             session_id: Optional session ID for saving/restoring context
             model: Explicit model name.  Online models are auto-detected
                    (no -o needed).  Unknown names are treated as local.
+            provider: Explicit provider name (e.g. ``"cerebras"``,
+                   ``"openai"``).  Highest-priority provider override;
+                   falls back to the ``.agent`` file, then the YAML
+                   config, then ``"anthropic"``.
         """
         if context is None:
             context = []
@@ -530,47 +538,73 @@ class Agent:
         # Load configuration
         configuration = read_configuration(configuration_name)
 
-        # Determine provider from environment variable or config
-        provider = os.environ.get("AGENT_MODEL_PROVIDER", configuration.get("provider", "anthropic"))
+        # Load the ``.agent`` config (project > home > env).  This is the
+        # primary way to pin a backend (provider / model / base_url /
+        # temperature) without touching the shell or the YAML.  CLI flags
+        # (``--provider`` / ``--model``) override it.
+        agent_cfg = load_agent_config()
+
+        # Determine provider.  Priority:
+        #   CLI --provider > .agent > AGENT_MODEL_PROVIDER env > YAML > "anthropic"
+        provider = (
+            provider
+            or agent_cfg.get("provider")
+            or os.environ.get("AGENT_MODEL_PROVIDER")
+            or configuration.get("provider")
+            or "anthropic"
+        )
+
+        # Base URL from the ``.agent`` file or the YAML config.  Local
+        # mode (below) overrides both.
+        base_url = (
+            agent_cfg.get("base_url")
+            or configuration.get("base_url")
+            or None
+        )
+
+        # Provider-specific default models (used when no model is given).
+        provider_defaults = {
+            "anthropic": "claude-opus-4-6",
+            "openai": "gpt-5.3-codex",
+            "gemini": "gemini-3.1-pro-preview",
+            "kimi": "kimi-k3",
+            "deepseek": "deepseek-v4-pro",
+            "cerebras": "qwen-3.8-27b",
+        }
 
         # ── Resolve model and provider ──────────────────────────────
-        # Priority: explicit -m flag > local_model (env/flag) > AGENT_MODEL > default
+        # Priority: explicit -m flag > local_model (env/flag) > .agent
+        # model > AGENT_MODEL env > provider default.
         if model is not None:
-            # Explicit model via -m: auto-detect online vs local
+            # Explicit model via -m: auto-detect online vs local.  A
+            # known online model keeps the resolved provider; an unknown
+            # name is treated as local (keeps the current provider and
+            # points at the local server).
             detected_provider, local_base_url = resolve_model(
                 model, local_host, local_port
             )
             self.model_name = model
             if detected_provider is not None:
-                # Known online model — auto-select provider
                 provider = detected_provider
-                base_url = configuration.get("base_url", None)
             else:
-                # Unknown model name — treat as local
                 base_url = local_base_url
         elif local_model:
             self.model_name = local_model
             base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+        elif agent_cfg.get("model"):
+            self.model_name = agent_cfg["model"]
         elif os.environ.get("AGENT_MODEL"):
             self.model_name = os.environ["AGENT_MODEL"]
-            base_url = configuration.get("base_url", None)
         else:
-            # Provider-specific defaults
-            provider_defaults = {
-                "anthropic": "claude-opus-4-6",
-                "openai": "gpt-5.3-codex",
-                "gemini": "gemini-3.1-pro-preview",
-                "kimi": "kimi-k3",
-                "deepseek": "deepseek-v4-pro",
-            }
             self.model_name = provider_defaults.get(provider, "claude-opus-4-6")
-            base_url = configuration.get("base_url", None)
 
-        # Temperature can be configured per-agent in the YAML config.
-        # If not specified, each backend uses its own default (1.0 for
-        # most providers, 0.6 for Anthropic).
+        # Temperature: ``.agent`` > YAML > backend default.  If neither
+        # specifies one, each backend uses its own default (1.0 for most
+        # providers, 0.6 for Anthropic).
         backend_kwargs = {}
-        if "temperature" in configuration:
+        if "temperature" in agent_cfg:
+            backend_kwargs["temperature"] = agent_cfg["temperature"]
+        elif "temperature" in configuration:
             backend_kwargs["temperature"] = configuration["temperature"]
 
         # Loop detection: a shared detector wrapped around the stream
@@ -1139,7 +1173,7 @@ class SessionNotFoundError(Exception):
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
-              local_host="localhost", nogit=False, model=None):
+              local_host="localhost", nogit=False, model=None, provider=None):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -1157,6 +1191,9 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         nogit: If True, skip git status check and auto-commit
         model: Explicit model name.  Online models are auto-detected
                (no -o needed).  Unknown names are treated as local.
+        provider: Explicit provider name (e.g. ``"cerebras"``).  Highest
+               priority; falls back to the ``.agent`` file, then env,
+               then the YAML config.
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -1182,7 +1219,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     agent = Agent(agent_definition, command, budget,
                   local_model=local_model, local_port=local_port,
                   local_host=local_host, session_id=effective_sid,
-                  model=model)
+                  model=model, provider=provider)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -1286,6 +1323,10 @@ def main():
                         help='Model to use. Online models are auto-detected '
                              '(no -o needed). Unknown model names are treated '
                              'as local.')
+    parser.add_argument('-P', '--provider', type=str, default=None,
+                        help='Backend provider to use (e.g. anthropic, openai, '
+                             'cerebras, gemini, kimi, deepseek, minimax). '
+                             'Overrides the .agent file and AGENT_MODEL_PROVIDER.')
     parser.add_argument('-p', '--port', type=int, default=None,
                         help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
     parser.add_argument('-H', '--host', type=str, default=None,
@@ -1369,7 +1410,7 @@ def main():
             restore=args.restore, session_id=args.session,
             local_model=local_model, local_port=args.port,
             local_host=args.host, nogit=args.nogit,
-            model=model_arg)
+            model=model_arg, provider=args.provider)
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

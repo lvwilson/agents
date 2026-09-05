@@ -25,6 +25,7 @@ from ..agents import (
     resolve_model,
 )
 from ..backends import create_backend
+from ..config import load_agent_config
 from ..git_utils import (
     is_git_repo,
     get_all_changed_files,
@@ -94,6 +95,19 @@ def _generate_commit_message(
         ignored.  Otherwise the model is treated as local.
     """
     config = read_configuration(agent_config)
+    agent_cfg = load_agent_config()
+
+    # Base URL: ``.agent`` file > YAML config.
+    base_url = agent_cfg.get("base_url") or config.get("base_url") or None
+
+    provider_defaults = {
+        "anthropic": "claude-opus-4-6",
+        "openai": "gpt-5.3-codex",
+        "gemini": "gemini-3.1-pro-preview",
+        "kimi": "kimi-k3",
+        "deepseek": "deepseek-v4-pro",
+        "cerebras": "qwen-3.8-27b",
+    }
 
     # ── Resolve model and provider ──────────────────────────────────
     if model is not None:
@@ -107,34 +121,39 @@ def _generate_commit_message(
         if detected_provider is not None:
             # Known online model — use the detected provider
             provider = detected_provider
-            base_url = config.get("base_url", None)
         else:
             # Unknown model name — treat as local
-            provider = "anthropic"
+            provider = (
+                agent_cfg.get("provider")
+                or os.environ.get("AGENT_MODEL_PROVIDER")
+                or config.get("provider")
+                or "anthropic"
+            )
             base_url = local_base_url
     elif online:
-        provider = os.environ.get(
-            "AGENT_MODEL_PROVIDER",
-            config.get("provider", "anthropic"),
+        provider = (
+            agent_cfg.get("provider")
+            or os.environ.get("AGENT_MODEL_PROVIDER")
+            or config.get("provider")
+            or "anthropic"
         )
-        model = os.environ.get("AGENT_MODEL")
-        base_url = config.get("base_url", None)
-        if not model:
-            provider_defaults = {
-                "anthropic": "claude-opus-4-6",
-                "openai": "gpt-5.3-codex",
-                "gemini": "gemini-3.1-pro-preview",
-                "kimi": "kimi-k3",
-                "deepseek": "deepseek-v4-pro",
-            }
-            model = provider_defaults.get(provider, "claude-opus-4-6")
+        model = (
+            agent_cfg.get("model")
+            or os.environ.get("AGENT_MODEL")
+            or provider_defaults.get(provider, "claude-opus-4-6")
+        )
     else:
         model = os.environ.get("LOCAL_MODEL")
         if not model:
             return _auto_message(files)
         local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
         local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
-        provider = "anthropic"
+        provider = (
+            agent_cfg.get("provider")
+            or os.environ.get("AGENT_MODEL_PROVIDER")
+            or config.get("provider")
+            or "anthropic"
+        )
         base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
 
     try:

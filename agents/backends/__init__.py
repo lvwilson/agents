@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 # Maps provider name → (module_path, class_name)
 _REGISTRY: dict[str, tuple[str, str]] = {
     "anthropic": (".anthropic_backend", "AnthropicBackend"),
+    "cerebras":  (".cerebras_backend",  "CerebrasBackend"),
     "deepseek":  (".deepseek_backend",  "DeepSeekBackend"),
     "gemini":    (".gemini_backend",    "GeminiBackend"),
     "kimi":      (".kimi_backend",      "KimiBackend"),
@@ -33,14 +34,33 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "openai":    (".openai_backend",    "OpenAIBackend"),
 }
 
+# When a provider is given a custom ``base_url`` (local / self-hosted /
+# proxy), some providers should use an OpenAI-compatible *chat-completions*
+# backend instead of their hosted one.  The hosted ``openai`` backend uses
+# the Responses API, which most local servers (vLLM, llama.cpp, Ollama, …)
+# do not implement — they implement chat completions.  So ``openai`` + a
+# base_url routes to the shared chat-completions backend.
+_BASE_URL_OVERRIDES: dict[str, tuple[str, str]] = {
+    "openai": (".openai_compat_backend", "OpenAICompatBackend"),
+}
+
 # Cache of already-imported classes so we import each module at most once.
-_CLASS_CACHE: dict[str, type] = {}
+# Keyed by (provider, base_url_override) so the hosted and custom-URL
+# variants of a provider are cached independently.
+_CLASS_CACHE: dict[tuple[str, bool], type] = {}
 
 
-def _load_class(provider: str) -> type:
-    """Import and return the backend class for *provider* (lazy)."""
-    if provider in _CLASS_CACHE:
-        return _CLASS_CACHE[provider]
+def _load_class(provider: str, base_url: str | None = None) -> type:
+    """Import and return the backend class for *provider* (lazy).
+
+    When *base_url* is set and the provider has a chat-completions
+    override (see ``_BASE_URL_OVERRIDES``), that class is returned
+    instead of the hosted one.
+    """
+    use_override = bool(base_url) and provider in _BASE_URL_OVERRIDES
+    cache_key = (provider, use_override)
+    if cache_key in _CLASS_CACHE:
+        return _CLASS_CACHE[cache_key]
 
     if provider not in _REGISTRY:
         available = ", ".join(sorted(_REGISTRY))
@@ -49,11 +69,14 @@ def _load_class(provider: str) -> type:
             f"Available providers: {available}"
         )
 
-    module_path, class_name = _REGISTRY[provider]
+    if use_override:
+        module_path, class_name = _BASE_URL_OVERRIDES[provider]
+    else:
+        module_path, class_name = _REGISTRY[provider]
     import importlib
     module = importlib.import_module(module_path, package=__name__)
     cls = getattr(module, class_name)
-    _CLASS_CACHE[provider] = cls
+    _CLASS_CACHE[cache_key] = cls
     return cls
 
 
@@ -135,7 +158,7 @@ def create_backend(
         prompt caching (Anthropic, Gemini) define their own
         ``cache_step`` default in their constructor.
     """
-    cls = _load_class(provider)
+    cls = _load_class(provider, base_url=base_url)
     return cls(
         model=model,
         base_url=base_url,
