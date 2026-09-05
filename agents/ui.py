@@ -6,7 +6,9 @@ This module owns the console instance, theme, and every function that
 renders styled output.  Other modules should not import Rich directly.
 """
 
+import signal
 import sys
+from dataclasses import dataclass
 
 from rich.console import Console
 from rich.panel import Panel
@@ -123,7 +125,8 @@ def format_tokens(n):
 
 # ── Display functions ────────────────────────────────────────────────
 
-def print_banner(display_name, compute_budget, platform_str, context_window_tokens):
+def print_banner(display_name, compute_budget, platform_str, context_window_tokens,
+                 planning_mode=False):
     """Display the startup banner."""
     info_line = (
         f"[muted]Model:[/] [bright_cyan]{display_name}[/]  "
@@ -131,6 +134,11 @@ def print_banner(display_name, compute_budget, platform_str, context_window_toke
         f"[muted]System:[/] {platform_str}  "
         f"[muted]Context window:[/] {format_tokens(context_window_tokens)}"
     )
+    if planning_mode:
+        info_line += (
+            f"\n[muted]Mode:[/] [warning]PLANNING — plan first; "
+            "no state changes until you approve at the terminal[/]"
+        )
     console.print(Panel(
         info_line,
         title="[bold bright_white]◈  Agent Initialized  ◈[/]",
@@ -403,3 +411,68 @@ class RichStreamHandler(StreamHandler):
 
     def on_error(self, message: str) -> None:
         safe_console_print(f"\n  ✗ {message}", style="error")
+# ── Planning-mode approval gate ──────────────────────────────────────
+
+@dataclass
+class PlanDecision:
+    """Outcome of the interactive plan-approval prompt."""
+    approved: bool
+    feedback: str = ""
+
+
+def prompt_plan_approval() -> PlanDecision | None:
+    """Ask the user, in the terminal, to approve the agent's plan.
+
+    While waiting:
+    * Enter / ``y`` / ``yes`` / ``ok`` → :class:`PlanDecision` with
+      ``approved=True``.
+    * Any other text → ``approved=False`` and the text kept as
+      ``feedback`` (the caller feeds it back to the agent).
+    * Ctrl+C or EOF → ``None`` — the caller should end the session
+      cleanly (the plan and all state remain saved, resumable).
+
+    The default SIGINT handler is installed for the duration of the
+    read so that a Ctrl+C here is a plain KeyboardInterrupt (cancel the
+    prompt) instead of the agent's three-tier interrupt machinery.
+
+    Returns
+    -------
+    PlanDecision | None
+    """
+    console.print()
+    console.print(Panel(
+        "[bold]The agent has finished planning and is asking to continue.[/]\n"
+        "Press [bright_green]Enter[/] (or type y / yes / ok) to approve the "
+        "plan and start execution.\n"
+        "Type [warning]anything else[/] to send it back to the agent as "
+        "feedback — planning continues.\n"
+        "Press [error]Ctrl+C[/] to end the session (the plan is saved; "
+        "resume with -r).",
+        title="[bold bright_yellow]⏸  PLANNING MODE — Awaiting your approval[/]",
+        border_style="bright_yellow",
+        padding=(0, 1),
+    ))
+    try:
+        tty_in = open("/dev/tty", "r")
+    except OSError:
+        tty_in = sys.stdin
+
+    original_handler = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        safe_console_print("  Plan approval 👉 ", end="")
+        _get_tty().flush()
+        line = tty_in.readline()
+        if not line:
+            return None
+        line = line.rstrip("\n")
+        if line.strip().lower() in ("", "y", "yes", "ok"):
+            return PlanDecision(approved=True)
+        return PlanDecision(approved=False, feedback=line.strip())
+    except (KeyboardInterrupt, EOFError):
+        return None
+    finally:
+        signal.signal(signal.SIGINT, original_handler)
+        if tty_in is not sys.stdin:
+            tty_in.close()
+

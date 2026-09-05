@@ -77,8 +77,11 @@ def concise_representation(input_string, max_chars):
     return f"{first_part}...{last_part}"
 
 
-# Commands that can be stacked (queued together like read_file)
-STACKABLE_READ_COMMANDS = {'read_file', 'deep_read', 'read_page', 'read_page_html', 'page_links', 'view_page', 'web_search'}
+# Commands that can be stacked (queued together like read_file).
+# request_approval is a no-op side-effect-wise, so it is safe to queue
+# alongside reads — without this, filter_content would clip the
+# approval request off the end of a read-heavy turn.
+STACKABLE_READ_COMMANDS = {'read_file', 'deep_read', 'read_page', 'read_page_html', 'page_links', 'view_page', 'web_search', 'request_approval'}
 
 
 def filter_content(content):
@@ -102,8 +105,15 @@ def filter_content(content):
     return content
 
 
-def process_content(content):
+def process_content(content, blocked_commands=None):
     """Parse and execute all commands from LLM output.
+
+    Args:
+        content: The raw LLM output text.
+        blocked_commands: Optional iterable of command names to reject.
+            Blocked commands — including one wrapped in ``deep_read`` —
+            return a BLOCKED notice instead of executing.  Used by
+            planning mode to forbid state-changing tools.
 
     Returns
     -------
@@ -125,6 +135,23 @@ def process_content(content):
         return "End.", []
 
     for command in commands:
+        # Planning-mode guard: reject blocked commands, looking through
+        # the deep_read wrapper (otherwise deep_read write_file … would
+        # bypass the guard).
+        blocked_name = command.command
+        if command.command == "deep_read":
+            inner_args = split_preserving_quotes(command.arguments)
+            if inner_args:
+                blocked_name = inner_args[0]
+        if blocked_commands and blocked_name.lower() in blocked_commands:
+            command_response = (
+                f"[BLOCKED: planning mode] {blocked_name.lower()} changes "
+                "state and is not allowed in planning mode. Produce your "
+                "plan as visible text and, when it is ready, ask to "
+                "continue with 'Command: request_approval'.\n"
+            )
+            response += command_response
+            continue
         if command.command == "view_image":
             command_response, image_array = _view_images(command.arguments)
             for image_mediatype_tuple in image_array:

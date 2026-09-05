@@ -446,6 +446,23 @@ def stdout(*args):
     return "Content written to stdout."
 
 
+# ── Planning-mode tool ───────────────────────────────────────────────
+
+def request_approval(*args):
+    """Ask the user to approve the current plan (planning mode).
+
+    In planning mode (started with -p / --plan) the harness intercepts
+    this command and pauses at the terminal: the user approves (the
+    agent continues into execution) or sends feedback (the agent
+    revises the plan).  The decision is delivered as tool output.
+    Outside planning mode the command is a harmless no-op.
+    """
+    return (
+        "request_approval acknowledged. Planning mode is not active, so "
+        "there is no plan to approve — continue working on the task."
+    )
+
+
 # ── Summarize tool ──────────────────────────────────────────────────
 
 def summarize(*args):

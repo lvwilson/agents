@@ -69,6 +69,7 @@ from .ui import (
     print_interrupted,
     print_interrupt_feedback,
     get_user_feedback,
+    prompt_plan_approval,
     print_sigterm,
     print_clipped,
     safe_console_print,
@@ -365,6 +366,117 @@ LOOP_BREAK_FEEDBACK = (
 )
 
 
+# ── Planning mode ─────────────────────────────────────────────────────
+# (Enabled with --plan / -p: the agent explores the codebase using
+#  read-only commands and writes a plan; it can change no state until
+#  the user approves the plan at the terminal.)
+
+#: Command name the agent issues when its plan is ready and it wants
+#: the user's approval to continue into execution.
+PLANNING_MODE_COMMAND = "request_approval"
+
+#: Detects the approval request in a raw model response.  Mirrors the
+#: parser's ``^Command: <name>`` line form (slightly forgiving about
+#: whitespace) so the gate can fire even if the command line is only
+#: slightly malformed.
+PLANNING_REQUEST_RE = re.compile(
+    r"^[ \t]*Command:\s*" + PLANNING_MODE_COMMAND + r"(?:[ \t].*)?$",
+    re.MULTILINE,
+)
+
+#: Commands blocked in planning mode — every tool that changes state
+#: (files, memory, sub-agents, web actions, remote MCP operations).
+#: Read-only tools (read_file, web_search, read_page, …) and
+#: run_console_command stay available — the directive restricts the
+#: shell to read-only inspection, since a hard block would also kill
+#: the exploration this mode exists for.
+PLANNING_MODE_BLOCKED_COMMANDS = frozenset({
+    # File mutation
+    "write_file",
+    "append_to_file",
+    "find_and_replace",
+    # Line-based text manipulation
+    "insert_text_after_matching_line",
+    "insert_text_before_matching_line",
+    "replace_text_before_matching_line",
+    "replace_text_after_matching_line",
+    "replace_text_between_matching_lines",
+    # AST manipulation
+    "replace_code_at_address",
+    "replace_docstring_at_address",
+    "add_code_after_address",
+    "add_code_before_address",
+    "remove_code_at_address",
+    # Image generation (writes a file)
+    "create_image",
+    # Persistent project memory
+    "note",
+    # Sub-agents (fully execute tasks)
+    "run_agent",
+    # Interactive web actions (can mutate remote state)
+    "browse_click",
+    "browse_type",
+    "browse_js",
+    # MCP (arbitrary remote operations)
+    "mcp_call",
+})
+
+#: Directive injected into the first user message of a planning-mode
+#: session.  It deliberately lives in the user message (stored in the
+#: session file and restored verbatim on resume) instead of the
+#: immutable, globally cache-busting system prompt — so planning mode
+#: and normal mode share the exact same cached system prefix.
+PLANNING_MODE_DIRECTIVE = (
+    "=== Planning Mode (enabled via -p / --plan) ===\n"
+    "You are in PLANNING MODE. Your only job for now is to produce a "
+    "plan — do NOT write code or change any state.\n"
+    "Ground rules:\n"
+    "1. Explore as much as you need with read-only commands: read_file, "
+    "deep_read, summarize, view_image, web_search, read_page, "
+    "browse_open/browse_read, and run_console_command for READ-ONLY "
+    "shell checks only (ls, tree, cat, grep, git status/diff/log, … — "
+    "never create, modify or delete files, and never change git or "
+    "network state).\n"
+    "2. State-changing commands are BLOCKED in this mode and will "
+    "return a BLOCKED notice if attempted: write_file, append_to_file, "
+    "find_and_replace, the code-manipulation commands, create_image, "
+    "note, run_agent, browse_click/browse_type/browse_js, mcp_call.\n"
+    "3. Write your full plan as visible text in your 'Detailed thoughts "
+    "and Plans' section: the exact files to change and what changes in "
+    "each, the order of steps, how to verify the result, and any risks "
+    "or open questions.\n"
+    "4. Do NOT emit a completion block in planning mode — the session "
+    "is finished only after the approved plan has been executed.\n"
+    "5. When your plan is ready, ask to continue by issuing exactly "
+    "this single command as the last line of your response:\n"
+    "Command: request_approval\n"
+    "The user then reads your plan in the terminal and either approves "
+    "it (planning mode turns off; execute the approved plan) or sends "
+    "feedback back (revise the plan and ask for approval again).\n"
+    "=== End of Planning Mode directive ==="
+)
+
+#: Feedback appended to the conversation after the user approves.
+PLAN_APPROVED_FEEDBACK = (
+    "Feedback: The user APPROVED the plan in the terminal. Planning "
+    "mode is now off — all commands are available again. Proceed with "
+    "the approved plan, do the real work, and end the session with a "
+    "completion block when the task is complete."
+)
+
+#: Feedback template used after a rejection.  The {feedback} marker is
+#: substituted with str.replace (never str.format) so user notes
+#: containing curly braces cannot raise.
+PLAN_NOT_APPROVED_FEEDBACK = (
+    "Feedback: The user did NOT approve the plan. Their notes:\n"
+    "{feedback}\n"
+    "You are still in planning mode — state-changing commands remain "
+    "blocked. Revise your plan to address the feedback, present the "
+    "revised plan in your response, and when it is ready ask to "
+    "continue again with 'Command: request_approval'."
+)
+
+
 def sigterm_handler(_signo, _stack_frame):
     """Handle SIGTERM signal by terminating subprocess."""
     print_sigterm()
@@ -539,7 +651,8 @@ class Agent:
 
     def __init__(self, configuration_name, task, compute_budget=2.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
-                 session_id=None, model=None, provider=None):
+                 session_id=None, model=None, provider=None,
+                 planning_mode=False):
         """Initialize the Agent.
 
         Args:
@@ -557,6 +670,10 @@ class Agent:
                    ``"openai"``).  Highest-priority provider override;
                    falls back to the ``.agent`` file, then the YAML
                    config, then ``"anthropic"``.
+            planning_mode: If True, start in PLANNING MODE — the agent
+                   may only explore (read-only commands) and write a
+                   plan; state-changing commands are blocked until the
+                   user approves continuation at the terminal.
         """
         if context is None:
             context = []
@@ -674,8 +791,15 @@ class Agent:
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
         self.task = task
+        self.planning_mode = bool(planning_mode)
         task_block = build_task_message(task)
         first_message = f"{context_guard}\n\n{task_block}" if context_guard else task_block
+        # Planning mode is conveyed in the first user message, not in
+        # the immutable system prompt (shared cache prefix).  The
+        # directive is stored in the session file, so a resume restores
+        # the mode as-is (see :meth:`load_context`).
+        if self.planning_mode:
+            first_message += "\n\n" + PLANNING_MODE_DIRECTIVE
         self.context.append(_form_message("user", first_message))
         self.compute_budget = compute_budget
         self.iterations = 0
@@ -697,7 +821,8 @@ class Agent:
 
         # Display startup banner
         print_banner(self.client.display_name, self.compute_budget, platform.platform(),
-                     self.client.context_window_size)
+                     self.client.context_window_size,
+                     planning_mode=self.planning_mode)
 
     def _register_summarize_backend(self):
         """Wire the agent's LLM backend into the tools summarize module.
@@ -873,7 +998,11 @@ class Agent:
             # needs from the assistant message just appended.
             return False
 
-        command_response, image_media_tuple_array = process_content(response)
+        command_response, image_media_tuple_array = process_content(
+            response,
+            blocked_commands=(PLANNING_MODE_BLOCKED_COMMANDS
+                              if self.planning_mode else None),
+        )
 
         # Determine if we should continue running.  This must be checked
         # *before* the overbudget prompt is appended — otherwise the
@@ -946,6 +1075,44 @@ class Agent:
                 None,
             )
             self.context.append(_form_message("user", NO_OUTPUT_REMINDER))
+            return True
+
+        # Planning mode: whenever the agent signals that its plan is
+        # ready — an explicit request_approval command, or a completion
+        # block (safety net for a model that skipped the request) —
+        # pause the loop and ask the user in the terminal.  The decision
+        # is folded into this turn's tool-results message so the model
+        # receives exactly one user message per turn.  Approve →
+        # planning mode turns off and the loop resumes; feedback → it is
+        # fed back and planning continues; Ctrl+C/EOF at the prompt →
+        # the session ends cleanly (the plan is saved, resuming with
+        # -r restores planning mode as-is).
+        if self.planning_mode and (
+            PLANNING_REQUEST_RE.search(response) or completion_found
+        ):
+            decision = prompt_plan_approval()
+            if decision is None:
+                print_interrupted()
+                return False
+            if decision.approved:
+                self.planning_mode = False
+                safe_console_print(
+                    "  ✓  Plan approved — continuing in execution mode",
+                    style="success",
+                )
+                command_response = (
+                    command_response.rstrip("\n") + "\n" + PLAN_APPROVED_FEEDBACK
+                )
+            else:
+                safe_console_print(
+                    "  ↩  Plan not approved — sending feedback back to the agent",
+                    style="warning",
+                )
+                command_response = (
+                    command_response.rstrip("\n") + "\n"
+                    + PLAN_NOT_APPROVED_FEEDBACK.replace(
+                        "{feedback}", decision.feedback)
+                )
             return True
 
         return command_called
@@ -1148,6 +1315,7 @@ class Agent:
             'cost': self.client.cost,
             'cost_without_cache': self.client.cost_without_cache,
             'call_count': self.client.call_count,
+            'planning_mode': self.planning_mode,
         }
         save_session(self.session_id, self.working_dir, state)
 
@@ -1172,6 +1340,10 @@ class Agent:
         self.client.cost = data.get('cost', 0.0)
         self.client.cost_without_cache = data.get('cost_without_cache', 0.0)
         self.client.call_count = data.get('call_count', 0)
+        # Planning mode: the saved session's flag is authoritative —
+        # a resumed session keeps the mode it was saved in (-p only
+        # takes effect for new sessions).
+        self.planning_mode = data.get('planning_mode', False)
 
         # Adopt the loaded session's ID so subsequent saves go to the
         # same file.
@@ -1219,7 +1391,8 @@ class SessionNotFoundError(Exception):
 
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
-              local_host="localhost", nogit=False, model=None, provider=None):
+              local_host="localhost", nogit=False, model=None, provider=None,
+              planning_mode=False):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -1240,6 +1413,10 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         provider: Explicit provider name (e.g. ``"cerebras"``).  Highest
                priority; falls back to the ``.agent`` file, then env,
                then the YAML config.
+        planning_mode: If True, start in PLANNING MODE (plan first,
+               execute only after the user approves).  Only applies to
+               new sessions — a resumed session keeps the mode it was
+               saved in.
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -1265,10 +1442,18 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
     agent = Agent(agent_definition, command, budget,
                   local_model=local_model, local_port=local_port,
                   local_host=local_host, session_id=effective_sid,
-                  model=model, provider=provider)
+                  model=model, provider=provider,
+                  planning_mode=planning_mode)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
+        if planning_mode and not agent.planning_mode:
+            # The saved session's flag is authoritative on resume.
+            safe_console_print(
+                "  Note: -p is ignored when resuming — this saved "
+                "session is not in planning mode.",
+                style="muted",
+            )
     else:
         # Seed new sessions with a real first turn: explore directory.
         agent._seed_first_turn()
@@ -1373,7 +1558,7 @@ def main():
                         help='Backend provider to use (e.g. anthropic, openai, '
                              'cerebras, gemini, kimi, deepseek, minimax). '
                              'Overrides the .agent file and AGENT_MODEL_PROVIDER.')
-    parser.add_argument('-p', '--port', type=int, default=None,
+    parser.add_argument('--port', type=int, default=None,
                         help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
     parser.add_argument('-H', '--host', type=str, default=None,
                         help='Hostname for the LLM API server (default: LOCAL_LLM_HOST or localhost)')
@@ -1381,6 +1566,10 @@ def main():
                         help='Agent definition YAML file (default: basic_agent.yaml)')
     parser.add_argument('--nogit', action='store_true',
                         help='Disable git status check and auto-commit')
+    parser.add_argument('-p', '--plan', action='store_true',
+                        help='Planning mode: the agent explores and writes a '
+                             'plan but changes no state until you approve '
+                             'continuation at the terminal')
     parser.add_argument(
         '--list-models', nargs='?', const='__all__', default=None,
         metavar='PROVIDER',
@@ -1456,7 +1645,8 @@ def main():
             restore=args.restore, session_id=args.session,
             local_model=local_model, local_port=args.port,
             local_host=args.host, nogit=args.nogit,
-            model=model_arg, provider=args.provider)
+            model=model_arg, provider=args.provider,
+            planning_mode=args.plan)
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

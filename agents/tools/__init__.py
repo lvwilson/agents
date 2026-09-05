@@ -7,7 +7,8 @@ shell, images, web browser), and returning results as plain strings.
 
 Public API
 ----------
-- ``process_content(text)`` — parse and execute commands from LLM output
+- ``process_content(text, blocked_commands=None)`` — parse and execute
+  commands from LLM output (optionally rejecting a set of command names)
 - ``filter_content(text)`` — trim output when the LLM queues multiple read commands
 - ``terminate_process()`` — terminate any running subprocess
 - ``get_default_shell()`` — return the current user's default shell
