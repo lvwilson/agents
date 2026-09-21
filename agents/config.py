@@ -27,15 +27,16 @@ Resolution order (highest precedence wins, key by key):
 1. **Project** ``.agent`` (nearest ancestor of the working directory).
 2. **Global** ``~/.agents/agent_config.yaml``.
 3. **Environment variables** — ``AGENT_MODEL_PROVIDER``, ``AGENT_MODEL``,
-   ``AGENT_BASE_URL``, ``AGENT_TEMPERATURE`` (kept for backward
-   compatibility; the config files override them).
+   ``AGENT_BASE_URL``, ``AGENT_TEMPERATURE``, ``AGENT_EFFORT`` (kept for
+   backward compatibility; the config files override them).
 
 CLI flags (``--provider`` / ``--model``) sit above all of these and are
 handled in :mod:`agents.agents`.
 
 Only the recognised keys are kept: ``provider``, ``model``, ``base_url``,
-``temperature``.  API keys are deliberately *not* read from these files —
-they stay in the environment (see each backend's ``*_API_KEY``).
+``temperature``, ``effort``.  API keys are deliberately *not* read from
+these files — they stay in the environment (see each backend's
+``*_API_KEY``).
 
 Example project ``.agent``::
 
@@ -76,9 +77,11 @@ _ENV_MAP: dict[str, str] = {
     "model": "AGENT_MODEL",
     "base_url": "AGENT_BASE_URL",
     "temperature": "AGENT_TEMPERATURE",
+    "effort": "AGENT_EFFORT",
 }
 
-_VALID_KEYS: tuple[str, ...] = ("provider", "model", "base_url", "temperature")
+_VALID_KEYS: tuple[str, ...] = ("provider", "model", "base_url",
+                                "temperature", "effort")
 
 #: Fallback model per provider, used when no model is pinned anywhere
 #: (``-m`` flag, ``AGENT_MODEL`` env var, or config file).  One
@@ -219,8 +222,8 @@ def load_agent_config(start: str | None = None) -> dict:
     3. Project ``.agent`` (nearest ancestor of *start* that has one)
 
     Returns a dict containing any of ``provider``, ``model``,
-    ``base_url``, ``temperature``.  Missing keys are simply absent, so
-    callers can layer their own defaults underneath.
+    ``base_url``, ``temperature``, ``effort``.  Missing keys are simply
+    absent, so callers can layer their own defaults underneath.
     """
     config: dict = {}
 

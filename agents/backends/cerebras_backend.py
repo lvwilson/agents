@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import StreamHandler
+from ..llm_backend import StreamHandler, map_effort
 from .openai_compat_backend import OpenAICompatBackend
 
 
@@ -85,9 +85,19 @@ class CerebrasBackend(OpenAICompatBackend):
     # Reasoning effort per model.  ``qwen-3.8-27b`` defaults to ``high``
     # on the server; we keep that.  Set a model to ``None`` to let the
     # server use its own default, or ``"none"`` to disable reasoning.
+    # A user ``--effort`` overrides these via map_effort() in
+    # _extra_create_kwargs(), clamping to the supported levels so the
+    # API never rejects the request.
     MODEL_REASONING_EFFORT: dict[str, str | None] = {
         "qwen-3.8-27b": "high",
         "gpt-oss-120b": "medium",
+    }
+
+    #: Effort levels each Cerebras model accepts (Cerebras inference
+    #: docs).  gpt-oss cannot disable reasoning, so it has no ``none``.
+    MODEL_EFFORT_LEVELS: dict[str, tuple[str, ...]] = {
+        "qwen-3.8-27b": ("none", "low", "medium", "high"),
+        "gpt-oss-120b": ("low", "medium", "high"),
     }
 
     def __init__(
@@ -142,10 +152,25 @@ class CerebrasBackend(OpenAICompatBackend):
         """Request the model's configured reasoning effort.
 
         ``reasoning_effort`` is a Cerebras extension; the shared base only
-        sends OpenAI-standard parameters, so it is injected here.  A value
-        of ``None`` means "let the server use its default" and is omitted.
+        sends OpenAI-standard parameters, so it is injected here.  A user
+        ``--effort`` (stored on ``self.reasoning_effort``) overrides the
+        per-model default; ``map_effort`` clamps it to the levels the
+        model actually accepts so the API never rejects the request.
+        A value of ``None`` means "let the server use its default" and is
+        omitted.
         """
-        effort = self.MODEL_REASONING_EFFORT.get(self.model)
-        if effort:
-            return {"reasoning_effort": effort}
-        return {}
+        levels = self.MODEL_EFFORT_LEVELS.get(self.model, ())
+        # getattr (not attribute access) so a ``__new__``-constructed test
+        # fixture that bypasses ``__init__`` still resolves to the per-model
+        # default instead of AttributeError-ing on a missing attr.
+        effort = map_effort(
+            getattr(self, "reasoning_effort", None), levels,
+            self.MODEL_REASONING_EFFORT.get(self.model),
+        )
+        if effort is None:
+            return {}
+        # An explicit "none" MUST be sent to disable reasoning — Cerebras
+        # applies its own default (high for qwen-3.8-27b) when the
+        # parameter is omitted, so a truthiness check would silently
+        # ignore a user's --effort none.
+        return {"reasoning_effort": effort}

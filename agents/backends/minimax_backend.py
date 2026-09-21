@@ -107,3 +107,8 @@ class MinimaxBackend(AnthropicBackend):
         self._thinking_enabled = True
         self._supports_thinking_api = True
         self._use_thinking_stream = True
+
+    def _thinking_config(self) -> dict | None:
+        """Bare ``{"type": "enabled"}`` — the endpoint ignores the
+        budget anyway, so don't ship the parent's ``budget_tokens``."""
+        return {"type": "enabled"}

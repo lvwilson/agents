@@ -66,6 +66,7 @@ class OpenAICompatBackend(LLMBackend):
         cache_step: int = 4,
         stream_handler: StreamHandler | None = None,
         temperature: float = 1.0,
+        reasoning_effort: str | None = None,
         **_kwargs,
     ):
         # super().__init__ sets self.base_url / self.is_local from the
@@ -77,6 +78,7 @@ class OpenAICompatBackend(LLMBackend):
             base_url=base_url,
             stream_handler=stream_handler,
             temperature=temperature,
+            reasoning_effort=reasoning_effort,
         )
         self._rate_limit_exceptions = (self._rate_limit_error_class(),)
         api_key, resolved_base_url = self._resolve_credentials(base_url)

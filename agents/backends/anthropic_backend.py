@@ -66,7 +66,10 @@ class AnthropicBackend(LLMBackend):
     # Models that do not support the temperature parameter
     NO_TEMPERATURE_MODELS = {"claude-fable-5", "claude-opus-5"}
 
-    # Default thinking configuration
+    # Thinking budget for "enabled"-mode thinking only.  All current
+    # models are adaptive (the model decides how much to think and no
+    # budget is sent), so this is dormant unless a non-adaptive model
+    # is added — see _thinking_config().
     DEFAULT_THINKING_BUDGET = 8192
 
     @staticmethod
@@ -82,7 +85,11 @@ class AnthropicBackend(LLMBackend):
 
     @staticmethod
     def _get_thinking_budget() -> int:
-        """Get thinking token budget from environment variable."""
+        """Thinking token budget from ``CLAUDE_THINKING_BUDGET``.
+
+        Only sent on "enabled"-mode requests (see :meth:`_thinking_config`);
+        adaptive models never carry a budget.
+        """
         try:
             budget = int(os.getenv("CLAUDE_THINKING_BUDGET", str(AnthropicBackend.DEFAULT_THINKING_BUDGET)))
             return max(1024, budget)  # API requires minimum 1024 tokens for enabled mode
@@ -96,9 +103,11 @@ class AnthropicBackend(LLMBackend):
         cache_step: int = 2,
         stream_handler: StreamHandler | None = None,
         temperature: float = 0.6,
+        reasoning_effort: str | None = None,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature,
+                         reasoning_effort=reasoning_effort)
 
         # Lazy import — only pull in anthropic when this backend is used
         import anthropic as _anthropic
@@ -142,11 +151,12 @@ class AnthropicBackend(LLMBackend):
         # and the UI appears to hang.
         self._use_thinking_stream = self._thinking_enabled or self.is_local
 
-        # Validate thinking budget against context window and max_tokens
+        # Clamp the enabled-mode budget (dormant while every current
+        # model is adaptive): budget_tokens must be < max_tokens and
+        # reasonable vs context window.
         if self._supports_thinking_api and self._thinking_enabled:
             context_window = self.MODEL_CONTEXT_WINDOWS.get(model, 200_000)
             max_output = self.MODEL_MAX_OUTPUT.get(model, 128_000)
-            # budget_tokens must be < max_tokens and reasonable vs context window
             self._thinking_budget = max(1024, min(
                 self._thinking_budget,
                 context_window // 4,
@@ -261,6 +271,23 @@ class AnthropicBackend(LLMBackend):
         """
         return {}
 
+    def _thinking_config(self) -> dict | None:
+        """The ``thinking`` field for the next stream call, or ``None``.
+
+        * Adaptive models (all current Claude models): the model decides
+          how much to think — no ``budget_tokens`` is sent.
+        * Non-adaptive "enabled" mode (hypothetical future models): the
+          clamped budget is sent, so the model must stop thinking at
+          ``budget_tokens``.
+
+        Subclasses whose endpoint ignores ``budget_tokens`` (DeepSeek,
+        MiniMax) override this to send the bare ``{"type": "enabled"}``
+        field.
+        """
+        if self.model in self.ADAPTIVE_THINKING_MODELS:
+            return {"type": "adaptive"}
+        return {"type": "enabled", "budget_tokens": self._thinking_budget}
+
     def _get_response(self, system_prompt: str, context: list[dict]):
         self.call_count += 1
         sh = self.stream_handler
@@ -317,12 +344,9 @@ class AnthropicBackend(LLMBackend):
         # unknown parameter — but we still use event-based streaming
         # below so that any thinking blocks it sends are surfaced.
         if self._supports_thinking_api and self._thinking_enabled:
-            thinking_type = "adaptive" if self.model in self.ADAPTIVE_THINKING_MODELS else "enabled"
-            thinking_config = {"type": thinking_type}
-            # Only include budget_tokens for "enabled" mode, not "adaptive" mode
-            if thinking_type == "enabled":
-                thinking_config["budget_tokens"] = self._thinking_budget
-            stream_kwargs["thinking"] = thinking_config
+            thinking_config = self._thinking_config()
+            if thinking_config is not None:
+                stream_kwargs["thinking"] = thinking_config
             # Anthropic API requires temperature=1 when thinking is enabled.
             # Only enforce this for the Anthropic API; local servers may
             # not have this constraint.

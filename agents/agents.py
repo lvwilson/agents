@@ -60,7 +60,11 @@ from .session import (
     save_session,
     load_session,
 )
-from .llm_backend import InterruptedResponse, EmptyResponseError
+from .llm_backend import (
+    InterruptedResponse,
+    EmptyResponseError,
+    parse_effort,
+)
 from .loop_detector import (
     LoopDetector,
     LoopDetectedError,
@@ -706,7 +710,7 @@ class Agent:
     def __init__(self, configuration_name, task, compute_budget=2.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
                  session_id=None, model=None, provider=None,
-                 planning_mode=False):
+                 planning_mode=False, effort=None):
         """Initialize the Agent.
 
         Args:
@@ -728,6 +732,12 @@ class Agent:
                    may only explore (read-only commands) and write a
                    plan; state-changing commands are blocked until the
                    user approves continuation at the terminal.
+            effort: Optional reasoning/thinking effort (``none``,
+                   ``low``, ``medium``, ``high``, ``xhigh``, ``max`` plus
+                   ``parse_effort`` aliases).  ``None`` keeps whatever the
+                   backends would send by default for each model.  Resolved
+                   CLI flag > .agent/global config > AGENT_EFFORT > YAML;
+                   each backend clamps it to the levels its model supports.
         """
         if context is None:
             context = []
@@ -809,6 +819,31 @@ class Agent:
             backend_kwargs["temperature"] = agent_cfg["temperature"]
         elif "temperature" in configuration:
             backend_kwargs["temperature"] = configuration["temperature"]
+
+        # Reasoning effort: ``-e/--effort`` flag > .agent/global config
+        # (> AGENT_EFFORT env, already folded into agent_cfg) > agent YAML
+        # > each backend's own per-model default.  parse_effort()
+        # normalises aliases (off/mid/extra/…) onto the canonical scale;
+        # each backend clamps the result to the levels its model supports
+        # (see map_effort), so one flag works across providers without
+        # 400s.  None means "keep the backend defaults" — the kwarg is
+        # simply not sent to the constructor.
+        effort = (
+            effort
+            or agent_cfg.get("effort")
+            or configuration.get("effort")
+        )
+        if effort is not None:
+            try:
+                effort = parse_effort(effort)
+            except ValueError as ve:
+                # A config file (not the CLI — the CLI validates first)
+                # holds an unrecognised token: fail fast with the valid
+                # list rather than let the backend mis-send it silently.
+                raise ValueError(str(ve)) from None
+        self.reasoning_effort = effort
+        if effort is not None:
+            backend_kwargs["reasoning_effort"] = effort
 
         # Loop detection: a shared detector wrapped around the stream
         # handler sees every visible token of every generation and can
@@ -899,6 +934,7 @@ class Agent:
 
         self._agent_pool = AgentPool()
         self._agent_pool.model = self.model_name
+        self._agent_pool.effort = self.reasoning_effort
         _register_pool(self._agent_pool)
 
     def _seed_first_turn(self):
@@ -1595,7 +1631,7 @@ class SessionNotFoundError(Exception):
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
               local_host="localhost", nogit=False, model=None, provider=None,
-              planning_mode=False):
+              planning_mode=False, effort=None):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -1620,6 +1656,9 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                execute only after the user approves).  Only applies to
                new sessions — a resumed session keeps the mode it was
                saved in.
+        effort: Optional reasoning effort (see :class:`Agent`); ``None``
+               keeps each backend's per-model default.  Propagated to
+               sub-agents via :class:`AgentPool`.
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -1646,7 +1685,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                   local_model=local_model, local_port=local_port,
                   local_host=local_host, session_id=effective_sid,
                   model=model, provider=provider,
-                  planning_mode=planning_mode)
+                  planning_mode=planning_mode, effort=effort)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -1761,6 +1800,15 @@ def main():
                         help='Backend provider to use (e.g. anthropic, openai, '
                              'cerebras, gemini, kimi, deepseek, minimax). '
                              'Overrides the .agent file and AGENT_MODEL_PROVIDER.')
+    parser.add_argument(
+        '-e', '--effort', type=str, default=None,
+        help='Reasoning/thinking effort: none, low, medium, high, xhigh, '
+             'max (aliases: off, mid, extra, ultra).  Validated against '
+             'this scale, then clamped per-model by the backend (e.g. '
+             'Kimi K3 accepts max only).  Omit to keep each backend\'s '
+             'per-model default.  Can also be set via the effort key in '
+             '.agent / agent_config.yaml or AGENT_EFFORT.',
+    )
     parser.add_argument('--port', type=int, default=None,
                         help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
     parser.add_argument('-H', '--host', type=str, default=None,
@@ -1826,6 +1874,17 @@ def main():
         except ValueError as e:
             parser.error(str(e))
 
+    # Validate --effort up front so a bad value is a clean CLI error
+    # (exit code 2 + usage) rather than a session that dies on the first
+    # API call.  parse_effort also normalises aliases to the canonical
+    # scale; backends do the per-model clamping themselves.
+    effort_arg = None
+    if args.effort is not None:
+        try:
+            effort_arg = parse_effort(args.effort)
+        except ValueError as e:
+            parser.error(str(e))
+
     command = args.command
     if not sys.stdin.isatty():
         piped_content = sys.stdin.read()
@@ -1855,7 +1914,7 @@ def main():
             local_model=local_model, local_port=args.port,
             local_host=args.host, nogit=args.nogit,
             model=model_arg, provider=args.provider,
-            planning_mode=args.plan)
+            planning_mode=args.plan, effort=effort_arg)
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

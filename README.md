@@ -117,12 +117,24 @@ temperature: 0.3
 | `model` | Model name.  Omit to use the provider's default. |
 | `base_url` | Custom endpoint (local / self-hosted / proxy). |
 | `temperature` | Sampling temperature (per-backend default if omitted). |
+| `effort` | Reasoning/thinking effort: `none`, `low`, `medium`, `high`, `xhigh`, `max` (clamped to what the provider accepts; per-model default if omitted). |
 
 **Resolution order** (highest wins, per key): `--provider` / `--model` flags → project
 `.agent` → global `~/.agents/agent_config.yaml` → `AGENT_MODEL_PROVIDER` /
 `AGENT_MODEL` / `AGENT_BASE_URL` env vars → the agent YAML → provider default.
 API keys always come from the environment (`CLAUDE_API_KEY`, `OPENAI_API_KEY`,
 `CEREBRAS_API_KEY`, …) — never from the files.
+
+**Thinking / reasoning effort.** Some providers think on every call (Cerebras,
+DeepSeek, Kimi, MiniMax), Anthropic's extended thinking is opt-in
+(`CLAUDE_THINKING_ENABLED=true`), and OpenAI/Gemini leave it to the server.
+One knob covers all of them: `-e/--effort` (or the `effort` key above) —
+`none`, `low`, `medium`, `high`, `xhigh`, `max` — normalised once and clamped
+per provider, so a request never 400s (e.g. `-e off` on Cerebras qwen turns
+reasoning off; `-e max` on Kimi is just `max`). Omit it and each provider keeps
+its per-model default. Which wire shape each backend actually sends, and the
+output ceilings reasoning can consume: structure.md → "Thinking / reasoning
+controls".
 
 Note: the old global location `~/.agent` (a bare file in the home directory) is
 retired and no longer read — move any remaining pin from it to

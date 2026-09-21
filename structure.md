@@ -123,9 +123,10 @@ agents/                          ← repo root
 - **Context windows:** Per-model, all currently 200K.
 - **MiniMax routing:** Special API key validation for MiniMax models (prefix check).
 - **Error classification:** `anthropic.RateLimitError` → `RATE_LIMIT`, everything else → `TRANSIENT`.
-- **Streaming:** Uses `client.messages.stream()` context manager, iterates `text_stream`.
-- **max_tokens:** 64000 (highest of all backends). Extra headers for output-128k beta and prompt-caching beta.
-- **Response handling:** Skips `ThinkingBlock` objects, returns first `TextBlock`. Falls back to error message if no text content.
+- **Streaming:** Uses `client.messages.stream()` context manager; event-based iteration when thinking is on (or for local servers) so interleaved thinking/text blocks are handled correctly.
+- **Thinking:** All current models are **adaptive** — `thinking={"type":"adaptive"}` is sent and the model decides depth; no `budget_tokens` is sent. The budget machinery (`DEFAULT_THINKING_BUDGET = 8192`, `CLAUDE_THINKING_BUDGET`, context/max-output clamp) is dormant and only reaches the wire on a non-adaptive "enabled"-mode model (see `_thinking_config()`). Opt-in via `CLAUDE_THINKING_ENABLED=true` (default off). See "Thinking / reasoning controls" below.
+- **max_tokens:** 128,000 per model (`MODEL_MAX_OUTPUT`). Output-128k + prompt-caching beta headers.
+- **Response handling:** Skips `ThinkingBlock` objects (reasoning is streamed to the UI and deliberately never re-enters context), concatenates all `TextBlock`s. Falls back to an error message if no text content.
 
 ### `agents/backends/openai_backend.py` — OpenAI Provider
 
@@ -163,6 +164,22 @@ agents/                          ← repo root
 - **Error classification:** Checks `google.api_core.exceptions.ResourceExhausted`/`TooManyRequests`, falls back to string matching for `"429"`/`"RESOURCE_EXHAUSTED"`.
 - **Streaming:** Uses `generate_content_stream()`.
 - **max_tokens:** 16384.
+
+### Thinking / reasoning controls (per provider)
+
+How each backend requests thinking, and the ceiling reasoning can consume (reasoning tokens count against the per-call output cap — there is no separate thinking cap anywhere):
+
+| Provider | What the harness sends | Thinking on | Max output per call (incl. reasoning) |
+|---|---|---|---|
+| Anthropic (Claude) | `thinking={"type":"adaptive"}` — model decides depth; no `budget_tokens` | Opt-in: `CLAUDE_THINKING_ENABLED=true` (default off) | 128,000 (`MODEL_MAX_OUTPUT`) |
+| Cerebras | `reasoning_effort`: `high` (qwen-3.8-27b), `medium` (gpt-oss-120b); `none` disables (qwen only — must be sent explicitly, omission means server default) | Always (unless `none`) | 40,000 (`MODEL_MAX_COMPLETION`, paid tier) |
+| DeepSeek | Always-on thinking + `output_config={"effort": "max"}` default, sent via `extra_body`; bare `thinking={"type":"enabled"}` (the endpoint accepts that shape — verified live — and ignores `budget_tokens` anyway) | Always | 128,000 (parent fallback `max_tokens`) |
+| Kimi | `reasoning_effort="max"` (K3 accepts only `max`) | Always | 131,072 (`MAX_COMPLETION_TOKENS`) |
+| MiniMax | Bare `thinking={"type":"enabled"}`; the endpoint ignores the parameter for M2.x and always emits thinking | Always (cannot be disabled) | 128,000 (parent fallback) |
+| OpenAI (hosted) / OpenAI-compatible | No thinking parameter; servers that emit reasoning stream `delta.reasoning` / `delta.reasoning_content` to the UI | Server decides | 16,384 (`MAX_COMPLETION_TOKENS`) |
+| Gemini | No thinking parameter | Server decides | 16,384 |
+
+**`--effort` / `-e` flag and the `effort` config key** — one user-facing knob across providers: canonical scale `none, low, medium, high, xhigh, max` (aliases `off`, `mid`, `extra`, `ultra`, …) normalised by `parse_effort()` and clamped per provider by `map_effort()` to the levels each model accepts, so no request 400s. Precedence: flag → `effort` key in `.agent`/`agent_config.yaml` → per-model backend default. Omitted (no flag/key) preserves each backend's existing per-model emission. Sub-agents inherit the effort via the pool.
 
 ### `agents/tools/` — Tooling Layer
 
@@ -260,6 +277,8 @@ All conversation state uses this Anthropic-derived format (other backends transl
 | `AGENT_BASE_URL` | Override base URL | No |
 | `AGENT_TEMPERATURE` | Override temperature | No |
 | `LOCAL_MODEL` | Model name for local inference | Required with `--local` flag |
+| `CLAUDE_THINKING_ENABLED` | Enable extended thinking on the Anthropic backend (`true`/`1`/`yes`; default off) | No |
+| `CLAUDE_THINKING_BUDGET` | `budget_tokens` for "enabled"-mode thinking (default 8192; dormant while all current models are adaptive) | No |
 
 The `.agent`/`agent_config.yaml` YAML files are the primary backend config: project
 `.agent` (upward search from cwd) and the single canonical global

@@ -55,6 +55,9 @@ class AgentPool:
         self._agents: dict[str, SubAgentConfig] = {}
         # Model to propagate to sub-agents (set by the parent Agent).
         self.model: str | None = None
+        # Reasoning effort to propagate (canonical rank from parse_effort,
+        # or None when the parent keeps the backends' defaults).
+        self.effort: int | None = None
 
     def create(
         self,
@@ -157,6 +160,14 @@ class AgentPool:
             from .agents import _ONLINE_MODELS
             if self.model in _ONLINE_MODELS:
                 cmd += ["-m", self.model]
+
+        # Propagate the parent's reasoning effort, so a deliberate
+        # ``-e low`` (say, to keep sub-agent reasoning cheap) is not
+        # silently upgraded back to the parent model's default.  The
+        # child re-validates and clamps per-model just like the parent.
+        if self.effort is not None:
+            from .llm_backend import _RANK_EFFORT
+            cmd += ["-e", _RANK_EFFORT[self.effort]]
 
         try:
             result = subprocess.run(

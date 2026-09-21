@@ -11,7 +11,9 @@ DeepSeek specifics (per the DeepSeek Anthropic-API docs)
   and ``deepseek-v4-flash``.  This backend defaults to ``deepseek-v4-pro``
   and requests maximum reasoning on every call: thinking is always
   enabled and ``output_config={"effort": "max"}`` is sent (the
-  ``thinking`` field is supported but ``budget_tokens`` is ignored, so
+  ``thinking`` field is requested bare — ``{"type": "enabled"}`` without
+  ``budget_tokens``: the endpoint accepts that shape (verified live) and
+  ignores the budget field anyway, so the harness never sends it, and
   reasoning depth is controlled via ``output_config.effort``).
   (An earlier revision used the invented name ``deepseek-v4-pro-max``,
   which the endpoint rejects with a 400 — the "max" lives in the effort
@@ -39,7 +41,7 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import StreamHandler
+from ..llm_backend import StreamHandler, map_effort
 from .anthropic_backend import AnthropicBackend
 
 
@@ -52,6 +54,12 @@ class DeepSeekBackend(AnthropicBackend):
 
     DEFAULT_BASE_URL = "https://api.deepseek.com/anthropic"
     DEFAULT_MODEL = "deepseek-v4-pro"
+
+    #: Effort levels DeepSeek's ``output_config.effort`` accepts (per the
+    #: DeepSeek API docs — "low/high/max"; no medium, no xhigh) and the
+    #: default.  Thinking always stays on; ``low`` is the shallowest.
+    EFFORT_LEVELS: tuple[str, ...] = ("low", "high", "max")
+    DEFAULT_EFFORT = "max"
 
     # $/1M tokens — https://api-docs.deepseek.com/quick_start/pricing/
     MODEL_PRICING: dict[str, dict[str, float]] = {
@@ -112,8 +120,9 @@ class DeepSeekBackend(AnthropicBackend):
         )
 
         # Max reasoning: thinking is always on for this backend.  The
-        # parent will send thinking={"type": "enabled", "budget_tokens": …}
-        # — DeepSeek ignores budget_tokens per the docs — and will use
+        # parent sends a thinking field per _thinking_config() (the bare
+        # {"type": "enabled"} — DeepSeek's endpoint accepts it without
+        # budget_tokens and ignores the budget per the docs) and uses
         # event-based streaming so thinking blocks render dimmed in the
         # UI instead of leaking into the conversation.
         self._thinking_enabled = True
@@ -122,13 +131,26 @@ class DeepSeekBackend(AnthropicBackend):
 
     # ── Request customisation ────────────────────────────────────────
 
+    def _thinking_config(self) -> dict | None:
+        """Bare ``{"type": "enabled"}`` — no ``budget_tokens``.
+
+        DeepSeek's Anthropic-compatible endpoint accepts the field
+        without a budget (verified live) and reasoning depth is set
+        via ``output_config.effort`` instead.  Sending the parent's
+        8192 budget would be cargo-cult: parsed, ignored, and a
+        source of confusion.
+        """
+        return {"type": "enabled"}
+
     def _extra_stream_kwargs(self) -> dict:
-        """Request maximum reasoning effort on every call.
+        """Request the resolved reasoning effort on every call.
 
         DeepSeek's Anthropic-compatible API ignores ``budget_tokens`` in
         the ``thinking`` field; reasoning depth is instead controlled via
         ``output_config.effort`` (the only ``output_config`` field the
-        endpoint supports).
+        endpoint supports).  The effort defaults to ``max`` (current
+        behaviour); a user ``--effort`` overrides it, clamped to the
+        levels DeepSeek accepts (``low``/``high``/``max``).
 
         ``output_config`` is a DeepSeek extension unknown to the
         ``anthropic`` SDK, whose ``Messages.stream()`` accepts only its
@@ -138,7 +160,12 @@ class DeepSeekBackend(AnthropicBackend):
         ``extra_body``, which the SDK deep-merges into the JSON request
         body so the field reaches the endpoint as a top-level key.
         """
-        return {"extra_body": {"output_config": {"effort": "max"}}}
+        # getattr (not attribute access) so a ``__new__``-constructed test
+        # fixture that bypasses ``__init__`` still resolves to the model
+        # default (max) instead of AttributeError-ing on a missing attr.
+        effort = map_effort(getattr(self, "reasoning_effort", None),
+                            self.EFFORT_LEVELS, self.DEFAULT_EFFORT)
+        return {"extra_body": {"output_config": {"effort": effort}}}
 
     # ── Cost calculation ─────────────────────────────────────────────
 

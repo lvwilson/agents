@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 
-from ..llm_backend import StreamHandler
+from ..llm_backend import StreamHandler, map_effort
 from .openai_compat_backend import OpenAICompatBackend
 
 
@@ -48,6 +48,12 @@ class KimiBackend(OpenAICompatBackend):
     #: Kimi docs: temperature/top_p/n/penalties are fixed server-side and
     #: should be omitted from requests.
     SEND_TEMPERATURE = False
+
+    #: K3 keeps thinking permanently on and today accepts only the
+    #: ``max`` effort level ("more levels are coming soon" — Kimi docs),
+    #: so any user ``--effort`` clamps to ``max``.
+    EFFORT_LEVELS: tuple[str, ...] = ("max",)
+    DEFAULT_EFFORT = "max"
 
     def __init__(
         self,
@@ -87,5 +93,16 @@ class KimiBackend(OpenAICompatBackend):
         return openai.OpenAI(**kwargs)
 
     def _extra_create_kwargs(self) -> dict:
-        """Always request maximum reasoning effort."""
-        return {"reasoning_effort": "max"}
+        """Always request maximum reasoning effort.
+
+        K3 supports only the ``max`` level, so a user ``--effort`` clamps
+        to ``max`` as well (thinking is always on regardless).  Expressed
+        via map_effort() so the clamping stays consistent with the other
+        effort-aware backends.
+        """
+        # getattr (not attribute access) so a ``__new__``-constructed test
+        # fixture that bypasses ``__init__`` still resolves to the model
+        # default (max) instead of AttributeError-ing on a missing attr.
+        effort = map_effort(getattr(self, "reasoning_effort", None),
+                            self.EFFORT_LEVELS, self.DEFAULT_EFFORT)
+        return {"reasoning_effort": effort}

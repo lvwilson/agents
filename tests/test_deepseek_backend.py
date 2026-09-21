@@ -7,7 +7,9 @@ subclasses ``AnthropicBackend`` with three customisations:
 * authentication via ``DEEPSEEK_API_KEY`` against the fixed endpoint,
 * thinking (reasoning) always enabled, streamed via the reasoning
   hooks, with ``output_config={"effort": "max"}`` on every call —
-  selecting a ``-max`` model means maximum reasoning,
+  maximum reasoning, requested via a bare ``thinking={"type":
+  "enabled"}`` field (the endpoint ignores ``budget_tokens``, so the
+  harness never sends it),
 * prompt-cache annotations and beta headers skipped (the endpoint
   ignores them), which falls out of the parent's ``is_local`` path.
 
@@ -178,9 +180,11 @@ class TestMaxReasoningRequest(unittest.TestCase):
             kwargs["extra_body"], {"output_config": {"effort": "max"}}
         )
         self.assertNotIn("output_config", kwargs)
-        # Thinking is requested; budget_tokens is ignored by DeepSeek but
-        # harmless (parent builds "enabled" mode config).
-        self.assertEqual(kwargs["thinking"]["type"], "enabled")
+        # Thinking is requested as the bare enabled field — the
+        # endpoint accepts it without a budget (verified live) and
+        # ignores budget_tokens anyway, so none is sent.
+        self.assertEqual(kwargs["thinking"], {"type": "enabled"})
+        self.assertNotIn("budget_tokens", kwargs["thinking"])
         # is_local path: plain-string system prompt, no beta headers.
         self.assertEqual(kwargs["system"], "system")
         self.assertNotIn("extra_headers", kwargs)

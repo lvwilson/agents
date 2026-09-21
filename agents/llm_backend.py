@@ -90,6 +90,105 @@ NullStreamHandler = StreamHandler
 RATE_LIMIT = "rate_limit"
 TRANSIENT = "transient"
 
+# ── Reasoning-effort canonical scale ─────────────────────────────────
+# Backends disagree on which effort *levels* they support (Cerebras Qwen:
+# none/low/medium/high; Cerebras gpt-oss: low/medium/high; Kimi K3: max
+# only — "more levels are coming soon" per the Kimi docs; DeepSeek:
+# low/high/max via output_config.effort).  We normalise every user-facing
+# ``--effort`` value onto
+# this shared scale and let each backend clamp to the subset it actually
+# supports — so one flag works across providers without 400s.
+_EFFORT_RANK: dict[str, int] = {
+    "none": 0,
+    "low": 1,
+    "medium": 2,
+    "high": 3,
+    "xhigh": 4,
+    "max": 5,
+}
+_RANK_EFFORT: dict[int, str] = {v: k for k, v in _EFFORT_RANK.items()}
+
+#: Accepted user spellings → canonical rank.  Aliases keep the flag
+#: forgiving (e.g. ``off``/``disabled`` → none, ``mid`` → medium,
+#: ``extra``/``ultra`` → xhigh).
+_EFFORT_ALIASES: dict[str, int] = {
+    "none": 0, "off": 0, "disabled": 0, "no": 0,
+    "low": 1,
+    "medium": 2, "mid": 2,
+    "high": 3,
+    "xhigh": 4, "x-high": 4, "veryhigh": 4, "very-high": 4,
+    "extra": 4, "extra-high": 4, "ultra": 4,
+    "max": 5, "maximum": 5, "highest": 5,
+}
+
+
+def parse_effort(value):
+    """Normalise a user effort token to its canonical rank.
+
+    Args:
+        value: A ``--effort`` string (or ``None`` when the flag was not
+            given).  Aliases such as ``off``/``disabled``, ``mid``, and
+            ``xhigh``/``extra``/``ultra`` are accepted.
+
+    Returns:
+        * ``int`` — the canonical rank on :data:`_EFFORT_RANK`.
+        * ``None`` — when *value* is ``None`` or blank (meaning "use the
+          backend's own default").
+
+    Raises:
+        ValueError: when *value* is not a recognised effort token.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int):
+        # Idempotent: a canonical rank (int) from a prior parse_effort()
+        # call — e.g. the Agent stores and forwards parsed ranks.
+        if value in _RANK_EFFORT:
+            return value
+        valid = ", ".join(sorted(_EFFORT_RANK))
+        raise ValueError(
+            f"Unrecognised reasoning effort rank {value!r}. "
+            f"Use one of: {valid}."
+        )
+    v = str(value).strip().lower()
+    if v == "":
+        return None
+    rank = _EFFORT_ALIASES.get(v)
+    if rank is None:
+        valid = ", ".join(sorted(_EFFORT_RANK))
+        raise ValueError(
+            f"Unrecognised reasoning effort {value!r}. "
+            f"Use one of: {valid}."
+        )
+    return rank
+
+
+def map_effort(requested, supported, default):
+    """Clamp a requested effort to the subset a backend actually supports.
+
+    Args:
+        requested: raw user effort (the result of :func:`parse_effort`,
+            or ``None`` when the flag was not given).
+        supported: iterable of canonical effort strings the backend/model
+            accepts (e.g. ``("low", "high", "max")``).
+        default: canonical effort to use when *requested* is ``None``.
+
+    Returns:
+        The effective effort — always one of *supported* — or ``None``
+        when *supported* is empty (the backend can't express an effort).
+        On an exact-rank tie the lower (cheaper, less-reasoning) value
+        wins.
+    """
+    if not supported:
+        return None
+    sup_ranks = sorted(_EFFORT_RANK[s] for s in supported)
+    rank = parse_effort(requested)
+    if rank is None:
+        rank = _EFFORT_RANK[default] if default in _EFFORT_RANK else sup_ranks[-1]
+    # Nearest supported rank; tie → lower rank (cheaper, less reasoning).
+    best = min(sup_ranks, key=lambda r: (abs(r - rank), r))
+    return _RANK_EFFORT[best]
+
 
 def merge_consecutive_messages(context: list[dict]) -> list[dict]:
     """Merge consecutive messages that share the same role.
@@ -186,12 +285,17 @@ class LLMBackend(ABC):
         base_url: str | None = None,
         stream_handler: StreamHandler | None = None,
         temperature: float = 1.0,
+        reasoning_effort: str | None = None,
     ):
         self.model: str = model
         self.base_url: str | None = base_url
         self.is_local: bool = base_url is not None
         self.stream_handler: StreamHandler = stream_handler or NullStreamHandler()
         self.temperature: float = temperature
+        # Optional user-requested reasoning effort (from --effort).  Kept as the
+        # raw token the user gave; each backend interprets/adjusts it via
+        # map_effort().  None → each backend uses its own model default.
+        self.reasoning_effort: str | None = reasoning_effort
 
         # Running totals
         self.cost: float = 0.0
