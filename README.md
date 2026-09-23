@@ -134,7 +134,13 @@ per provider, so a request never 400s (e.g. `-e off` on Cerebras qwen turns
 reasoning off; `-e max` on Kimi is just `max`). Omit it and each provider keeps
 its per-model default. Which wire shape each backend actually sends, and the
 output ceilings reasoning can consume: structure.md → "Thinking / reasoning
-controls".
+controls". On Cerebras the model's own past thinking is also preserved
+across turns automatically (each assistant turn is re-sent with its
+`reasoning` field; the API is stateless, so without this the model would
+lose its own thought-trail every turn). The trail grows with the session
+and is re-sent as input on every subsequent call (billed at the full
+input price — Cerebras cache reads earn no hit discount), so long
+reasoning-heavy sessions consume context and budget faster.
 
 Note: the old global location `~/.agent` (a bare file in the home directory) is
 retired and no longer read — move any remaining pin from it to

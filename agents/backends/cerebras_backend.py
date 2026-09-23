@@ -16,7 +16,20 @@ Cerebras specifics (per https://inference-docs.cerebras.ai)
   (``none`` / ``low`` / ``medium`` / ``high``) and returned separately in
   ``choices[0].delta.reasoning`` / ``message.reasoning``.  This backend
   streams those reasoning tokens to the UI (dimmed) and never lets them
-  leak into the conversation context — see the shared base class.
+  leak into the *visible* conversation text — see the shared base class.
+* **Multi-turn reasoning (per the docs' "Multi-turn reasoning and
+  clear_thinking" section):** Chat Completions is stateless, so to keep
+  the model's own historical thinking, each assistant turn must be
+  re-sent with its ``reasoning`` field.  The harness stores the
+  per-turn reasoning on the assistant context message (``msg["reasoning"]``,
+  populated from the backend's ``last_reasoning`` after every
+  generation); this backend's ``_assistant_extras()`` hook echoes it
+  back into the request.  ``clear_thinking`` is deliberately never sent:
+  omission means the server preserves historical reasoning, which is the
+  desired behaviour here (no use case exists for clearing it).
+  Note: only reasoning the model actually returned is echoed — if the
+  backend is mid-stream or a turn had no reasoning (e.g. effort
+  ``none``), no ``reasoning`` field is added, which is also valid.
 * ``qwen-3.8-27b`` reasons at ``high`` effort by default; this backend
   keeps that default (it can be lowered/removed per model below).
 
@@ -174,3 +187,29 @@ class CerebrasBackend(OpenAICompatBackend):
         # parameter is omitted, so a truthiness check would silently
         # ignore a user's --effort none.
         return {"reasoning_effort": effort}
+
+    def _assistant_extras(self, message: dict) -> dict:
+        """Echo the turn's ``reasoning`` field back into the request.
+
+        Cerebras' chat-completions API is stateless: the only way for a
+        reasoning model (e.g. ``qwen-3.8-27b``) to keep its own
+        historical thinking across turns is for the client to resend
+        each assistant message with the ``reasoning`` field the API
+        originally returned for it (docs: "Multi-turn reasoning and
+        clear_thinking").  The harness attaches that field to the
+        stored assistant context message (see
+        :meth:`.agents.Agent._iterate` — it reads the backend's
+        ``last_reasoning`` after each generation), so here we simply
+        forward it.
+
+        ``clear_thinking`` is intentionally NOT sent: omitting it means
+        the server *preserves* the historical reasoning (the default
+        and the behaviour we want — there is no use case for clearing
+        it).  Only a non-empty field is echoed: a turn with no
+        reasoning (e.g. ``reasoning_effort="none"``) sends a plain
+        assistant message, exactly as it always has.
+        """
+        reasoning = message.get("reasoning")
+        if reasoning:
+            return {"reasoning": reasoning}
+        return {}

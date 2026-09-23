@@ -218,8 +218,27 @@ def merge_consecutive_messages(context: list[dict]) -> list[dict]:
         parts = list(msg.get("content", []) or [])
         if merged and merged[-1].get("role") == role:
             merged[-1]["content"] = merged[-1]["content"] + parts
+            # Extra non-role/content keys (e.g. an assistant turn's
+            # "reasoning" field) are folded into the merged message
+            # rather than dropped: two reasoning strings are
+            # concatenated (order preserved) so neither turn's thinking
+            # is lost; any other key keeps its first value.
+            for key, value in msg.items():
+                if key in ("role", "content"):
+                    continue
+                if key == "reasoning" and isinstance(value, str):
+                    existing = merged[-1].get("reasoning")
+                    if isinstance(existing, str):
+                        value = existing + value
+                else:
+                    value = merged[-1].get(key, value)
+                merged[-1][key] = value
         else:
-            merged.append({"role": role, "content": parts})
+            new = {"role": role, "content": parts}
+            for key, value in msg.items():
+                if key not in ("role", "content"):
+                    new[key] = value
+            merged.append(new)
     return merged
 
 
@@ -315,6 +334,13 @@ class LLMBackend(ABC):
         # Per-call token bookkeeping
         self.last_input_tokens: int = 0
         self.last_output_tokens: int = 0
+
+        # Reasoning/thinking tokens streamed during the last successful
+        # generation ("" when the model produced none).  Backends that
+        # echo historical reasoning back to the API (see
+        # CerebrasBackend) read it; the harness attaches it to the
+        # stored assistant message so it survives resume.
+        self.last_reasoning: str = ""
         self.last_total_context_tokens: int = 0
         self.peak_context_tokens: int = 0
 
