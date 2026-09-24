@@ -310,6 +310,18 @@ def print_completion_result(completion, success):
     ))
 
 
+def print_context_used(used, window):
+    """Display a context-window usage warning panel."""
+    console.print()
+    console.print(Panel(
+        f"[warning]Context at {used / window * 100:.0f}% "
+        f"({format_tokens(used)} / {format_tokens(window)} tokens)[/]",
+        title="[bold warning]⚠  Context Window Filling Up[/]",
+        border_style="bright_yellow",
+        padding=(0, 1),
+    ))
+
+
 def print_budget_warning(cost, compute_budget):
     """Display a budget warning panel."""
     console.print()

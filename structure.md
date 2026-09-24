@@ -69,7 +69,8 @@ agents/                          ← repo root
 
 - **`Agent` class** — The central orchestrator. Holds conversation context, system prompt, LLM backend, and budget.
   - `__init__()` — Loads the `.agent` config + YAML config, resolves provider/model/base_url/temperature (CLI flags > project `.agent` > global `~/.agents/agent_config.yaml` > env vars > YAML > provider default), creates backend via `create_backend()`, builds system prompt with OS/shell/date/user info, displays startup banner.
-  - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, folds the step into the session metrics via `client.record_step_metrics()` (free-form turns included), runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, marks large messages for caching.
+  - `_iterate()` — One turn of the conversation loop: calls `generate_response()`, folds the step into the session metrics via `client.record_step_metrics()` (free-form turns included), runs `filter_content()` and `process_content()` (from `agents.tools`), appends results, checks budget, runs the context-window usage guard, marks large messages for caching.
+  - Context-window usage guard — as the conversation fills the model's context window, `_check_context_usage()` tells the model where it stands: an **informational** notice at the lower threshold (default 50% of the window) and a **wrap-up warning** at the higher one (default 80%) — a window that fills mid-task otherwise dies on a hard provider 400 with no recorded state. The notice is folded into the current turn's tool-results message (same delivery path as the budget overage prompt), fires at most once per session per level, and the fired set is persisted with the session file (resumes never re-warn). Thresholds and messages are configurable via the YAML `context_guard` block (`info` / `warn` percentages — `0` disables a level — plus `info_message` / `warn_message` templates with `{pct}` / `{used}` / `{window}` placeholders, substituted via `str.replace` so user text with braces cannot raise).
   - `run()` — Loops `_iterate()` until the loop ends (explicit `end_session` command, a command-free response after one reminder, KeyboardInterrupt, or error); at 100% budget it runs one final free-form wrap-up turn (no commands processed) so the model can record the work done and emit its completion block, then ends.
   - `save_context()` / `load_context()` — Pause/resume of full conversation state including token counts, costs, and the session metrics rollup (so a resumed session keeps the whole-task tokens/rate/cost-per-hour).
   - `LARGE_MESSAGE_CACHE_THRESHOLD = 10_000` — Character threshold for requesting backend caching of a user message.
@@ -102,7 +103,8 @@ agents/                          ← repo root
 
 - Owns the `Console` instance (writes to `/dev/tty` to keep stdout clean).
 - **Theme:** `agent_theme` with styles for stream, info, success, warning, error, cost, muted.
-- **Display functions:** `print_banner()`, `print_iteration_header()`, `print_summary()` / `build_final_metrics()`, `print_completion_result()`, `print_budget_warning()`, `print_budget_exceeded()`, `print_error()`, `print_interrupted()`, `print_sigterm()`, `print_clipped()`.
+- **Display functions:** `print_banner()`, `print_iteration_header()`, `print_summary()` / `build_final_metrics()`, `print_completion_result()`, `print_context_used()`, `print_budget_warning()`, `print_budget_exceeded()`, `print_error()`, `print_interrupted()`, `print_sigterm()`, `print_clipped()`.
+  - `print_context_used()` shows the "Context Window Filling Up" panel when the context guard's wrap-up warning fires.
   - `print_iteration_header()` shows cost, budget bar, and — once a step's rate is measured — the previous step's `rate:` (tokens/second) in the info line.
   - `build_final_metrics()` (called by `print_summary()`) renders the closing "Session Complete" panel of salient whole-task metrics: cost (with cache-savings %), steps, duration, budget bar, peak context, total output tokens, overall output rate (tok/s), and the estimated **cost per hour**.
 - **Helpers:** `build_budget_bar()`, `build_context_bar()`, `format_tokens()`, `format_rate()`, `format_duration()`, `safe_console_print()`, `create_spinner()`.
@@ -198,6 +200,7 @@ The `tools` subpackage handles all command parsing and execution. It knows nothi
 
 - System prompt defines the agent persona, response format, available commands, examples, and completion protocol.
 - `overbudget` message injected at 80% budget.
+- `context_guard` block — context-window usage guard: `info` (default 50) and `warn` (default 80) percentage thresholds of the model's window, plus optional `info_message` / `warn_message` templates (`{pct}` / `{used}` / `{window}` placeholders; set a threshold to 0 to disable it). Each level notifies the model at most once per session.
 - **This is the config used by `main()` via `run_agent('basic_agent.yaml', ...)`.**
 
 ### `agents/manipulator_agent.yaml` — AST Manipulation Configuration
@@ -239,6 +242,8 @@ Agent.run() loop:
     ├─► Append assistant + user messages to context
     │
     ├─► Budget check (80% warning, 100% wrap-up turn + termination)
+    │
+    ├─► Context guard (50% info notice / 80% wrap-up warning, once each)
     │
     └─► If command_output == "End." → stop; else → next iteration
 ```

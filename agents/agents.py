@@ -76,6 +76,7 @@ from .ui import (
     print_iteration_header,
     print_summary,
     print_completion_result,
+    print_context_used,
     print_budget_warning,
     print_budget_exceeded,
     print_error,
@@ -421,6 +422,54 @@ BUDGET_WRAPUP_PROMPT = (
     "your system prompt specifies; report Success: False if the task "
     "is not fully complete."
 )
+
+
+# ── Context window usage guard ───────────────────────────────────────
+# Two usage thresholds (percent of the model's context window) at
+# which the model is told where it stands: an INFORMATIONAL notice at
+# the lower one, and a WRAP-UP warning at the higher — a window that
+# fills mid-task ends the session abruptly (hard provider 400, no
+# wrap-up turn).  Each threshold fires at most once per session; the
+# fired set is persisted with the session file so a resume never
+# re-warns.  Both thresholds and message templates are configurable
+# via the agent YAML (keys: context_guard_info /
+# context_guard_info_message / context_guard_warn /
+# context_guard_warn_message); templates may use the {pct}, {used}
+# and {window} placeholders, substituted with str.replace so user
+# messages containing braces cannot raise.
+
+DEFAULT_CONTEXT_GUARD_INFO_THRESHOLD = 50.0
+DEFAULT_CONTEXT_GUARD_WARN_THRESHOLD = 80.0
+
+DEFAULT_CONTEXT_GUARD_INFO_MESSAGE = (
+    "System: Informational — you are at {pct}% of the model's context "
+    "window ({used} of {window} tokens). Continue working, but be "
+    "mindful of processing constraints: keep command outputs small "
+    "(pipe to head/grep, summarize large files instead of reading "
+    "them verbatim) and avoid piling up context you will not need."
+)
+
+DEFAULT_CONTEXT_GUARD_WARN_MESSAGE = (
+    "System: Warning — you are at {pct}% of the model's context window "
+    "({used} of {window} tokens) and may run out of room before the "
+    "task is finished, which would end the session abruptly. Start "
+    "wrapping up now: finish the step you are on, record any "
+    "outstanding work in your notes and in your response, and aim to "
+    "complete the task as soon as reasonably possible."
+)
+
+
+def _as_percent(value, default):
+    """Coerce a YAML percentage to float, falling back to *default*.
+
+    The context guard must never crash a session over a bad config
+    value (e.g. ``info: lots``); a coerced fallback keeps the guard
+    alive with a sane threshold.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 # ── Planning mode ─────────────────────────────────────────────────────
@@ -879,6 +928,26 @@ class Agent:
         # Set remaining attributes
         self.overbudget_prompt = configuration["overbudget"]
         self.context = context
+
+        # Context window usage guard: thresholds are percentages of
+        # the model's context window; message templates may carry
+        # {pct}/{used}/{window} placeholders (substituted with
+        # str.replace, never str.format — see _check_context_usage).
+        # Optional keys: bad/missing values fall back to the defaults
+        # so a typo in the YAML can never disable the guard silently
+        # *or* crash the session.
+        guard_cfg = configuration.get("context_guard") or {}
+        self.context_guard_info = _as_percent(
+            guard_cfg.get("info"), DEFAULT_CONTEXT_GUARD_INFO_THRESHOLD)
+        self.context_guard_warn = _as_percent(
+            guard_cfg.get("warn"), DEFAULT_CONTEXT_GUARD_WARN_THRESHOLD)
+        self.context_guard_info_message = str(
+            guard_cfg.get("info_message", DEFAULT_CONTEXT_GUARD_INFO_MESSAGE))
+        self.context_guard_warn_message = str(
+            guard_cfg.get("warn_message", DEFAULT_CONTEXT_GUARD_WARN_MESSAGE))
+        # Each threshold fires at most once per session (across
+        # resumes — the set is persisted with the session file).
+        self._context_guard_fired = set()
         self.task = task
         self.planning_mode = bool(planning_mode)
         task_block = build_task_message(task)
@@ -958,6 +1027,67 @@ class Agent:
         tree_output = run_console_command("tree -L 2")
         framed = build_tool_results_message(tree_output)
         self.context.append(_form_message("user", framed))
+
+    def _check_context_usage(self, command_response, command_called):
+        """Inject context-window usage notices at the configured thresholds.
+
+        Appends the (at most) two guard messages — an informational
+        notice and a wrap-up warning — to *command_response* when the
+        session's most recent total context size (input + output
+        tokens of the last API call, as tracked by the backend) has
+        crossed a threshold the session has not already fired.  The
+        messages are folded into the tool-results user message that
+        follows, i.e. the model sees them on its next turn — the same
+        delivery path the budget overage prompt uses, so the notice
+        always reaches the model exactly once without adding a
+        message.
+
+        Arguments:
+            command_response: the tool-results text being framed for
+                the next user message (mutated in place via return).
+            command_called: True when this turn executed a command and
+                the loop will continue — only then is a notice useful;
+                on a terminating turn there is no next turn to see it.
+
+        Returns:
+            str: *command_response* with any new notice appended.
+        """
+        if not command_called:
+            return command_response
+
+        window = self.client.context_window_size
+        if not window:
+            # Window unknown (custom backend): nothing to measure
+            # against — stay silent rather than warn on a guess.
+            return command_response
+
+        used = self.client.last_total_context_tokens
+        stages = (
+            ("info", self.context_guard_info, self.context_guard_info_message),
+            ("warn", self.context_guard_warn, self.context_guard_warn_message),
+        )
+        for stage, threshold, template in stages:
+            if threshold <= 0 or stage in self._context_guard_fired:
+                continue
+            if used >= threshold / 100.0 * window:
+                self._context_guard_fired.add(stage)
+                text = (
+                    template
+                    .replace("{pct}", f"{used / window * 100.0:.0f}")
+                    .replace("{used}", f"{used:,}")
+                    .replace("{window}", f"{window:,}")
+                )
+                command_response += "\n" + text
+                label = ("informational" if stage == "info"
+                         else "wrap-up warning")
+                safe_console_print(
+                    f"  🪟  Context at {used / window * 100.0:.0f}% of the "
+                    f"{window:,}-token window — {label}",
+                    style="info" if stage == "info" else "warning",
+                )
+                if stage == "warn":
+                    print_context_used(used, window)
+        return command_response
 
     def _iterate(self, free_form=False):
         """Perform one iteration of the conversation with Claude.
@@ -1174,6 +1304,15 @@ class Agent:
         if self.client.cost > 0.80 * self.compute_budget:
             command_response += "\n" + self.overbudget_prompt
             print_budget_warning(self.client.cost, self.compute_budget)
+
+        # Context window usage guard: an informational notice at the
+        # lower (default 50%) threshold and a wrap-up warning at the
+        # higher (default 80%) — thresholds and messages configurable
+        # via the YAML context_guard block.  Each fires once per
+        # session; the notice rides this turn's tool-results message.
+        command_response = self._check_context_usage(
+            command_response, command_called
+        )
 
         # Label the tool output so it is unmistakably tool-generated
         # rather than user-authored.  The loop-control sentinel above
@@ -1551,6 +1690,9 @@ class Agent:
             'output_rate_tokens_per_sec': self.client.output_rate_tokens_per_sec,
             'cost_per_hour': self.client.cost_per_hour,
             'planning_mode': self.planning_mode,
+            # Context guard: which thresholds have already fired this
+            # session — a resumed leg must not re-warn for them.
+            'context_guard_fired': sorted(self._context_guard_fired),
         }
         save_session(self.session_id, self.working_dir, state)
 
@@ -1572,6 +1714,9 @@ class Agent:
         self.client.peak_context_tokens = data.get('peak_context_tokens', 0)
         self.client.last_input_tokens = data.get('last_input_tokens', 0)
         self.client.last_output_tokens = data.get('last_output_tokens', 0)
+        # Context guard: which thresholds have already fired (legacy
+        # sessions without the key get a fresh, empty set).
+        self._context_guard_fired = set(data.get('context_guard_fired', []))
         self.client.cost = data.get('cost', 0.0)
         self.client.cost_without_cache = data.get('cost_without_cache', 0.0)
         self.client.call_count = data.get('call_count', 0)
