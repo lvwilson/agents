@@ -1709,6 +1709,10 @@ class Agent:
             # Context guard: which thresholds have already fired this
             # session — a resumed leg must not re-warn for them.
             'context_guard_fired': sorted(self._context_guard_fired),
+            # Step count: so the iteration header and the final
+            # "Steps:" panel show the whole task across multiple
+            # (resumed) legs, not just the last one.
+            'iterations': self.iterations,
         }
         save_session(self.session_id, self.working_dir, state)
 
@@ -1740,6 +1744,11 @@ class Agent:
         self.client.total_call_duration = data.get('total_call_duration', 0.0)
         self.client.output_rate_tokens_per_sec = data.get('output_rate_tokens_per_sec')
         self.client.cost_per_hour = data.get('cost_per_hour')
+        # Step count: the resumed leg continues numbering where the
+        # saved one left off, so the header and the final "Steps:"
+        # panel reflect the whole task.  Legacy session files without
+        # the key start a fresh count (0).
+        self.iterations = data.get('iterations', 0)
         # Planning mode: the saved session's flag is authoritative —
         # a resumed session keeps the mode it was saved in (-p only
         # takes effect for new sessions).

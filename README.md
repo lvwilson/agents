@@ -221,6 +221,7 @@ To start a new session with a chosen ID:
 - An index file maps each working directory to its most recently used session, so `-r` works without specifying an ID.
 - Sessions older than 7 days are automatically pruned on each save.
 - `/tmp` is cleared on reboot, so sessions are inherently ephemeral. For long-lived persistence, copy the JSON file elsewhere.
+- When a session is restored, its step count and the whole-task metrics rollup are restored too — the per-step header and the final `Steps:` count keep numbering across resumed legs instead of restarting at zero.
 
 When a session is restored, the original system prompt is reused verbatim so that provider-side prompt caches (e.g. Anthropic's cache) remain valid.
 
