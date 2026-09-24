@@ -78,3 +78,13 @@ system_prompt: |
 # Model selection is controlled via environment variables (AGENT_MODEL,
 # AGENT_MODEL_PROVIDER) or provider-specific defaults in agents.py.
 overbudget: "Feedback: You have exceeded 80% of the maximum allowed compute on this activity. Please take any required finalizing actions and stop work."
+context_guard:
+  # Context-window usage guard: percentage thresholds of the model's
+  # context window at which the agent is told where it stands. Each
+  # level fires at most once per session. Set a threshold to 0 to
+  # disable that level. Message templates may use the {pct} (percent),
+  # {used} and {window} (token counts) placeholders.
+  info: 50
+  warn: 80
+  info_message: "System: Informational — you are at {pct}% of the model's context window ({used} of {window} tokens). Continue working, but be mindful of processing constraints: keep command outputs small (pipe to head/grep, summarize large files instead of reading them verbatim) and avoid piling up context you will not need."
+  warn_message: "System: Warning — you are at {pct}% of the model's context window ({used} of {window} tokens) and may run out of room before the task is finished, which would end the session abruptly. Start wrapping up now: finish the step you are on, record any outstanding work in your notes and in your response, and aim to complete the task as soon as reasonably possible."

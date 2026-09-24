@@ -32,7 +32,7 @@ The tooling layer knows nothing about Claude, conversation history, or budgets.
 - **Configuration Over Code** — Agent behavior is defined in YAML files, not Python. Each config specifies a provider, model, system prompt, and an over-budget warning. New agent archetypes are created by writing prose, not code.
 - **The LLM as the Only Moving Part** — No hardcoded task decomposition, no retry logic, no verification beyond what the LLM chooses to do. The infrastructure faithfully executes commands and stays out of the way.
 - **Context as Conversation** — All state lives in the message history. No external database, no structured memory. Sessions are persisted as JSON files and can be resumed across invocations.
-- **Cost Awareness** — Token usage and dollar cost are tracked in real time, including prompt caching discounts. Each step's info line shows the completed step's output rate (tokens/second) as soon as it is measured, and the session closes with a metrics panel reporting the whole task's salient numbers — cost, steps, duration, peak context, total output tokens, overall output rate — plus an estimated cost per hour at the observed generation pace. The agent is warned at 80% of its budget, and when 100% is hit it is given one final turn that processes no commands — a wrap-up in which it records the work done so far and emits its completion block — before the session ends, keeping autonomous operation safe and bounded.
+- **Cost Awareness** — Token usage and dollar cost are tracked in real time, including prompt caching discounts. Each step's info line shows the completed step's output rate (tokens/second) as soon as it is measured, and the session closes with a metrics panel reporting the whole task's salient numbers — cost, steps, duration, peak context, total output tokens, overall output rate — plus an estimated cost per hour at the observed generation pace. The agent is warned at 80% of its budget, and when 100% is hit it is given one final turn that processes no commands — a wrap-up in which it records the work done so far and emits its completion block — before the session ends, keeping autonomous operation safe and bounded. The same care applies to the model's context window: once the conversation reaches 50% of it, the agent receives an informational reminder to keep command outputs small, and at 80% a wrap-up warning prompting it to record outstanding work before the window fills — both thresholds and messages are configurable in the agent YAML (`context_guard` block), and each fires at most once per session.
 
 ### Available Tools
 
@@ -227,6 +227,7 @@ To start a new session with a chosen ID:
 - An index file maps each working directory to its most recently used session, so `-r` works without specifying an ID.
 - Sessions older than 7 days are automatically pruned on each save.
 - `/tmp` is cleared on reboot, so sessions are inherently ephemeral. For long-lived persistence, copy the JSON file elsewhere.
+- When a session is restored, its step count and the whole-task metrics rollup are restored too — the per-step header and the final `Steps:` count keep numbering across resumed legs instead of restarting at zero.
 
 When a session is restored, the original system prompt is reused verbatim so that provider-side prompt caches (e.g. Anthropic's cache) remain valid.
 

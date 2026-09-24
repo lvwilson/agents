@@ -301,5 +301,62 @@ class TestIterateFoldsMetrics(unittest.TestCase):
         agent.client.record_step_metrics.assert_called_once()
 
 
+# ── step count across save/resume ─────────────────────────────────────
+
+class TestStepCountResumePersistence(unittest.TestCase):
+    """The step count survives save/resume — the iteration header and
+    the final 'Steps:' panel must reflect the whole task across
+    multiple legs, not just the last one."""
+
+    def test_save_persists_step_count(self):
+        agent = _make_agent()
+        agent.iterations = 7
+        with mock.patch.object(agents_module, "save_session") as mock_save:
+            agent.save_context()
+        state = mock_save.call_args[0][2]
+        self.assertEqual(state["iterations"], 7)
+
+    def test_load_restores_step_count(self):
+        agent1 = _make_agent()
+        agent1.iterations = 7
+
+        with mock.patch.object(agents_module, "save_session") as mock_save:
+            agent1.save_context()
+        state = mock_save.call_args[0][2]
+
+        agent2 = _make_agent()
+        with mock.patch.object(
+                agents_module, "load_session", return_value=state):
+            agent2.load_context()
+        self.assertEqual(agent2.iterations, 7)
+
+        # The resumed leg's first header continues numbering at 7
+        # instead of restarting at 0, and the counter keeps
+        # accumulating from there.
+        agent2.client.generate_response = mock.Mock(return_value="Done.")
+        with mock.patch.object(
+                agents_module, "print_iteration_header") as header, \
+             mock.patch.object(agents_module, "filter_content",
+                               side_effect=lambda s: s), \
+             mock.patch.object(agents_module, "print_clipped"):
+            agent2._iterate(free_form=True)
+        header.assert_called_once()
+        self.assertEqual(header.call_args.args[0], 7)
+        self.assertEqual(agent2.iterations, 8)
+
+    def test_legacy_session_without_key_starts_fresh(self):
+        agent1 = _make_agent()
+        with mock.patch.object(agents_module, "save_session") as mock_save:
+            agent1.save_context()
+        state = mock_save.call_args[0][2]
+        state.pop("iterations")  # simulate a pre-fix session file
+
+        agent2 = _make_agent()
+        with mock.patch.object(
+                agents_module, "load_session", return_value=state):
+            agent2.load_context()
+        self.assertEqual(agent2.iterations, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
