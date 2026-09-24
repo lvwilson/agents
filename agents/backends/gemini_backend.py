@@ -384,31 +384,33 @@ class GeminiBackend(LLMBackend):
                 or 0
             )
             cache_read = getattr(usage_metadata, "cached_content_token_count", 0) or 0
-        else:
-            self.last_input_tokens = 0
-            self.last_output_tokens = 0
-            cache_read = 0
 
-        # prompt_token_count from Gemini already includes cached tokens,
-        # so uncached input = total prompt tokens - cached tokens.
-        uncached_input = max(0, self.last_input_tokens - cache_read)
+            # prompt_token_count from Gemini already includes cached
+            # tokens, so uncached input = total prompt tokens - cached
+            # tokens.
+            uncached_input = max(0, self.last_input_tokens - cache_read)
 
-        self.last_total_context_tokens = self.last_input_tokens + self.last_output_tokens
-        self.peak_context_tokens = max(
-            self.peak_context_tokens, self.last_total_context_tokens
-        )
+            self.last_total_context_tokens = self.last_input_tokens + self.last_output_tokens
+            self.peak_context_tokens = max(
+                self.peak_context_tokens, self.last_total_context_tokens
+            )
 
-        self.cost += self.calculate_cost(
-            uncached_input,
-            self.last_output_tokens,
-            cache_read_tokens=cache_read,
-        )
+            self.cost += self.calculate_cost(
+                uncached_input,
+                self.last_output_tokens,
+                cache_read_tokens=cache_read,
+            )
 
-        # Track what this call would have cost without caching
-        self.cost_without_cache += self.calculate_cost(
-            self.last_input_tokens,
-            self.last_output_tokens,
-        )
+            # Track what this call would have cost without caching
+            self.cost_without_cache += self.calculate_cost(
+                self.last_input_tokens,
+                self.last_output_tokens,
+            )
+        # else: no usage on this call — keep the last known tracking
+        # values untouched (zeroing them makes the session context appear
+        # to collapse to ~0 mid-run and silently disables the
+        # context-usage guard for the rest of the session).  Cost can't
+        # be computed without usage, so it isn't accumulated.
 
         self._emit_tool_calls()
 

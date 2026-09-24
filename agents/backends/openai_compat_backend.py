@@ -325,28 +325,30 @@ class OpenAICompatBackend(LLMBackend):
                 if details
                 else 0
             )
-        else:
-            self.last_input_tokens = 0
-            self.last_output_tokens = 0
-            cache_read = 0
 
-        self.last_total_context_tokens = (
-            self.last_input_tokens + self.last_output_tokens
-        )
-        self.peak_context_tokens = max(
-            self.peak_context_tokens, self.last_total_context_tokens
-        )
+            self.last_total_context_tokens = (
+                self.last_input_tokens + self.last_output_tokens
+            )
+            self.peak_context_tokens = max(
+                self.peak_context_tokens, self.last_total_context_tokens
+            )
 
-        self.cost += self.calculate_cost(
-            self.last_input_tokens,
-            self.last_output_tokens,
-            cache_read_tokens=cache_read,
-        )
-        self.cost_without_cache += self.calculate_cost(
-            self.last_input_tokens,
-            self.last_output_tokens,
-            cache_read_tokens=0,
-        )
+            self.cost += self.calculate_cost(
+                self.last_input_tokens,
+                self.last_output_tokens,
+                cache_read_tokens=cache_read,
+            )
+            self.cost_without_cache += self.calculate_cost(
+                self.last_input_tokens,
+                self.last_output_tokens,
+                cache_read_tokens=0,
+            )
+        # else: no usage on this call (local OpenAI-compatible servers
+        # that ignore stream_options, lost final chunk, …).  Keep the
+        # last known tracking values untouched: zeroing them makes the
+        # session context appear to collapse to ~0 mid-run and silently
+        # disables the context-usage guard for the rest of the session.
+        # Cost can't be computed without usage, so it isn't accumulated.
 
         self._emit_tool_calls()
 

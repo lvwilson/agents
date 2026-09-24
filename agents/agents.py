@@ -992,8 +992,24 @@ class Agent:
         client = self.client  # capture for the closure
 
         def _generate(system_prompt: str, user_message: str) -> str:
-            context = [_form_message("user", user_message)]
-            return client.generate_response(system_prompt, context)
+            # The summarize call is a one-shot *side channel* on the
+            # SHARED client: a fresh, much smaller conversation.  It must
+            # not clobber the main conversation's display token tracking —
+            # the context-usage guard and the per-turn header read
+            # last_total_context_tokens / last_input_tokens /
+            # last_output_tokens after process_content() runs, so a
+            # shrunken one-shot value would make context appear to
+            # "decrease while in use" (and could suppress the wrap-up
+            # warning).  Restore the display fields afterwards; cost and
+            # call_count intentionally still accumulate (real LLM spend).
+            saved = (client.last_input_tokens, client.last_output_tokens,
+                     client.last_total_context_tokens)
+            try:
+                context = [_form_message("user", user_message)]
+                return client.generate_response(system_prompt, context)
+            finally:
+                (client.last_input_tokens, client.last_output_tokens,
+                 client.last_total_context_tokens) = saved
 
         _register_summarize_llm(_generate)
 
@@ -1876,10 +1892,24 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                 )
 
                 def _squash(input_text: str) -> str:
-                    ctx = [_form_message("user", squash_prompt + "\n\n" + input_text)]
-                    return agent.client.generate_response(
-                        "You are a concise summarizer.", ctx
-                    )
+                    # One-shot side channel on the shared client (same
+                    # reasoning as the summarize wrapper above): restore
+                    # the main conversation's display token tracking when
+                    # done — cost/call_count still accumulate.
+                    saved = (agent.client.last_input_tokens,
+                             agent.client.last_output_tokens,
+                             agent.client.last_total_context_tokens)
+                    try:
+                        ctx = [_form_message("user",
+                                             squash_prompt + "\n\n"
+                                             + input_text)]
+                        return agent.client.generate_response(
+                            "You are a concise summarizer.", ctx
+                        )
+                    finally:
+                        (agent.client.last_input_tokens,
+                         agent.client.last_output_tokens,
+                         agent.client.last_total_context_tokens) = saved
 
                 squash_episodes(_squash)
     except Exception as e:
