@@ -1,6 +1,6 @@
-# agents
+# agent
 
-Autonomous AI software engineering agents powered by LLMs. The system is organized in two layers within a single package:
+An autonomous AI software engineering agent powered by LLMs. The system is organized in two layers within a single package:
 
 - **Reasoning layer** (`agents.agents`) — owns the conversation loop, the LLM client, and the decision of when to start and stop.
 - **Tooling layer** (`agents.tools`) — handles command parsing and execution against the filesystem, shell, images, and web browser.
@@ -54,12 +54,23 @@ Install the package with all dependencies:
 
     pip install -e .
 
-For optional provider support:
+This installs the main command `agent`, plus the helper CLIs
+`agent-docs`, `agent-memory`, and `agent-commit`.
+
+The base install includes the stealth web browser (Playwright).  A
+browser binary is also required — either install Google Chrome (it is
+driven automatically when present) or:
+
+    python -m playwright install chromium
+
+For optional provider and tool support:
 
     pip install -e '.[openai]'     # OpenAI models
     pip install -e '.[gemini]'     # Google Gemini models
     pip install -e '.[cerebras]'   # Cerebras Inference models
-    pip install -e '.[browser]'    # Playwright web browser
+    pip install -e '.[search]'     # DDGS web search tool
+    pip install -e '.[images]'     # image generation (create_image)
+    pip install -e '.[mcp]'        # MCP client tools
     pip install -e '.[all]'        # Everything
 
 ### API Keys
@@ -81,7 +92,7 @@ Optional configuration for local/remote LLM servers:
 
 Agents are configured via YAML files (e.g., `basic_agent.yaml`). You can override the provider and model using environment variables:
 
-    AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-4o agents "Write a python script to calculate fibonacci numbers"
+    AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-4o agent "Write a python script to calculate fibonacci numbers"
 
 ### Backend Configuration (the `.agent` file)
 
@@ -182,11 +193,11 @@ Notes:
 
 So to switch this project to Cerebras you just write the two-line `.agent` above and run:
 
-    agents "your task"
+    agent "your task"
 
 or override without editing the file:
 
-    agents -P cerebras -m qwen-3.8-27b "your task"
+    agent -P cerebras -m qwen-3.8-27b "your task"
 
 ### Session Management
 
@@ -194,15 +205,15 @@ Every invocation is assigned a short session ID (e.g. `a7x2`). The full conversa
 
 To resume the most recent session for the current working directory:
 
-    agents -r "Continue where you left off"
+    agent -r "Continue where you left off"
 
 To resume a specific session by ID:
 
-    agents -r -s a7x2 "Fix the remaining test failures"
+    agent -r -s a7x2 "Fix the remaining test failures"
 
 To start a new session with a chosen ID:
 
-    agents -s mysession "Refactor the parser module"
+    agent -s mysession "Refactor the parser module"
 
 **How it works:**
 
@@ -235,7 +246,7 @@ When the working directory is a Git repository, the harness provides two safety 
 
 To disable both features, pass `--nogit`:
 
-    agents --nogit "Refactor the parser module"
+    agent --nogit "Refactor the parser module"
 
 If the directory is **not** a Git repository, the harness behaves normally with no git operations attempted.
 
@@ -243,23 +254,23 @@ If the directory is **not** a Git repository, the harness behaves normally with 
 
 You can run against OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000`.
 
-    LOCAL_MODEL=qwen3.8-27b agents --local "Explain quantum mechanics"
+    LOCAL_MODEL=qwen3.8-27b agent --local "Explain quantum mechanics"
 
 You can change the port using the `-p` or `--port` flag, or by setting the `LOCAL_LLM_PORT` environment variable:
 
-    LOCAL_MODEL=qwen2.5 agents --local -p 11434 "Write a haiku"
+    LOCAL_MODEL=qwen2.5 agent --local -p 11434 "Write a haiku"
 
     # Or set the port via environment variable (useful in .bashrc)
     export LOCAL_LLM_PORT=11434
-    LOCAL_MODEL=qwen2.5 agents --local "Write a haiku"
+    LOCAL_MODEL=qwen2.5 agent --local "Write a haiku"
 
 To connect to a remote LLM server, use the `-H` or `--host` flag, or set the `LOCAL_LLM_HOST` environment variable:
 
-    LOCAL_MODEL=qwen3.8-27b agents --local -H 192.168.1.50 "Explain quantum mechanics"
+    LOCAL_MODEL=qwen3.8-27b agent --local -H 192.168.1.50 "Explain quantum mechanics"
 
     # Or set the host via environment variable (useful in .bashrc)
     export LOCAL_LLM_HOST=192.168.1.50
     export LOCAL_LLM_PORT=8000
-    LOCAL_MODEL=qwen3.8-27b agents --local "Explain quantum mechanics"
+    LOCAL_MODEL=qwen3.8-27b agent --local "Explain quantum mechanics"
 
 The `-H` flag takes precedence over `LOCAL_LLM_HOST`, and `-p` takes precedence over `LOCAL_LLM_PORT`, when both are specified.

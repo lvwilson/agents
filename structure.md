@@ -312,28 +312,28 @@ documentation: README → "Web browsing & stealth".
 
 ```bash
 # Default (Anthropic)
-python agents.py "task description"
+agent "task description"
 
 # With budget
-python agents.py -b 2.0 "task description"
+agent -b 2.0 "task description"
 
 # Resume previous session
-python agents.py -r "continue the task"
+agent -r "continue the task"
 
 # Override provider/model
-AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-5.3-codex python agents.py "task"
+AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-5.3-codex agent "task"
 
 # Use Cerebras (via .agent file or flags)
-python agents.py -P cerebras -m qwen-3.8-27b "task"
+agent -P cerebras -m qwen-3.8-27b "task"
 
 # Local model
-LOCAL_MODEL=qwen3.8-27b python agents.py --local -p 11434 "task"
+LOCAL_MODEL=qwen3.8-27b agent --local -p 11434 "task"
 
 # Pipe input
-echo "file contents" | python agents.py "analyze this"
+echo "file contents" | agent "analyze this"
 
 # List all available models (all providers)
-python agents.py --list-models
+agent --list-models
 ```
 
 ---
@@ -352,13 +352,20 @@ Documented in `issues.md`. Summary:
 
 ## Dependencies
 
-- **`anthropic`** — Anthropic SDK (required by default)
+Required (installed with the package):
+
+- **`anthropic`** — Anthropic SDK (default provider)
 - **`PyYAML`** — YAML config parsing
 - **`rich`** — Terminal UI (panels, spinners, styled output)
-- **`pillow`** — Image handling
-- **`openai`** — OpenAI SDK (optional, install for OpenAI provider)
-- **`google-genai`** — Google Gemini SDK (optional, install for Gemini provider)
-- **`cerebras_cloud_sdk`** — Cerebras SDK (optional, install for Cerebras provider)
 - **`black`** — Code formatting (used by AST code manipulator)
-- **`requests`** — HTTP requests (used by image generation)
-- **`playwright`** — Headless browser (optional, install with `pip install -e '.[browser]'`)
+- **`pillow`** — Image handling
+- **`playwright`** — Stealth web browser (Python package; the browser binary still needs installing — an installed Google Chrome works as-is, or `python -m playwright install chromium`)
+
+Optional (install everything with `pip install -e '.[all]'`, or per extra):
+
+- **`openai`** — OpenAI-compatible providers (extra: `openai`)
+- **`google-genai`** — Google Gemini SDK (extra: `gemini`)
+- **`cerebras_cloud_sdk`** — Cerebras SDK (extra: `cerebras`)
+- **`requests`** — HTTP requests, used by image generation (extra: `images`)
+- **`ddgs`** — Web search tool (extra: `search`)
+- **`mcp`** — MCP client tools (extra: `mcp`)
