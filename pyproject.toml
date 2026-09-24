@@ -9,24 +9,24 @@ description = "Autonomous AI agent with pluggable LLM backends"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.55.0",
+    "black>=24.0",
+    "pillow",
+    "playwright>=1.40.0",
     "PyYAML>=6.0.2",
     "rich>=13.8.1",
-    "pillow",
 ]
 
 [project.optional-dependencies]
-formatting = ["black>=24.0"]
 images = ["requests"]
 openai = ["openai"]
 gemini = ["google-genai"]
 cerebras = ["cerebras_cloud_sdk"]
-browser = ["playwright"]
 search = ["ddgs"]
 mcp = ["mcp>=1.0.0"]
-all = ["black>=24.0", "requests", "openai", "google-genai", "cerebras_cloud_sdk", "playwright", "ddgs", "mcp>=1.0.0"]
+all = ["requests", "openai", "google-genai", "cerebras_cloud_sdk", "ddgs", "mcp>=1.0.0"]
 
 [project.scripts]
-agents       = "agents.agents:main"
+agent        = "agents.agents:main"
 agent-docs   = "agents.tools.docs:main"
 agent-memory = "agents.cli.memory_cli:main"
 agent-commit = "agents.cli.commit_cli:main"

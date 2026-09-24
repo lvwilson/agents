@@ -1,7 +1,8 @@
 """
 Sub-agent pool — create, register, and run sub-agents.
 
-Sub-agents run as **subprocesses** using the existing ``agents`` CLI.
+Sub-agents run as **subprocesses** via ``python -m agents`` (the same
+entry point as the ``agent`` command).
 This gives each sub-agent a fully isolated context, proper tool support,
 and the same system prompt as the parent.  The sub-agent communicates
 results back via stdout (using the ``stdout`` tool), while its UI and

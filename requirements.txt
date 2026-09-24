@@ -1,9 +1,20 @@
 anthropic>=0.55.0
+black>=24.0
+pillow
+playwright>=1.40.0
 PyYAML>=6.0.2
 rich>=13.8.1
-pillow
-# Optional dependencies (install via: pip install -e '.[all]')
-# black>=24.0       — needed for AST code formatting (codemanipulator)
-# requests          — needed for image generation (create_image)
-# playwright        — needed for web browser tools (install via: pip install -e '.[browser]')
-# ddgs              — needed for web search tool (install via: pip install -e '.[search]')
+# Optional extras (install via: pip install -e '.[all]', or one by one)
+# openai             — OpenAI-compatible models
+# google-genai       — Google Gemini models
+# cerebras_cloud_sdk — Cerebras Inference models
+# requests           — image generation (create_image)
+# ddgs               — web search tool
+# mcp>=1.0.0         — MCP client tools
+# The web browser also needs a browser binary:  python -m playwright install chromium
+
+[console_scripts]
+agent = agents.agents:main
+agent-commit = agents.cli.commit_cli:main
+agent-docs = agents.tools.docs:main
+agent-memory = agents.cli.memory_cli:main
