@@ -126,8 +126,20 @@ class OpenAICompatBackend(LLMBackend):
 
     # ── Message format translation ───────────────────────────────────
 
-    @staticmethod
-    def _format_messages(system_prompt: str, context: list[dict]) -> list[dict]:
+    def _assistant_extras(self, message: dict) -> dict:
+        """Provider-specific extra fields for assistant messages.
+
+        The shared base sends only ``{"role", "content"}`` for every
+        message — plain OpenAI-compatible servers (including local
+        llama.cpp endpoints) reject or mishandle unknown fields, so the
+        default adds nothing.  A subclass overrides this to attach
+        API-specific fields to assistant turns, e.g. Cerebras'
+        ``reasoning`` field which preserves the model's own historical
+        thinking across multi-turn calls.
+        """
+        return {}
+
+    def _format_messages(self, system_prompt: str, context: list[dict]) -> list[dict]:
         """Convert internal message format to OpenAI chat-completions input.
 
         Consecutive same-role messages (produced by harness feedback
@@ -173,7 +185,10 @@ class OpenAICompatBackend(LLMBackend):
             if role in ("user", "assistant", "system"):
                 content = _to_content(parts)
                 if content or role == "system":
-                    messages.append({"role": role, "content": content})
+                    entry = {"role": role, "content": content}
+                    if role == "assistant":
+                        entry.update(self._assistant_extras(msg))
+                    messages.append(entry)
             elif role == "tool":
                 text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
                 content = "\n".join(t for t in text_parts if t)
@@ -243,6 +258,7 @@ class OpenAICompatBackend(LLMBackend):
             stream = self._client.chat.completions.create(**create_kwargs)
 
             collected_text = ""
+            reasoning_text = ""
             usage = None
             reasoning_started = False
             tool_calls: dict[int, dict] = {}
@@ -285,6 +301,7 @@ class OpenAICompatBackend(LLMBackend):
                     or getattr(delta, "reasoning_content", None)
                 )
                 if reasoning:
+                    reasoning_text += reasoning
                     if not reasoning_started:
                         sh.on_stream_reasoning_start()
                         reasoning_started = True
@@ -300,6 +317,13 @@ class OpenAICompatBackend(LLMBackend):
 
             if reasoning_started:
                 sh.on_stream_reasoning_end()
+
+            # Only a *completed* stream commits the captured reasoning.
+            # A failed attempt that raises mid-stream leaves
+            # self.last_reasoning untouched (potentially stale, but it is
+            # never consumed: generate_response() propagates the failure
+            # before the agent can attach it to any turn).
+            self.last_reasoning = reasoning_text
 
             for slot in tool_calls.values():
                 self._pending_tool_calls.append((

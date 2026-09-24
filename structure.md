@@ -143,7 +143,8 @@ agents/                          ← repo root
 
 - **`OpenAICompatBackend(LLMBackend)`** — Common implementation for any OpenAI-compatible **chat-completions** endpoint (`POST /v1/chat/completions` with `stream` + `stream_options={"include_usage": true}`).  Client-agnostic: relies only on `client.chat.completions.create(...)`.
 - **Subclass hooks:** `_rate_limit_error_class()`, `_resolve_credentials(base_url)`, `_build_client(api_key, base_url)`, `_extra_create_kwargs()`.  Default builds the `openai` SDK client from `OPENAI_API_KEY`.
-- **Streaming:** iterates chunks; collects `delta.content`, streams `delta.reasoning` / `delta.reasoning_content` to the reasoning hooks (never into the response), accumulates `delta.tool_calls` for post-response logging, and captures the trailing `usage` chunk.
+- **Streaming:** iterates chunks; collects `delta.content`, streams `delta.reasoning` / `delta.reasoning_content` to the reasoning hooks (never into the response), accumulates `delta.tool_calls` for post-response logging, and captures the trailing `usage` chunk. Streamed reasoning is also accumulated in `self.last_reasoning` (committed only on a completed stream) so the harness can store it per-turn — the shared base itself never sends reasoning back to the wire (local llama.cpp / vLLM servers keep their existing request format).
+- **Message formatting:** `_format_messages()` calls the `_assistant_extras(message)` hook for assistant turns — empty by default, overridden by subclasses that need to attach API-specific fields (see `CerebrasBackend`).
 - **Used by:** the `openai` provider when a custom `base_url` is set, and by `CerebrasBackend` / `KimiBackend`.
 
 ### `agents/backends/cerebras_backend.py` — Cerebras Provider
@@ -151,6 +152,7 @@ agents/                          ← repo root
 - **`CerebrasBackend(OpenAICompatBackend)`** — Uses the official `cerebras_cloud_sdk` (`Cerebras` client, `client.chat.completions.create`).  Default base URL `https://api.cerebras.ai`.
 - **Credentials:** `CEREBRAS_API_KEY` env var (placeholder `"local"` for a custom/proxy `base_url` with no key).
 - **Reasoning:** per-model `reasoning_effort` injected via `_extra_create_kwargs()` (`qwen-3.8-27b` → `high`, `gpt-oss-120b` → `medium`); returned separately in `delta.reasoning` and streamed to the UI.
+- **Multi-turn reasoning preservation:** the Cerebras API is stateless — the model's own historical thinking is preserved only when each assistant turn is re-sent with the `reasoning` field the API returned for it. The harness stores each turn's reasoning on the assistant context message (from the backend's `last_reasoning`), and `_assistant_extras()` echoes it back into the request. `clear_thinking` is never sent (omission = preserve, the desired behaviour). Verified live: a follow-up question answered from the model's own past thinking. Trade-off of the always-preserve policy: every subsequent call re-sends the entire accumulated thought trail as input (billed at the full input price — cache reads earn no discount), so long reasoning-heavy sessions consume the 128K context window and the input budget faster than they otherwise would.
 - **Pricing:** `qwen-3.8-27b` $0.99/M in, $1.49/M out; `gpt-oss-120b` $0.35/M in, $0.75/M out.  Cache reads bill at the full input price (Cerebras caching is a latency feature, not a discount), so `cache_read_cost == input_token_cost`.
 - **Context windows:** `qwen-3.8-27b` 128K, `gpt-oss-120b` 131K.  Max output 40K (paid tier) per model.
 
@@ -172,7 +174,7 @@ How each backend requests thinking, and the ceiling reasoning can consume (reaso
 | Provider | What the harness sends | Thinking on | Max output per call (incl. reasoning) |
 |---|---|---|---|
 | Anthropic (Claude) | `thinking={"type":"adaptive"}` — model decides depth; no `budget_tokens` | Opt-in: `CLAUDE_THINKING_ENABLED=true` (default off) | 128,000 (`MODEL_MAX_OUTPUT`) |
-| Cerebras | `reasoning_effort`: `high` (qwen-3.8-27b), `medium` (gpt-oss-120b); `none` disables (qwen only — must be sent explicitly, omission means server default) | Always (unless `none`) | 40,000 (`MODEL_MAX_COMPLETION`, paid tier) |
+| Cerebras | `reasoning_effort`: `high` (qwen-3.8-27b), `medium` (gpt-oss-120b); `none` disables (qwen only — must be sent explicitly, omission means server default). Past assistant `reasoning` is echoed back per turn (stateless API; `clear_thinking` never sent → preserve) | Always (unless `none`) | 40,000 (`MODEL_MAX_COMPLETION`, paid tier) |
 | DeepSeek | Always-on thinking + `output_config={"effort": "max"}` default, sent via `extra_body`; bare `thinking={"type":"enabled"}` (the endpoint accepts that shape — verified live — and ignores `budget_tokens` anyway) | Always | 128,000 (parent fallback `max_tokens`) |
 | Kimi | `reasoning_effort="max"` (K3 accepts only `max`) | Always | 131,072 (`MAX_COMPLETION_TOKENS`) |
 | MiniMax | Bare `thinking={"type":"enabled"}`; the endpoint ignores the parameter for M2.x and always emits thinking | Always (cannot be disabled) | 128,000 (parent fallback) |

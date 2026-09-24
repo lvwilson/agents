@@ -1015,6 +1015,10 @@ class Agent:
                 "issued as 'Command: name args' lines in your visible response — "
                 "never inside thinking. Please respond to your task now."
             )
+            # Discard the blank turn's reasoning: there is no assistant
+            # message to attach it to, and leaving it would make the NEXT
+            # turn inherit a foreign turn's thinking.
+            self.client.last_reasoning = ""
             self.context.append(_form_message("user", empty_feedback))
             return True
         except LoopDetectedError as e:
@@ -1044,6 +1048,17 @@ class Agent:
         # A generation that completed (not aborted mid-stream) re-arms the
         # loop-termination budget.
         self._loop_terminations = 0
+
+        # Consume this turn's reasoning exactly once, here — immediately
+        # after a completed generation — so it can never leak into a
+        # later turn (a failed/interrupted stream never commits it, and
+        # a blank turn discards it in the EmptyResponseError branch).
+        # The isinstance guard keeps mocked clients (MagicMock attrs are
+        # not str) from polluting the context in tests.
+        turn_reasoning = getattr(self.client, "last_reasoning", "")
+        if not isinstance(turn_reasoning, str):
+            turn_reasoning = ""
+        self.client.last_reasoning = ""
 
         if not response:
             return False
@@ -1107,7 +1122,7 @@ class Agent:
         # clean end_session ending is extractable from the context, and
         # free-form turns (budget wrap-up, summaries) are stored as the
         # model wrote them.
-        self.context.append(_form_message("assistant", context_response))
+        self._append_assistant(context_response, turn_reasoning)
         self._last_assistant_response = response
         self._loop_count = 0
 
@@ -1284,9 +1299,39 @@ class Agent:
             exit (Ctrl+C in feedback mode).
         """
         if partial_response:
-            self.context.append(_form_message("assistant", partial_response))
+            # No reasoning is attached: an interrupted stream never
+            # commits its thinking, and the previous turn's was already
+            # consumed when that turn was appended.
+            self._append_assistant(partial_response)
         print_interrupt_feedback()
         return get_user_feedback()
+
+    def _append_assistant(self, text, reasoning=None):
+        """Append an assistant turn to the context, optionally with its
+        reasoning.
+
+        The backend exposes the reasoning/thinking tokens streamed during
+        the last *completed* generation as ``last_reasoning``;
+        :meth:`_iterate` consumes it (exactly once, per turn) and passes
+        it here.  When non-empty it is stored on the message as
+        ``msg["reasoning"]`` so that:
+
+        * providers that need the model's own historical thinking re-
+          sent can echo it back — Cerebras' chat API is stateless and
+          preserves past reasoning only when each assistant turn is
+          re-sent with its ``reasoning`` field (see
+          ``CerebrasBackend._assistant_extras()``);
+        * the data survives a session resume — the session file stores
+          the context verbatim.
+
+        Every other backend's message formatter ignores the key, so the
+        attach is inert elsewhere (notably for local llama.cpp servers,
+          which keep their existing wire format byte-for-byte).
+        """
+        msg = _form_message("assistant", text)
+        if isinstance(reasoning, str) and reasoning:
+            msg["reasoning"] = reasoning
+        self.context.append(msg)
 
     def run(self):
         """Run the agent until completion or interruption.
