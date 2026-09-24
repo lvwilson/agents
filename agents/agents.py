@@ -432,9 +432,9 @@ BUDGET_WRAPUP_PROMPT = (
 # wrap-up turn).  Each threshold fires at most once per session; the
 # fired set is persisted with the session file so a resume never
 # re-warns.  Both thresholds and message templates are configurable
-# via the agent YAML (keys: context_guard_info /
-# context_guard_info_message / context_guard_warn /
-# context_guard_warn_message); templates may use the {pct}, {used}
+# in the agent YAML ``context_guard`` block (``info`` / ``warn``
+# percentages — ``0`` disables that level — plus ``info_message`` /
+# ``warn_message`` templates); templates may use the {pct}, {used}
 # and {window} placeholders, substituted with str.replace so user
 # messages containing braces cannot raise.
 
