@@ -93,51 +93,273 @@ from .ui import (
 script_dir = os.path.dirname(os.path.realpath(__file__))
 
 
-# Known online models mapped to their provider.  When -m specifies one
-# of these, the provider is auto-detected and the -o flag is not required.
-_ONLINE_MODELS: dict[str, str] = {
-    # Anthropic
-    "claude-sonnet-4-6": "anthropic",
-    "claude-opus-4-6": "anthropic",
-    "claude-opus-5": "anthropic",
-    "claude-fable-5": "anthropic",
-    "MiniMax-M2.5": "anthropic",
-    # OpenAI
-    "gpt-5.2": "openai",
-    "gpt-5.2-mini": "openai",
-    "gpt-5.3": "openai",
-    "gpt-5.3-mini": "openai",
-    "gpt-5.3-codex": "openai",
-    # Gemini
-    "gemini-3.1-pro-preview": "gemini",
-    "gemini-3.1-pro-preview-customtools": "gemini",
-    "gemini-3-flash-preview": "gemini",
-    # Kimi
-    "kimi-k3": "kimi",
-    # DeepSeek
-    "deepseek-v4-pro": "deepseek",
-    # Cerebras
-    "qwen-3.8-27b": "cerebras",
-    "gpt-oss-120b": "cerebras",
-}
+# Model → provider mapping for the *hosted* (online) models.  Built
+# live from the backends' own model tables (the same data that
+# ``--list-models`` shows) so it never goes stale when a backend adds
+# or renames a model; a small static fallback keeps resolution working
+# if the backend registry fails to load.  NOTE: this is the catalog of
+# *hosted* models only — a name that is not in it is not automatically
+# hosted: locally served models (Ollama/vLLM/llama.cpp) may use the
+# exact same name as a hosted one, and the pinned ``base_url`` decides
+# (see :func:`resolve_backend_target`).
+_ONLINE_MODELS: dict[str, str] = {}
+
+
+def _local_base_url(local_host="localhost", local_port=8000) -> str:
+    """Canonical local/remote LLM server URL: ``http://host:port/v1``.
+
+    Local OpenAI-compatible servers (Ollama, vLLM, llama.cpp, …) expose
+    their API under ``/v1``, so resolved local destinations always carry
+    the suffix — a pinned ``base_url`` is only used verbatim when it
+    already points at one.
+    """
+    return f"http://{_format_host_for_url(local_host)}:{local_port}/v1"
+
+
+def _looks_local_base_url(base_url: str) -> bool:
+    """Return True when *base_url* points at a local machine.
+
+    The decision only gates which provider may drive the connection:
+    anything not obviously local (proxy, LAN host, …) is honoured as
+    the provider was pinned, pin included.
+    """
+    host: str = str(base_url).split("//", 1)[-1].split("/", 1)[0]
+    if ":" in host:  # strip any port (also IPv6-in-brackets form)
+        host = host.rsplit(":", 1)[0]
+    host = host.strip("[]").lower()
+    return host in ("", "localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+def _build_online_models_catalog() -> dict[str, str]:
+    """Build ``{hosted_model: provider}`` from the backend model tables.
+
+    Reads each backend class's own ``MODEL_PRICING`` /
+    ``MODEL_DISPLAY_NAMES`` / ``MODEL_CONTEXT_WINDOWS`` entries (the
+    same source ``--list-models`` renders), so the catalog can never
+    drift from what the backends actually bill and report.
+    """
+    from .backends import list_available_models
+    catalog: dict[str, str] = {}
+    for entry in list_available_models():
+        catalog[entry["model"]] = entry["provider"]
+    if not catalog:
+        # Registry failed to load (import error, …): keep resolution
+        # working with the last-known-good static map.
+        catalog = {
+            "claude-sonnet-4-6": "anthropic",
+            "claude-opus-4-6": "anthropic",
+            "claude-opus-5": "anthropic",
+            "claude-fable-5": "anthropic",
+            "gpt-5.2": "openai",
+            "gpt-5.2-mini": "openai",
+            "gpt-5.3": "openai",
+            "gpt-5.3-mini": "openai",
+            "gpt-5.3-codex": "openai",
+            "gemini-3.1-pro-preview": "gemini",
+            "gemini-3.1-pro-preview-customtools": "gemini",
+            "gemini-3-flash-preview": "gemini",
+            "kimi-k3": "kimi",
+            "deepseek-v4-pro": "deepseek",
+            "deepseek-v4-flash": "deepseek",
+            "qwen-3.8-27b": "cerebras",
+            "gpt-oss-120b": "cerebras",
+            "MiniMax-M2.5": "minimax",
+        }
+    return catalog
+
+
+def _online_models() -> dict[str, str]:
+    """Return the hosted-model → provider catalog (cached, built once)."""
+    global _ONLINE_MODELS
+    if not _ONLINE_MODELS:
+        _ONLINE_MODELS = _build_online_models_catalog()
+    return _ONLINE_MODELS
 
 
 def resolve_model(model, local_host="localhost", local_port=8000):
-    """Resolve an explicit ``-m`` model name to ``(provider, base_url)``.
+    """Resolve a ``-m`` model name to ``(provider, base_url)``.
 
-    Shared by :class:`Agent` and ``agent-commit`` so the two never
-    drift apart.
+    Thin wrapper around :func:`resolve_backend_target`, kept for
+    API compatibility: the model-level view of the full resolver
+    (``agent-commit`` and the sub-agent pool now call
+    ``resolve_backend_target`` / ``_online_models`` directly).
 
-    Returns:
-        * Known online model → ``(its_provider, None)`` — the caller
-          falls back to the configured ``base_url``.
-        * Unknown name → ``(None, local_base_url)`` — the caller keeps
-          its current provider and points at the local server.
+    * Hosted model (in the catalog, and no server is pinned for it) →
+      ``(its_provider, None)``.
+    * Local declaration (name not in the catalog, or a pinned local
+      server) → ``(local_provider, local_base_url)``.
     """
-    provider = _ONLINE_MODELS.get(model)
-    if provider is not None:
+    provider, _model, base_url = resolve_backend_target(
+        model_name=model, local_model=None,
+        local_host=local_host, local_port=local_port,
+    )
+    if base_url is None and provider is not None:
         return provider, None
-    return None, f"http://{_format_host_for_url(local_host)}:{local_port}"
+    return None, base_url
+
+
+def resolve_backend_target(
+    *,
+    model_name: str | None = None,
+    local_model: str | None = None,
+    local_host: str = "localhost",
+    local_port: int = 8000,
+    cli_provider: str | None = None,
+    cli_local: bool = False,
+    config_provider: str | None = None,
+    config_model: str | None = None,
+    config_base_url: str | None = None,
+) -> tuple[str, str, str | None]:
+    """Resolve which backend must serve this run.
+
+    The single decision point for provider / model / destination,
+    shared by the ``agent`` CLI and ``agent-commit`` so the two never
+    drift.  Returns ``(provider, model, base_url)`` — the exact
+    arguments to pass to ``create_backend``.
+
+    Rules (in resolution order):
+
+    1. **Forced local** — the ``--local`` flag, a pinned ``base_url``
+       that points at this machine, or the ``LOCAL_MODEL`` env var
+       (auto-enable; an explicit ``-m`` / ``-o`` yields to neither) —
+       the run talks to the local server.  Local traffic **never uses
+       a hosted provider's SDK**: the provider resolves to ``openai``,
+       the OpenAI-compatible *chat-completions* client that local
+       servers (Ollama, vLLM, llama.cpp, …) implement — unless an
+       explicit ``--provider`` (strongest intent) or a config
+       ``provider: openai`` / ``anthropic`` pin (local-compatible wire
+       format) names the client.  A hosted pin (``cerebras``, …) is
+       demoted, never pointed at localhost.
+    2. **An explicit ``-m`` model selects:** a name in the hosted
+       catalog → its hosting provider (a conflicting provider pin
+       loses, with a visible warning; a pinned *remote* base_url stays
+       the destination — a proxy); a pinned *local* base_url →
+       that server (local deployments may reuse a hosted model's name);
+       unknown name → the local server.
+    3. **A pinned model (config / env) selects** the same way: hosted
+       names auto-select their provider (model selection is never
+       silently ignored), unknown names keep a provider pin when one
+       is set (a proxy), else go to the local server.
+    4. **No model anywhere:** the provider chain's default model
+       (``PROVIDER_DEFAULT_MODELS``), provider defaulting to
+       ``anthropic`` (legacy behaviour).
+
+    Raises:
+        ValueError: a local destination is forced (``--local`` or a
+            local ``base_url`` pin) but no model name is available.
+    """
+    cfg_prov = (config_provider or "").strip().lower() or None
+    cfg_base = config_base_url.strip() if config_base_url else None
+    cfg_model = (
+        config_model.strip()
+        if isinstance(config_model, str) and config_model.strip()
+        else None
+    )
+
+    def _local_provider() -> str:
+        # Local wire format: an explicit --provider CLI pin is always
+        # honoured (strongest intent — e.g. a proxy speaking that
+        # provider's shapes); a config-file pin of a local-compatible
+        # shape (openai: chat completions / anthropic: Anthropic-shaped
+        # local servers) picks the wire format; every other pin
+        # (hosted provider SDKs included) is demoted to the
+        # OpenAI-compatible chat-completions client.
+        if cli_provider:
+            return cli_provider
+        return cfg_prov if cfg_prov in ("openai", "anthropic") else "openai"
+
+    def _local_dest(model: str, prefer_pin: bool) -> tuple[str, str, str]:
+        base = (
+            cfg_base
+            if (prefer_pin and cfg_base)
+            else _local_base_url(local_host, local_port)
+        )
+        return _local_provider(), model, base
+
+    # ── 1. Forced local ──────────────────────────────────
+    if cli_local:
+        model = model_name or local_model or cfg_model
+        if not model:
+            raise ValueError(
+                "--local requires a model: set the LOCAL_MODEL "
+                "environment variable, add a 'model:' key to your "
+                ".agent / agent_config.yaml, or pass -m NAME."
+            )
+        return _local_dest(model, prefer_pin=bool(cfg_base))
+    if cfg_base and _looks_local_base_url(cfg_base):
+        # A pinned local endpoint is always the destination (a local
+        # deployment may reuse a hosted model's name — the pin wins
+        # over catalog auto-detection).
+        model = model_name or local_model or cfg_model
+        if not model:
+            raise ValueError(
+                f"The pinned base_url ({cfg_base}) is a local "
+                "endpoint and needs a model: set LOCAL_MODEL, add a "
+                "'model:' key to your .agent / agent_config.yaml, or "
+                "pass -m NAME."
+            )
+        return _local_dest(model, prefer_pin=True)
+    if local_model and not model_name:
+        # LOCAL_MODEL env auto-enables local mode (an explicit -m is
+        # handled below and always wins; -o disarms this in main()).
+        return _local_dest(local_model, prefer_pin=False)
+
+    # ── 2. Explicit -m model ──────────────────────────
+    if model_name:
+        hosting = _online_models().get(model_name)
+        if hosting:
+            pinned = cli_provider or cfg_prov
+            if pinned and pinned != hosting:
+                # A concrete model is more specific than a provider
+                # pin: the model selects its provider — say so.
+                safe_console_print(
+                    f"Model {model_name!r} is hosted by {hosting!r}, "
+                    f"not {pinned!r} — using {hosting!r}.",
+                    style="warning",
+                )
+            return hosting, model_name, (
+                cfg_base
+                if (cfg_base and not _looks_local_base_url(cfg_base))
+                else None
+            )
+        # Unknown (local) model name: the local server, canonical URL.
+        return _local_dest(model_name, prefer_pin=False)
+
+    # ── 3. Pinned model (config / env) ─────────────────────
+    if cfg_model:
+        hosting = _online_models().get(cfg_model)
+        if hosting:
+            pinned = cli_provider or cfg_prov
+            if pinned and pinned != hosting:
+                safe_console_print(
+                    f"Model {cfg_model!r} is hosted by {hosting!r}, "
+                    f"not {pinned!r} — using {hosting!r}.",
+                    style="warning",
+                )
+                return hosting, cfg_model, None
+            return (pinned or hosting), cfg_model, None
+        # Unknown name: a provider pin (e.g. a proxy) is honoured as
+        # written; otherwise the local server (round-tripping the name
+        # to a default hosted provider would only 400).
+        pinned = cli_provider or cfg_prov
+        if pinned:
+            return pinned, cfg_model, (
+                cfg_base
+                if (cfg_base and not _looks_local_base_url(cfg_base))
+                else None
+            )
+        return _local_dest(cfg_model, prefer_pin=False)
+
+    # ── 4. No model anywhere: provider chain + default model ────
+    provider = cli_provider or cfg_prov or "anthropic"
+    return provider, PROVIDER_DEFAULT_MODELS.get(
+        provider, "claude-opus-4-6"
+    ), (
+        cfg_base
+        if (cfg_base and not _looks_local_base_url(cfg_base))
+        else None
+    )
+
 
 
 # ── Message helpers ──────────────────────────────────────────────────
@@ -759,7 +981,7 @@ class Agent:
     def __init__(self, configuration_name, task, compute_budget=2.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
                  session_id=None, model=None, provider=None,
-                 planning_mode=False, effort=None):
+                 planning_mode=False, effort=None, cli_local=False):
         """Initialize the Agent.
 
         Args:
@@ -767,16 +989,25 @@ class Agent:
             task: The task to be performed
             compute_budget: Maximum allowed cost in dollars
             context: Optional list of previous conversation messages
-            local_model: If set, use a local Anthropic-compatible API with this model name
+            local_model: If set, use a local OpenAI-compatible API with
+                   this model name
             local_port: Port for the local API server (default 8000)
             local_host: Hostname for the local API server (default "localhost")
             session_id: Optional session ID for saving/restoring context
-            model: Explicit model name.  Online models are auto-detected
-                   (no -o needed).  Unknown names are treated as local.
+            model: Explicit model name.  Hosted models auto-select their
+                   provider (no -o needed); a name no provider hosts is
+                   treated as local.  Full ruleset:
+                   :func:`resolve_backend_target`.
             provider: Explicit provider name (e.g. ``"cerebras"``,
-                   ``"openai"``).  Highest-priority provider override;
-                   falls back to the ``.agent`` file, then the YAML
+                   ``"openai"``).  Highest-priority provider choice; a
+                   ``-m`` model hosted elsewhere selects its own
+                   provider instead (with a warning).  Falls back to
+                   the ``.agent`` file, then env, then the YAML
                    config, then ``"anthropic"``.
+            cli_local: True when the run was started with an explicit
+                   ``--local`` flag: the local destination is forced
+                   even when a config pin names a hosted model (a
+                   local deployment may reuse a hosted model's name).
             planning_mode: If True, start in PLANNING MODE — the agent
                    may only explore (read-only commands) and write a
                    plan; state-changing commands are blocked until the
@@ -804,61 +1035,42 @@ class Agent:
         # (``--provider`` / ``--model``) override it.
         agent_cfg = load_agent_config()
 
-        # Determine provider.  Priority:
-        #   CLI --provider > .agent (project > home > AGENT_MODEL_PROVIDER
-        #   env) > YAML > "anthropic".  ``agent_cfg`` already folds the
-        #   AGENT_* env vars in as its lowest layer, so no separate env
-        #   read is needed here.
-        provider = (
-            provider
-            or agent_cfg.get("provider")
-            or configuration.get("provider")
-            or "anthropic"
+        # ── Resolve backend target ─────────────────────────────
+        # Provider / model / destination in one shared decision point
+        # (resolve_backend_target — shared with agent-commit):
+        #
+        # * a hosted model selects its own provider, so model
+        #   selection is never silently ignored (no stale static model
+        #   maps, no config-pinned model phoning the default provider);
+        # * local traffic (a ``--local`` flag, the LOCAL_MODEL env var,
+        #   a local ``base_url`` pin, or a model name no provider
+        #   hosts) always goes to the OpenAI-compatible
+        #   *chat-completions* client at ``http://host:port/v1`` — a
+        #   pinned hosted provider (e.g. ``provider: cerebras``) is
+        #   demoted, never pointed at the local machine;
+        # * a pinned ``base_url`` is always the destination (a local
+        #   pin forces local mode; a remote one is a proxy).
+        provider, model, base_url = resolve_backend_target(
+            model_name=model,
+            local_model=local_model,
+            local_host=local_host,
+            local_port=local_port,
+            cli_local=cli_local,
+            cli_provider=provider,
+            config_provider=(
+                agent_cfg.get("provider")
+                or configuration.get("provider")
+            ),
+            config_model=(
+                agent_cfg.get("model")
+                or configuration.get("model")
+            ),
+            config_base_url=(
+                agent_cfg.get("base_url")
+                or configuration.get("base_url")
+            ),
         )
-
-        # Base URL from the ``.agent`` file or the YAML config.  Local
-        # mode (below) overrides both.
-        base_url = (
-            agent_cfg.get("base_url")
-            or configuration.get("base_url")
-            or None
-        )
-
-        # Provider-specific default models (used when no model is given).
-        provider_defaults = {
-            "anthropic": "claude-opus-4-6",
-            "openai": "gpt-5.3-codex",
-            "gemini": "gemini-3.1-pro-preview",
-            "kimi": "kimi-k3",
-            "deepseek": "deepseek-v4-pro",
-            "cerebras": "qwen-3.8-27b",
-        }
-
-        # ── Resolve model and provider ──────────────────────────────
-        # Priority: explicit -m flag > local_model (env/flag) > .agent
-        # model > AGENT_MODEL env > provider default.
-        if model is not None:
-            # Explicit model via -m: auto-detect online vs local.  A
-            # known online model keeps the resolved provider; an unknown
-            # name is treated as local (keeps the current provider and
-            # points at the local server).
-            detected_provider, local_base_url = resolve_model(
-                model, local_host, local_port
-            )
-            self.model_name = model
-            if detected_provider is not None:
-                provider = detected_provider
-            else:
-                base_url = local_base_url
-        elif local_model:
-            self.model_name = local_model
-            base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
-        elif agent_cfg.get("model"):
-            self.model_name = agent_cfg["model"]
-        elif os.environ.get("AGENT_MODEL"):
-            self.model_name = os.environ["AGENT_MODEL"]
-        else:
-            self.model_name = provider_defaults.get(provider, "claude-opus-4-6")
+        self.model_name = model
 
         # Temperature: ``.agent`` > YAML > backend default.  If neither
         # specifies one, each backend uses its own default (1.0 for most
@@ -1020,6 +1232,15 @@ class Agent:
         self._agent_pool = AgentPool()
         self._agent_pool.model = self.model_name
         self._agent_pool.effort = self.reasoning_effort
+        # A local parent delegates on the SAME local server: the
+        # child inherits this project's config files, which may pin a
+        # hosted provider — the propagated --local/-H/-p flags override
+        # that pin for the child.
+        pool_base_url = self.client.base_url
+        self._agent_pool.local_model = bool(
+            pool_base_url and _looks_local_base_url(pool_base_url)
+        )
+        self._agent_pool.local_base_url = pool_base_url
         _register_pool(self._agent_pool)
 
     def _seed_first_turn(self):
@@ -1801,7 +2022,7 @@ class SessionNotFoundError(Exception):
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
               local_host="localhost", nogit=False, model=None, provider=None,
-              planning_mode=False, effort=None):
+              planning_mode=False, effort=None, cli_local=False):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -1829,6 +2050,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         effort: Optional reasoning effort (see :class:`Agent`); ``None``
                keeps each backend's per-model default.  Propagated to
                sub-agents via :class:`AgentPool`.
+        cli_local: True when started with an explicit ``--local`` flag
+               (see :class:`Agent`).
 
     Returns:
         tuple: (completion_text, success_bool, session_id)
@@ -1855,7 +2078,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                   local_model=local_model, local_port=local_port,
                   local_host=local_host, session_id=effective_sid,
                   model=model, provider=provider,
-                  planning_mode=planning_mode, effort=effort)
+                  planning_mode=planning_mode, effort=effort,
+                  cli_local=cli_local)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -1973,7 +2197,7 @@ def main():
                         help='Session ID to use or resume (max 10 alphanumeric chars)')
     local_group = parser.add_mutually_exclusive_group()
     local_group.add_argument('-l', '--local', action='store_true',
-                             help='Use a local Anthropic-compatible API (also enabled automatically when LOCAL_MODEL env var is set)')
+                             help='Use a local OpenAI-compatible API server (also enabled automatically when the LOCAL_MODEL env var is set)')
     local_group.add_argument('-o', '--online', action='store_true',
                              help='Use the online model provider (ignores LOCAL_MODEL env var)')
     parser.add_argument('-m', '--model', type=str, default=None,
@@ -2076,20 +2300,21 @@ def main():
             backticks = '`' * 5
             command = command + "\n" + backticks + "\n" + piped_content + "\n" + backticks
 
-    # Resolve model selection:
-    # -m/--model takes highest priority — auto-detects online vs local
+    # Resolve model selection (full ruleset in resolve_backend_target):
+    # -m/--model takes highest priority — a hosted model auto-selects
+    # its provider, a name no provider hosts is treated as local
     # -o/--online forces online (ignores LOCAL_MODEL)
-    # -l/--local forces local (requires LOCAL_MODEL)
-    # If neither -m nor -o nor -l, LOCAL_MODEL env var enables local mode.
+    # -l/--local forces the local server — the model may also come
+    #   from LOCAL_MODEL or a "model:" config pin (clean error if
+    #   nothing names one)
+    # With neither -m nor -o, the LOCAL_MODEL env var auto-enables
+    # local mode.
     model_arg = args.model
-    local_model = None
-    if model_arg is None and not args.online:
-        if args.local:
-            local_model = os.environ.get('LOCAL_MODEL')
-            if not local_model:
-                parser.error('--local requires the LOCAL_MODEL environment variable to be set')
-        else:
-            local_model = os.environ.get('LOCAL_MODEL')
+    local_model = (
+        os.environ.get('LOCAL_MODEL')
+        if model_arg is None and not args.online
+        else None
+    )
 
     try:
         completion, success, sid = run_agent(
@@ -2098,7 +2323,12 @@ def main():
             local_model=local_model, local_port=args.port,
             local_host=args.host, nogit=args.nogit,
             model=model_arg, provider=args.provider,
-            planning_mode=args.plan, effort=effort_arg)
+            planning_mode=args.plan, effort=effort_arg,
+            cli_local=args.local)
+    except ValueError as e:
+        # Resolver model validation (e.g. --local with no model anywhere):
+        # a clean CLI error, not a traceback.
+        parser.error(str(e))
     except SessionNotFoundError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)

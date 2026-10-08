@@ -59,6 +59,12 @@ class AgentPool:
         # Reasoning effort to propagate (canonical rank from parse_effort,
         # or None when the parent keeps the backends' defaults).
         self.effort: int | None = None
+        # Local-mode propagation: when the parent resolved to a local
+        # server, the child must run on that same server (model name +
+        # host + port) — inherited env/config pins alone cannot say so
+        # (a project .agent may pin a hosted provider).
+        self.local_model: bool = False
+        self.local_base_url: str | None = None
 
     def create(
         self,
@@ -154,13 +160,28 @@ class AgentPool:
             "--nogit",
         ]
 
-        # Propagate the parent's model when it's a known online model —
-        # ``-m`` auto-detects the provider.  Local-model selection
-        # already propagates via the inherited LOCAL_MODEL env var.
+        # Propagate the parent's model.  Hosted (catalog) models get a
+        # plain ``-m`` — the child auto-detects the provider via the
+        # same catalog.  A local parent passes ``-m`` plus ``--local``
+        # and the resolved host/port: the child's own env/config pins
+        # cannot express the parent's local destination (its project
+        # .agent may pin a hosted provider).  An unknown model on a
+        # hosted parent is NOT passed: the child inherits the same
+        # config files and thus the parent's provider/model pins.
         if self.model:
-            from .agents import _ONLINE_MODELS
-            if self.model in _ONLINE_MODELS:
-                cmd += ["-m", self.model]
+            if self.local_model and self.local_base_url:
+                from urllib.parse import urlparse
+                _parsed = urlparse(self.local_base_url)
+                cmd += [
+                    "-m", self.model,
+                    "--local",
+                    "-H", _parsed.hostname or "localhost",
+                    "-p", str(_parsed.port or 8000),
+                ]
+            else:
+                from .agents import _online_models
+                if self.model in _online_models():
+                    cmd += ["-m", self.model]
 
         # Propagate the parent's reasoning effort, so a deliberate
         # ``-e low`` (say, to keep sub-agent reasoning cheap) is not

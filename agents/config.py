@@ -50,10 +50,13 @@ Example global ``~/.agents/agent_config.yaml``::
     model: qwen3.8-27b
     base_url: http://localhost:8000/v1
 
-Note on ``LOCAL_MODEL``: the auto-enable of local mode by the
-``LOCAL_MODEL`` env var (see :func:`agents.agents.main`) yields to any
-``provider`` or ``model`` pinned in config — an explicit ``--local``
-flag still forces local mode.
+Note on ``LOCAL_MODEL``: the ``LOCAL_MODEL`` env var auto-enables
+local mode unless ``-m`` names a model or ``-o``/``--online`` is
+passed; an explicit ``--local`` flag forces local mode (and errors
+cleanly when no model is named).  All routing rules — hosted-model
+auto-detection, local traffic always going to the OpenAI-compatible
+chat-completions client, a pinned ``base_url`` being the destination —
+live in :func:`agents.agents.resolve_backend_target`.
 """
 
 from __future__ import annotations
@@ -85,7 +88,9 @@ _VALID_KEYS: tuple[str, ...] = ("provider", "model", "base_url",
 
 #: Fallback model per provider, used when no model is pinned anywhere
 #: (``-m`` flag, ``AGENT_MODEL`` env var, or config file).  One
-#: shared constant so the CLI and ``agent-commit`` never drift.
+#: shared constant so the CLI, ``agent-commit`` and the backend
+#: resolution rules (see :func:`agents.agents.resolve_backend_target`)
+#: never drift.
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "claude-opus-4-6",
     "openai": "gpt-5.3-codex",
@@ -93,6 +98,7 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "kimi": "kimi-k3",
     "deepseek": "deepseek-v4-pro",
     "cerebras": "qwen-3.8-27b",
+    "minimax": "MiniMax-M2.5",
 }
 
 

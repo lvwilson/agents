@@ -21,8 +21,7 @@ import sys
 
 from ..agents import (
     read_configuration,
-    _format_host_for_url,
-    resolve_model,
+    resolve_backend_target,
 )
 from ..backends import create_backend
 from ..config import load_agent_config
@@ -97,64 +96,43 @@ def _generate_commit_message(
     config = read_configuration(agent_config)
     agent_cfg = load_agent_config()
 
-    # Base URL: ``.agent`` file > YAML config.
-    base_url = agent_cfg.get("base_url") or config.get("base_url") or None
-
-    provider_defaults = {
-        "anthropic": "claude-opus-4-6",
-        "openai": "gpt-5.3-codex",
-        "gemini": "gemini-3.1-pro-preview",
-        "kimi": "kimi-k3",
-        "deepseek": "deepseek-v4-pro",
-        "cerebras": "qwen-3.8-27b",
-    }
-
-    # ── Resolve model and provider ──────────────────────────────────
-    if model is not None:
-        # Explicit model via -m: auto-detect provider (shared helper so
-        # this never drifts from the Agent's own resolution).
-        local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
-        local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
-        detected_provider, local_base_url = resolve_model(
-            model, local_host, local_port
-        )
-        if detected_provider is not None:
-            # Known online model — use the detected provider
-            provider = detected_provider
-        else:
-            # Unknown model name — treat as local
-            provider = (
-                agent_cfg.get("provider")
-                or os.environ.get("AGENT_MODEL_PROVIDER")
-                or config.get("provider")
-                or "anthropic"
-            )
-            base_url = local_base_url
-    elif online:
-        provider = (
-            agent_cfg.get("provider")
-            or os.environ.get("AGENT_MODEL_PROVIDER")
-            or config.get("provider")
-            or "anthropic"
-        )
-        model = (
-            agent_cfg.get("model")
-            or os.environ.get("AGENT_MODEL")
-            or provider_defaults.get(provider, "claude-opus-4-6")
-        )
-    else:
-        model = os.environ.get("LOCAL_MODEL")
-        if not model:
+    # Same resolution rules as the agent CLI (resolve_backend_target —
+    # shared, so the two never drift): a hosted model selects its own
+    # provider (model selection is never silently ignored — with a
+    # ``provider: minimax / model: MiniMax-M2.5`` pin the old code
+    # phoned Claude instead, and no-model pins fell back to a default
+    # Claude model), local traffic always uses the OpenAI-compatible
+    # chat-completions client, and a pinned base_url is the destination.
+    #
+    # Without -m / -o a model must come from the LOCAL_MODEL env var —
+    # otherwise no LLM is called at all (a commit message is not worth
+    # a surprise hosted API round trip).
+    if model is None and not online:
+        if not os.environ.get("LOCAL_MODEL"):
             return _auto_message(files)
-        local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
-        local_port = os.environ.get("LOCAL_LLM_PORT", "8000")
-        provider = (
-            agent_cfg.get("provider")
-            or os.environ.get("AGENT_MODEL_PROVIDER")
-            or config.get("provider")
-            or "anthropic"
+
+    local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
+    try:
+        local_port = int(os.environ.get("LOCAL_LLM_PORT", "8000"))
+    except (TypeError, ValueError):
+        local_port = 8000
+    try:
+        provider, model, base_url = resolve_backend_target(
+            model_name=model,
+            local_model=(None if (model is not None or online)
+                         else os.environ.get("LOCAL_MODEL")),
+            local_host=local_host,
+            local_port=local_port,
+            config_provider=(agent_cfg.get("provider")
+                             or config.get("provider")),
+            config_model=agent_cfg.get("model"),
+            config_base_url=(agent_cfg.get("base_url")
+                             or config.get("base_url")),
         )
-        base_url = f"http://{_format_host_for_url(local_host)}:{local_port}"
+    except ValueError:
+        # A local destination without a model name: keyword message
+        # instead of a traceback.
+        return _auto_message(files)
 
     try:
         client = create_backend(
