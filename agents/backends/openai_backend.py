@@ -16,6 +16,7 @@ from ..llm_backend import (
     EmptyResponseError,
     RATE_LIMIT,
     TRANSIENT,
+    map_effort,
     merge_consecutive_messages,
 )
 
@@ -29,6 +30,7 @@ class OpenAIBackend(LLMBackend):
         "gpt-5.3": {"input_token_cost": 2.50, "output_token_cost": 10.00, "cache_read_cost": 1.25},
         "gpt-5.3-mini": {"input_token_cost": 0.15, "output_token_cost": 0.60, "cache_read_cost": 0.075},
         "gpt-5.3-codex": {"input_token_cost": 3.00, "output_token_cost": 12.00, "cache_read_cost": 1.50},
+        "gpt-6-astra": {"input_token_cost": 10.00, "output_token_cost": 50.00, "cache_read_cost": 1.00},
     }
 
     MODEL_DISPLAY_NAMES: dict[str, str] = {
@@ -37,6 +39,7 @@ class OpenAIBackend(LLMBackend):
         "gpt-5.3": "GPT-5.3",
         "gpt-5.3-mini": "GPT-5.3 Mini",
         "gpt-5.3-codex": "GPT-5.3 Codex",
+        "gpt-6-astra": "GPT-6 Astra",
     }
 
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -45,7 +48,26 @@ class OpenAIBackend(LLMBackend):
         "gpt-5.3":       128_000,
         "gpt-5.3-mini":  128_000,
         "gpt-5.3-codex": 128_000,
+        "gpt-6-astra":   1_100_000,
     }
+
+    #: Max output tokens per call (reasoning tokens count against this
+    #: budget).  All GPT-5.x models keep the class default (16,384);
+    #: gpt-6-astra raises it to its 128K output ceiling.
+    MODEL_MAX_COMPLETION: dict[str, int] = {
+        "gpt-6-astra": 128_000,
+    }
+
+    #: Effort levels the GPT models accept via the Responses API
+    #: ``reasoning={"effort": ...}`` parameter (installed openai SDK's
+    #: ``Reasoning.effort``).  ``none``/``minimal`` are not supported by
+    #: the flagship reasoning models (gpt-6-astra refuses them), so the
+    #: shallowest sendable level is ``low`` and a user ``--effort none``
+    #: clamps to it (reasoning stays on, as shallow as the model allows).
+    #: The default is the model's own — the parameter is omitted entirely
+    #: when the user did not request an effort.
+    EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
+    DEFAULT_EFFORT: str | None = None
 
     def __init__(
         self,
@@ -54,9 +76,16 @@ class OpenAIBackend(LLMBackend):
         cache_step: int = 4,
         stream_handler: StreamHandler | None = None,
         temperature: float = 1.0,
+        reasoning_effort: str | None = None,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature)
+        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature,
+                         reasoning_effort=reasoning_effort)
+
+        # Per-model max output (falls back to the class default).
+        self.MAX_COMPLETION_TOKENS = (
+            self.MODEL_MAX_COMPLETION.get(model, 16_384)
+        )
 
         # Lazy import
         import openai as _openai
@@ -180,10 +209,17 @@ class OpenAIBackend(LLMBackend):
             return 0.0
 
         uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
+        # Cached input is billed at the model's declared cache_read_cost
+        # (declared rates match half the input price for the GPT-5.x
+        # family; GPT-6 Astra's cache is 90% off, so the table must
+        # win over any flat discount factor).
+        cache_read_cost = pricing.get(
+            "cache_read_cost", pricing["input_token_cost"] * 0.5
+        )
 
         return (
             uncached_input_tokens * pricing["input_token_cost"]
-            + cache_read_tokens * pricing["input_token_cost"] * 0.5
+            + cache_read_tokens * cache_read_cost
             + output_tokens * pricing["output_token_cost"]
         ) / 1_000_000
 
@@ -206,14 +242,30 @@ class OpenAIBackend(LLMBackend):
         messages = self._format_messages(system_prompt, context)
         self._validate_responses_input(messages)
 
+        create_kwargs: dict = {
+            "model": self.model,
+            "input": messages,
+            "max_output_tokens": self.MAX_COMPLETION_TOKENS,
+            "temperature": self.temperature,
+            "stream": True,
+        }
+        # Reasoning effort: only sent when the user requested one
+        # (``--effort`` / config ``effort``, forwarded by the Agent as a
+        # canonical rank).  map_effort() clamps to the levels the GPT
+        # models accept (max→xhigh, none→low — they cannot disable
+        # reasoning), so one flag never 400s.  Omitted entirely when no
+        # effort is requested: the model's own default applies, and the
+        # wire format for existing deployments is unchanged.
+        effort = getattr(self, "reasoning_effort", None)
+        if effort is not None:
+            create_kwargs["reasoning"] = {
+                "effort": map_effort(
+                    effort, self.EFFORT_LEVELS, self.DEFAULT_EFFORT
+                )
+            }
+
         def attempt():
-            stream = self._client.responses.create(
-                model=self.model,
-                input=messages,
-                max_output_tokens=16384,
-                temperature=self.temperature,
-                stream=True,
-            )
+            stream = self._client.responses.create(**create_kwargs)
 
             collected_text = ""
             usage = None
