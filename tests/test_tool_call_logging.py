@@ -154,7 +154,10 @@ class TestKimiToolCallLogging(unittest.TestCase):
     # ── OpenAI (Responses API function_call output items) ────────────────
 
 def _make_openai(events):
-    backend = _bare(OpenAIBackend)
+    with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test"}), \
+         mock.patch("openai.OpenAI"):
+        backend = OpenAIBackend(model="gpt-5.3-codex")
+    backend.stream_handler = _RecordingHandler()
     backend._client = mock.Mock()
     backend._client.responses.create.return_value = iter(events)
     return backend

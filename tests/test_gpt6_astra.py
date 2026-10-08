@@ -108,12 +108,12 @@ class TestCost(unittest.TestCase):
         # 500 * $10 + 500 * $1 + 100 * $50 all per M.
         self.assertAlmostEqual(
             backend.calculate_cost(1000, 100, cache_read_tokens=500),
-            5_000 + 500 + 5_000,
+            (5_000 + 500 + 5_000) / 1_000_000,
             places=6,
         )
         self.assertAlmostEqual(
             backend.calculate_cost(1000, 100, cache_read_tokens=0),
-            10_000 + 5_000,
+            (10_000 + 5_000) / 1_000_000,
             places=6,
         )
 
@@ -124,13 +124,13 @@ class TestCost(unittest.TestCase):
         backend = _make_openai(model="gpt-5.3-codex")
         self.assertAlmostEqual(
             backend.calculate_cost(1_000_000, 0, cache_read_tokens=500_000),
-            500_000 * 3.00 + 500_000 * 1.50,
+            (500_000 * 3.00 + 500_000 * 1.50) / 1_000_000,
             places=6,
         )
         mini = _make_openai(model="gpt-5.2-mini")
         self.assertAlmostEqual(
             mini.calculate_cost(1_000_000, 0, cache_read_tokens=500_000),
-            500_000 * 0.15 + 500_000 * 0.075,
+            (500_000 * 0.15 + 500_000 * 0.075) / 1_000_000,
             places=6,
         )
 

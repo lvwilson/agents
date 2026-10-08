@@ -253,13 +253,35 @@ If the directory is **not** a Git repository, the harness behaves normally with 
 
 ### Local and Remote Models
 
-You can run against OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000`.
+You can run against OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000/v1`.
 
     LOCAL_MODEL=qwen3.8-27b agent --local "Explain quantum mechanics"
 
-You can change the port using the `-p` or `--port` flag, or by setting the `LOCAL_LLM_PORT` environment variable:
+Local mode uses the OpenAI-compatible **chat-completions** backend, even
+when an inherited configuration pins a hosted provider such as Cerebras.
+The model can also be supplied with `--local -m NAME` or a configured
+`model:`. An explicit `--provider` selects a different wire protocol;
+a configured `provider: anthropic` is also retained for Anthropic-compatible
+local servers.
 
-    LOCAL_MODEL=qwen2.5 agent --local -p 11434 "Write a haiku"
+Use `--base-url URL` to override the configured endpoint exactly (include
+`/v1` for OpenAI-compatible APIs). Endpoint pins are used verbatim with
+`--local`; use `--base-url` to replace an inherited proxy URL.
+For example:
+
+    agent --local -m local-model --base-url http://localhost:11434/v1 "Write a haiku"
+
+Without forced local mode, catalogued models select their hosted provider
+unless `--provider` is explicit. Custom proxy URLs are retained for both
+`-m` and configured models. Loopback endpoint pins force local routing;
+LAN servers should use `--local` or `--provider openai` when overriding a
+cloud-provider pin. Sub-agents inherit the resolved provider, model, and
+exact endpoint, including scheme and path.
+
+
+You can change the port using the `--port` flag, or by setting the `LOCAL_LLM_PORT` environment variable:
+
+    LOCAL_MODEL=qwen2.5 agent --local --port 11434 "Write a haiku"
 
     # Or set the port via environment variable (useful in .bashrc)
     export LOCAL_LLM_PORT=11434
@@ -274,4 +296,4 @@ To connect to a remote LLM server, use the `-H` or `--host` flag, or set the `LO
     export LOCAL_LLM_PORT=8000
     LOCAL_MODEL=qwen3.8-27b agent --local "Explain quantum mechanics"
 
-The `-H` flag takes precedence over `LOCAL_LLM_HOST`, and `-p` takes precedence over `LOCAL_LLM_PORT`, when both are specified.
+The `-H` flag takes precedence over `LOCAL_LLM_HOST`, and `--port` takes precedence over `LOCAL_LLM_PORT`, when both are specified.

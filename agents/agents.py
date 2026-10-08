@@ -14,6 +14,8 @@ import sys
 import time
 import traceback
 from typing import Optional
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 # Third-party imports
 import yaml
@@ -109,9 +111,9 @@ def _local_base_url(local_host="localhost", local_port=8000) -> str:
     """Canonical local/remote LLM server URL: ``http://host:port/v1``.
 
     Local OpenAI-compatible servers (Ollama, vLLM, llama.cpp, …) expose
-    their API under ``/v1``, so resolved local destinations always carry
-    the suffix — a pinned ``base_url`` is only used verbatim when it
-    already points at one.
+    their API under ``/v1``, so generated destinations carry the suffix.
+    Explicit ``base_url`` pins are used verbatim and must include the
+    server's required API path.
     """
     return f"http://{_format_host_for_url(local_host)}:{local_port}/v1"
 
@@ -123,11 +125,19 @@ def _looks_local_base_url(base_url: str) -> bool:
     anything not obviously local (proxy, LAN host, …) is honoured as
     the provider was pinned, pin included.
     """
-    host: str = str(base_url).split("//", 1)[-1].split("/", 1)[0]
-    if ":" in host:  # strip any port (also IPv6-in-brackets form)
-        host = host.rsplit(":", 1)[0]
-    host = host.strip("[]").lower()
-    return host in ("", "localhost", "127.0.0.1", "::1", "0.0.0.0")
+    try:
+        host = urlsplit(base_url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host.lower().rstrip(".") == "localhost":
+        return True
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
 
 
 def _build_online_models_catalog() -> dict[str, str]:
@@ -187,7 +197,7 @@ def resolve_model(model, local_host="localhost", local_port=8000):
     * Hosted model (in the catalog, and no server is pinned for it) →
       ``(its_provider, None)``.
     * Local declaration (name not in the catalog, or a pinned local
-      server) → ``(local_provider, local_base_url)``.
+      server) → ``(None, local_base_url)`` (legacy local sentinel).
     """
     provider, _model, base_url = resolve_backend_target(
         model_name=model, local_model=None,
@@ -206,6 +216,7 @@ def resolve_backend_target(
     local_port: int = 8000,
     cli_provider: str | None = None,
     cli_local: bool = False,
+    cli_base_url: str | None = None,
     config_provider: str | None = None,
     config_model: str | None = None,
     config_base_url: str | None = None,
@@ -231,11 +242,13 @@ def resolve_backend_target(
        format) names the client.  A hosted pin (``cerebras``, …) is
        demoted, never pointed at localhost.
     2. **An explicit ``-m`` model selects:** a name in the hosted
-       catalog → its hosting provider (a conflicting provider pin
-       loses, with a visible warning; a pinned *remote* base_url stays
+       catalog → its hosting provider unless ``--provider`` is explicit
+       (a conflicting config provider loses, with a visible warning;
+       a pinned *remote* base_url stays
        the destination — a proxy); a pinned *local* base_url →
        that server (local deployments may reuse a hosted model's name);
-       unknown name → the local server.
+       unknown name → the pinned endpoint/provider, or the local server
+       when neither was explicitly selected.
     3. **A pinned model (config / env) selects** the same way: hosted
        names auto-select their provider (model selection is never
        silently ignored), unknown names keep a provider pin when one
@@ -244,12 +257,19 @@ def resolve_backend_target(
        (``PROVIDER_DEFAULT_MODELS``), provider defaulting to
        ``anthropic`` (legacy behaviour).
 
+    ``cli_base_url`` overrides the configured endpoint verbatim. A pinned
+    endpoint is retained with ``--local``; host/port build the fallback
+    destination only when no endpoint is selected. An empty CLI URL clears
+    an inherited endpoint pin.
+
     Raises:
         ValueError: a local destination is forced (``--local`` or a
             local ``base_url`` pin) but no model name is available.
     """
     cfg_prov = (config_provider or "").strip().lower() or None
-    cfg_base = config_base_url.strip() if config_base_url else None
+    base_url = cli_base_url if cli_base_url is not None else config_base_url
+    cfg_base = (base_url or "").strip() or None
+    cli_provider = (cli_provider or "").strip().lower() or None
     cfg_model = (
         config_model.strip()
         if isinstance(config_model, str) and config_model.strip()
@@ -302,11 +322,11 @@ def resolve_backend_target(
     if local_model and not model_name:
         # LOCAL_MODEL env auto-enables local mode (an explicit -m is
         # handled below and always wins; -o disarms this in main()).
-        return _local_dest(local_model, prefer_pin=False)
+        return _local_dest(local_model, prefer_pin=cli_base_url is not None)
 
     # ── 2. Explicit -m model ──────────────────────────
     if model_name:
-        hosting = _online_models().get(model_name)
+        hosting = cli_provider or _online_models().get(model_name)
         if hosting:
             pinned = cli_provider or cfg_prov
             if pinned and pinned != hosting:
@@ -322,12 +342,15 @@ def resolve_backend_target(
                 if (cfg_base and not _looks_local_base_url(cfg_base))
                 else None
             )
-        # Unknown (local) model name: the local server, canonical URL.
+        # An explicit endpoint may serve models absent from our catalog.
+        if cfg_base:
+            return cfg_prov or "openai", model_name, cfg_base
+        # Unknown model without an endpoint: generic local server.
         return _local_dest(model_name, prefer_pin=False)
 
     # ── 3. Pinned model (config / env) ─────────────────────
     if cfg_model:
-        hosting = _online_models().get(cfg_model)
+        hosting = cli_provider or _online_models().get(cfg_model)
         if hosting:
             pinned = cli_provider or cfg_prov
             if pinned and pinned != hosting:
@@ -336,8 +359,7 @@ def resolve_backend_target(
                     f"not {pinned!r} — using {hosting!r}.",
                     style="warning",
                 )
-                return hosting, cfg_model, None
-            return (pinned or hosting), cfg_model, None
+            return hosting, cfg_model, cfg_base
         # Unknown name: a provider pin (e.g. a proxy) is honoured as
         # written; otherwise the local server (round-tripping the name
         # to a default hosted provider would only 400).
@@ -348,6 +370,8 @@ def resolve_backend_target(
                 if (cfg_base and not _looks_local_base_url(cfg_base))
                 else None
             )
+        if cfg_base:
+            return "openai", cfg_model, cfg_base
         return _local_dest(cfg_model, prefer_pin=False)
 
     # ── 4. No model anywhere: provider chain + default model ────
@@ -981,7 +1005,7 @@ class Agent:
     def __init__(self, configuration_name, task, compute_budget=2.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
                  session_id=None, model=None, provider=None,
-                 planning_mode=False, effort=None, cli_local=False):
+                 planning_mode=False, effort=None, cli_local=False, base_url=None):
         """Initialize the Agent.
 
         Args:
@@ -1039,7 +1063,8 @@ class Agent:
         # Provider / model / destination in one shared decision point
         # (resolve_backend_target — shared with agent-commit):
         #
-        # * a hosted model selects its own provider, so model
+        # * a hosted model selects its own provider unless explicitly
+        #   overridden by --provider, so model
         #   selection is never silently ignored (no stale static model
         #   maps, no config-pinned model phoning the default provider);
         # * local traffic (a ``--local`` flag, the LOCAL_MODEL env var,
@@ -1057,6 +1082,7 @@ class Agent:
             local_port=local_port,
             cli_local=cli_local,
             cli_provider=provider,
+            cli_base_url=base_url,
             config_provider=(
                 agent_cfg.get("provider")
                 or configuration.get("provider")
@@ -1071,6 +1097,8 @@ class Agent:
             ),
         )
         self.model_name = model
+        self.provider = provider
+        self.base_url = base_url
 
         # Temperature: ``.agent`` > YAML > backend default.  If neither
         # specifies one, each backend uses its own default (1.0 for most
@@ -1232,15 +1260,10 @@ class Agent:
         self._agent_pool = AgentPool()
         self._agent_pool.model = self.model_name
         self._agent_pool.effort = self.reasoning_effort
-        # A local parent delegates on the SAME local server: the
-        # child inherits this project's config files, which may pin a
-        # hosted provider — the propagated --local/-H/-p flags override
-        # that pin for the child.
-        pool_base_url = self.client.base_url
-        self._agent_pool.local_model = bool(
-            pool_base_url and _looks_local_base_url(pool_base_url)
-        )
-        self._agent_pool.local_base_url = pool_base_url
+        # Propagate the resolved target, not a hostname-based guess about
+        # whether it is local. LAN servers and proxies need the exact URL.
+        self._agent_pool.provider = self.provider
+        self._agent_pool.base_url = self.base_url
         _register_pool(self._agent_pool)
 
     def _seed_first_turn(self):
@@ -2022,7 +2045,7 @@ class SessionNotFoundError(Exception):
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
               local_host="localhost", nogit=False, model=None, provider=None,
-              planning_mode=False, effort=None, cli_local=False):
+              planning_mode=False, effort=None, cli_local=False, base_url=None):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -2050,6 +2073,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         effort: Optional reasoning effort (see :class:`Agent`); ``None``
                keeps each backend's per-model default.  Propagated to
                sub-agents via :class:`AgentPool`.
+        base_url: Explicit endpoint override (CLI ``--base-url``); takes
+                  precedence over configuration and is used verbatim.
         cli_local: True when started with an explicit ``--local`` flag
                (see :class:`Agent`).
 
@@ -2079,7 +2104,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                   local_host=local_host, session_id=effective_sid,
                   model=model, provider=provider,
                   planning_mode=planning_mode, effort=effort,
-                  cli_local=cli_local)
+                  cli_local=cli_local, base_url=base_url)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -2217,6 +2242,9 @@ def main():
              'per-model default.  Can also be set via the effort key in '
              '.agent / agent_config.yaml or AGENT_EFFORT.',
     )
+    parser.add_argument('--base-url', default=None,
+                        help='Exact API endpoint; overrides configured base_url '
+                             '(include /v1 for OpenAI-compatible servers)')
     parser.add_argument('--port', type=int, default=None,
                         help='Port for the local API server (default: LOCAL_LLM_PORT or 8000)')
     parser.add_argument('-H', '--host', type=str, default=None,
@@ -2324,7 +2352,7 @@ def main():
             local_host=args.host, nogit=args.nogit,
             model=model_arg, provider=args.provider,
             planning_mode=args.plan, effort=effort_arg,
-            cli_local=args.local)
+            cli_local=args.local, base_url=args.base_url)
     except ValueError as e:
         # Resolver model validation (e.g. --local with no model anywhere):
         # a clean CLI error, not a traceback.
