@@ -55,15 +55,30 @@ class TestResolution(unittest.TestCase):
             ("cerebras", "new-cloud-model", None),
         )
 
-    def test_hosted_catalog_overrides_inherited_provider(self):
-        with mock.patch.object(app, "safe_console_print") as warning:
+    def test_hosted_catalog_overrides_inherited_provider_silently(self):
+        # The override is the useful half of this rule: a concrete
+        # hosted model beats a stale ``provider:`` pin.  The printout
+        # is not — the banner already names the model that runs, so
+        # the resolution must stay correct while the terminal says
+        # nothing at all (the decision survives at debug level).
+        cases = (
+            {"config_provider": "anthropic", "config_model": "qwen-3.8-27b"},
+            {"config_provider": "cerebras", "model_name": "claude-opus-4-6"},
+        )
+        for kwargs in cases:
+            expected_provider = app._online_models()[
+                kwargs.get("config_model") or kwargs["model_name"]
+            ]
+            with self.subTest(**kwargs), \
+                    mock.patch.object(app, "safe_console_print") as console, \
+                    mock.patch("logging.debug") as debug_log:
+                resolved = app.resolve_backend_target(**kwargs)
             self.assertEqual(
-                app.resolve_backend_target(
-                    config_provider="anthropic", config_model="qwen-3.8-27b",
-                ),
-                ("cerebras", "qwen-3.8-27b", None),
+                resolved[0], expected_provider,
+                "the hosted model must still select its provider",
             )
-        warning.assert_called_once()
+            console.assert_not_called()
+            debug_log.assert_called_once()
 
     def test_proxy_retained_for_explicit_and_configured_models(self):
         url = "https://proxy.example/custom/v1"
