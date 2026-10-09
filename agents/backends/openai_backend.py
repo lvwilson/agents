@@ -108,7 +108,7 @@ class OpenAIBackend(LLMBackend):
     # ── Message format translation ───────────────────────────────────
 
     @staticmethod
-    def _format_messages(system_prompt: str, context: list[dict]) -> list[dict]:
+    def _format_messages(system_prompt: str, context: list[dict], model: str | None = None) -> list[dict]:
         """Convert internal message format to OpenAI Responses API input.
 
         Role/content constraints enforced:
@@ -167,6 +167,13 @@ class OpenAIBackend(LLMBackend):
             elif role == "assistant":
                 # Assistant history must be output_* content types.
                 # Ignore non-text parts (e.g. images) as they are not valid replay items here.
+                native = msg.get("reasoning_context") or {}
+                if (model is not None and native.get("format") == "openai_responses"
+                        and native.get("model") == model):
+                    messages.extend(
+                        dict(item) for item in native.get("data", [])
+                        if isinstance(item, dict) and item.get("type") == "reasoning"
+                    )
                 items = _to_text_items(parts, "output_text")
             elif role == "system":
                 items = _to_text_items(parts, "input_text")
@@ -239,7 +246,7 @@ class OpenAIBackend(LLMBackend):
         """
         self.call_count += 1
         sh = self.stream_handler
-        messages = self._format_messages(system_prompt, context)
+        messages = self._format_messages(system_prompt, context, self.model)
         self._validate_responses_input(messages)
 
         create_kwargs: dict = {
@@ -248,6 +255,8 @@ class OpenAIBackend(LLMBackend):
             "max_output_tokens": self.MAX_COMPLETION_TOKENS,
             "temperature": self.temperature,
             "stream": True,
+            # Required for native reasoning replay without previous_response_id.
+            "include": ["reasoning.encrypted_content"],
         }
         # Reasoning effort: only sent when the user requested one
         # (``--effort`` / config ``effort``, forwarded by the Agent as a
@@ -269,24 +278,70 @@ class OpenAIBackend(LLMBackend):
 
             collected_text = ""
             usage = None
+            completed = None
+            reasoning_items = []
+            in_reasoning = False
 
             for event in stream:
-                if event.type == "response.output_text.delta":
+                if event.type in {
+                    "response.reasoning_summary_text.delta",
+                    "response.reasoning_text.delta",
+                }:
+                    if not in_reasoning:
+                        sh.on_stream_reasoning_start()
+                        in_reasoning = True
+                    if event.delta:
+                        sh.on_stream_reasoning_token(event.delta)
+                elif event.type in {
+                    "response.reasoning_summary_text.done",
+                    "response.reasoning_text.done",
+                }:
+                    if in_reasoning:
+                        sh.on_stream_reasoning_end()
+                        in_reasoning = False
+                elif event.type == "response.output_text.delta":
+                    if in_reasoning:
+                        sh.on_stream_reasoning_end()
+                        in_reasoning = False
                     text = event.delta
                     if text:
                         sh.on_stream_token(text)
                         collected_text += text
                 elif event.type == "response.output_item.done":
                     item = getattr(event, "item", None)
-                    if getattr(item, "type", None) == "function_call":
+                    if getattr(item, "type", None) == "reasoning":
+                        reasoning_items.append(item)
+                    elif getattr(item, "type", None) == "function_call":
                         self._pending_tool_calls.append((
                             getattr(item, "name", "?") or "?",
                             getattr(item, "arguments", "") or "",
                         ))
                 elif event.type == "response.completed":
                     if hasattr(event, "response") and event.response:
-                        usage = event.response.usage
+                        completed = event.response
+                        usage = getattr(completed, "usage", None)
+                elif event.type in {"response.failed", "response.incomplete", "error"}:
+                    raise RuntimeError(f"OpenAI stream did not complete: {event.type}")
 
+            if in_reasoning:
+                sh.on_stream_reasoning_end()
+            # Do not publish intermediate output_item.done data until the
+            # entire stream has ended successfully and response.completed
+            # confirms it. A dropped/failed stream cannot supply signatures.
+            if completed is not None and collected_text:
+                output = getattr(completed, "output", None)
+                items = output if output is not None else reasoning_items
+                native = [
+                    item.model_dump(mode="json", exclude_none=True)
+                    for item in items
+                    if getattr(item, "type", None) == "reasoning"
+                    and hasattr(item, "model_dump")
+                ]
+                if native:
+                    self.last_reasoning_context = {
+                        "format": "openai_responses", "model": self.model,
+                        "data": native,
+                    }
             return collected_text, usage
 
         return self._run_with_retries(attempt)
@@ -294,6 +349,7 @@ class OpenAIBackend(LLMBackend):
     # ── Public interface ─────────────────────────────────────────────
 
     def generate_response(self, system_prompt: str, context: list[dict]) -> str:
+        self.last_reasoning_context = {}
         text, usage = self._get_response(system_prompt, context)
 
         if usage is not None:

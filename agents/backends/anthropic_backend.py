@@ -222,7 +222,7 @@ class AnthropicBackend(LLMBackend):
     # ── Message format translation ───────────────────────────────────
 
     @staticmethod
-    def _format_messages(context: list[dict]) -> list[dict]:
+    def _format_messages(context: list[dict], model: str | None = None) -> list[dict]:
         """Convert internal flat image format to Anthropic's nested format.
 
         The internal format stores images as::
@@ -244,6 +244,14 @@ class AnthropicBackend(LLMBackend):
         for msg in context:
             parts = msg.get("content", [])
             translated = []
+            native = msg.get("reasoning_context") or {}
+            if (msg["role"] == "assistant" and model is not None
+                    and native.get("format") == "anthropic"
+                    and native.get("model") == model):
+                translated.extend(
+                    dict(block) for block in native.get("data", [])
+                    if AnthropicBackend._is_native_thinking(block)
+                )
             for part in parts:
                 if part.get("type") == "image" and "source" not in part:
                     translated.append({
@@ -258,6 +266,22 @@ class AnthropicBackend(LLMBackend):
                     translated.append(part)
             messages.append({"role": msg["role"], "content": translated})
         return messages
+
+    @staticmethod
+    def _is_native_thinking(block: dict) -> bool:
+        """Only replay provider-native blocks, never unsigned reasoning text.
+
+        DeepSeek/MiniMax use this same wire format; retain their supplied
+        signatures verbatim rather than synthesizing Claude signatures.
+        """
+        return isinstance(block, dict) and (
+            (block.get("type") == "thinking"
+             and isinstance(block.get("thinking"), str)
+             and isinstance(block.get("signature"), str)
+             and bool(block["signature"]))
+            or (block.get("type") == "redacted_thinking"
+                and isinstance(block.get("data"), str) and bool(block["data"]))
+        )
 
     # ── Core: get raw API response with retries ──────────────────────
 
@@ -323,7 +347,7 @@ class AnthropicBackend(LLMBackend):
             ]
 
         # Translate flat image format → Anthropic nested source format.
-        api_messages = self._format_messages(context)
+        api_messages = self._format_messages(context, self.model)
 
         stream_kwargs = dict(
             model=self.model,
@@ -410,6 +434,7 @@ class AnthropicBackend(LLMBackend):
     # ── Public interface ─────────────────────────────────────────────
 
     def generate_response(self, system_prompt: str, context: list[dict]) -> str:
+        self.last_reasoning_context = {}
         response = self._get_response(system_prompt, context)
 
         self.last_input_tokens = response.usage.input_tokens
@@ -450,10 +475,8 @@ class AnthropicBackend(LLMBackend):
         self._emit_tool_calls()
 
         # Collect text from all TextBlock objects in the response.
-        # ThinkingBlock content is deliberately excluded — reasoning was
-        # already streamed to the UI via the stream handler and must not
-        # enter the conversation history (it would inflate input token
-        # costs on every subsequent API call).
+        # Native thinking is kept separately from visible text so signatures
+        # can be replayed without leaking reasoning into command parsing.
         text_parts = []
         for block in response.content:
             if hasattr(block, "text") and block.text:
@@ -471,4 +494,15 @@ class AnthropicBackend(LLMBackend):
                     "fields at the end when the task is complete. "
                     f"(Debug: response contained blocks: {content_types})")
 
+        native_blocks = []
+        for block in response.content:
+            if getattr(block, "type", None) in {"thinking", "redacted_thinking"}:
+                if hasattr(block, "model_dump"):
+                    data = block.model_dump(mode="json", exclude_none=True)
+                    if self._is_native_thinking(data):
+                        native_blocks.append(data)
+        if native_blocks:
+            self.last_reasoning_context = {
+                "format": "anthropic", "model": self.model, "data": native_blocks,
+            }
         return text_content

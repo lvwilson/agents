@@ -7,6 +7,8 @@ Implements :class:`LLMBackend` using the ``google-genai`` unified SDK.
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import os
 
 from ..llm_backend import (
@@ -90,6 +92,7 @@ class GeminiBackend(LLMBackend):
         self.cache_step = cache_step
 
         # Context caching state
+        self._cached_prefix_digest: str | None = None
         self._cache_name: str | None = None       # Server-side cache resource name
         self._cached_msg_count: int = 0            # Number of context messages in the cache
         self._cached_system_prompt: str | None = None  # System prompt stored in cache
@@ -120,6 +123,22 @@ class GeminiBackend(LLMBackend):
             content_parts = msg.get("content", [])
 
             parts = []
+            native = msg.get("reasoning_context") or {}
+            if (role == "model" and native.get("format") == "gemini"
+                    and native.get("model") == self.model
+                    and isinstance(native.get("data"), list)
+                    and any(isinstance(p, dict) and p.get("thought_signature")
+                            for p in native["data"])):
+                # model_validate(dict) treats a base64 signature as literal
+                # UTF-8 bytes. JSON validation uses the SDK's bytes codec.
+                parts = [
+                    types.Part.model_validate_json(json.dumps(part))
+                    for part in native["data"]
+                ]
+                # These are the complete ordered text/thought parts, not
+                # an extra prefix: appending visible text would duplicate it.
+                contents.append(types.Content(role=role, parts=parts))
+                continue
             for part in content_parts:
                 if part.get("type") == "text" and part.get("text"):
                     parts.append(types.Part(text=part["text"]))
@@ -153,6 +172,17 @@ class GeminiBackend(LLMBackend):
             self._cache_name = None
             self._cached_msg_count = 0
             self._cached_system_prompt = None
+            self._cached_prefix_digest = None
+
+    def _prefix_digest(self, context: list[dict]) -> str:
+        """Fingerprint the wire prefix, including native thought signatures."""
+        payload = [
+            content.model_dump(mode="json", exclude_none=True)
+            for content in self._translate_messages(context)
+        ]
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
 
     def _create_cache(self, system_prompt: str, context: list[dict]) -> bool:
         """Create a server-side cache with the system prompt and context.
@@ -187,6 +217,7 @@ class GeminiBackend(LLMBackend):
             self._cache_name = cached_content.name
             self._cached_msg_count = len(messages_to_cache)
             self._cached_system_prompt = system_prompt
+            self._cached_prefix_digest = self._prefix_digest(messages_to_cache)
 
             # Charge storage for the full TTL up-front.  Use the
             # API-reported token count when available, otherwise
@@ -205,6 +236,7 @@ class GeminiBackend(LLMBackend):
             self._cache_name = None
             self._cached_msg_count = 0
             self._cached_system_prompt = None
+            self._cached_prefix_digest = None
             return False
 
     def _is_cache_valid(self, system_prompt: str, context: list[dict]) -> bool:
@@ -218,7 +250,9 @@ class GeminiBackend(LLMBackend):
         # and has grown (new messages appended after the cached portion).
         if len(context) <= self._cached_msg_count:
             return False
-        return True
+        return getattr(self, "_cached_prefix_digest", None) == self._prefix_digest(
+            context[:self._cached_msg_count]
+        )
 
     @staticmethod
     def _is_cache_error(error: Exception) -> bool:
@@ -336,22 +370,73 @@ class GeminiBackend(LLMBackend):
 
             collected_text = ""
             usage_metadata = None
+            native_parts = []
+            has_signature = False
+            finished = False
+            in_reasoning = False
 
             for chunk in stream:
-                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                if getattr(chunk, "usage_metadata", None):
                     usage_metadata = chunk.usage_metadata
-                # Native function calls would be silently dropped by the
-                # text-only path below — buffer them for post-response
-                # logging so the user sees the model called a tool.
-                for fc in getattr(chunk, "function_calls", None) or []:
-                    self._pending_tool_calls.append((
-                        getattr(fc, "name", "?") or "?",
-                        str(getattr(fc, "args", "") or ""),
-                    ))
-                if chunk.text:
-                    sh.on_stream_token(chunk.text)
-                    collected_text += chunk.text
+                candidates = getattr(chunk, "candidates", None)
+                if candidates:
+                    # We request one candidate; never mix alternate answers
+                    # or their signatures into the same assistant turn.
+                    candidate = candidates[0]
+                    finish_reason = getattr(candidate, "finish_reason", None)
+                    if finish_reason:
+                        reason = getattr(finish_reason, "value", finish_reason)
+                        finished = reason in {"STOP", "MAX_TOKENS"}
+                    content = getattr(candidate, "content", None)
+                    for part in getattr(content, "parts", None) or []:
+                        text = getattr(part, "text", None)
+                        thought = bool(getattr(part, "thought", False))
+                        signature = getattr(part, "thought_signature", None)
+                        # Preserve boundaries and signature association, even
+                        # for signature-only parts. Never concatenate these.
+                        if text is not None or thought or signature:
+                            native_parts.append(
+                                part.model_dump(mode="json", exclude_none=True)
+                            )
+                            has_signature = has_signature or bool(signature)
+                        fc = getattr(part, "function_call", None)
+                        if fc is not None:
+                            self._pending_tool_calls.append((
+                                getattr(fc, "name", "?") or "?",
+                                str(getattr(fc, "args", "") or ""),
+                            ))
+                        if text:
+                            if thought:
+                                if not in_reasoning:
+                                    sh.on_stream_reasoning_start()
+                                    in_reasoning = True
+                                sh.on_stream_reasoning_token(text)
+                            else:
+                                if in_reasoning:
+                                    sh.on_stream_reasoning_end()
+                                    in_reasoning = False
+                                sh.on_stream_token(text)
+                                collected_text += text
+                elif not hasattr(chunk, "candidates"):
+                    # Legacy lightweight client wrappers may expose only text.
+                    # Real SDK chunks always have candidates; never use their
+                    # convenience .text accessor (it can obscure thoughts).
+                    for fc in getattr(chunk, "function_calls", None) or []:
+                        self._pending_tool_calls.append((
+                            getattr(fc, "name", "?") or "?",
+                            str(getattr(fc, "args", "") or ""),
+                        ))
+                    text = getattr(chunk, "text", None)
+                    if text:
+                        sh.on_stream_token(text)
+                        collected_text += text
 
+            if in_reasoning:
+                sh.on_stream_reasoning_end()
+            if finished and collected_text and has_signature:
+                self.last_reasoning_context = {
+                    "format": "gemini", "model": self.model, "data": native_parts,
+                }
             return collected_text, usage_metadata
 
         def attempt():
@@ -374,6 +459,7 @@ class GeminiBackend(LLMBackend):
     # ── Public interface ─────────────────────────────────────────────
 
     def generate_response(self, system_prompt: str, context: list[dict]) -> str:
+        self.last_reasoning_context = {}
         text, usage_metadata = self._get_response(system_prompt, context)
 
         if usage_metadata is not None:
@@ -382,6 +468,9 @@ class GeminiBackend(LLMBackend):
                 getattr(usage_metadata, "candidates_token_count", 0)
                 or getattr(usage_metadata, "response_token_count", 0)
                 or 0
+            )
+            self.last_output_tokens += (
+                getattr(usage_metadata, "thoughts_token_count", 0) or 0
             )
             cache_read = getattr(usage_metadata, "cached_content_token_count", 0) or 0
 
