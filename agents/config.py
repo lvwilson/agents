@@ -62,6 +62,7 @@ live in :func:`agents.agents.resolve_backend_target`.
 from __future__ import annotations
 
 import os
+import re
 
 import yaml
 
@@ -260,3 +261,146 @@ def agent_config_path(start: str | None = None) -> str | None:
     --show-config`` style tooling).
     """
     return _find_project_agent(start) or _home_agent()
+DEFAULT_CONFIG_COMMENT = "# Agents backend configuration"
+
+
+def global_config_path() -> str:
+    """Return the canonical global config path: ``~/.agents/agent_config.yaml``."""
+    return _global_new()
+
+
+def project_config_path(start: str | None = None) -> str | None:
+    """Return the nearest existing project config path, if any."""
+    return _find_project_agent(start)
+
+
+def _config_indent(line: str) -> str:
+    """Return the leading whitespace of *line*."""
+    match = re.match(r"^[ \t]*", line)
+    return match.group(0) if match else ""
+
+
+def _is_backend_config_key(line: str, key: str) -> bool:
+    """True when *line* sets a recognised top-level ``key: value`` pair.
+
+    Commented-out lines (``# model: old``) are ignored so users can leave
+    commented examples in the file without the writer touching them.
+    """
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return False
+    return re.match(rf"^[ \t]*{re.escape(key)}[ \t]*:", line) is not None
+
+
+def _format_yaml_scalar(value) -> str:
+    """Format a scalar for a top-level YAML mapping."""
+    dumped = yaml.safe_dump(value, default_flow_style=False).strip().splitlines()
+    return dumped[0] if dumped else repr(value)
+
+
+def write_agent_config_keys(
+    path: str,
+    *,
+    set_keys: dict[str, object] | None = None,
+    remove_keys: tuple[str, str, ...] | list[str] | None = None,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Persist recognised backend keys while preserving surrounding file text.
+
+    Returns ``(path, written_keys, removed_keys)``.
+    Raises ``ValueError`` when the target path cannot be written or an
+    unknown backend key is supplied.
+    """
+    if os.path.isdir(path):
+        raise ValueError(f"cannot write backend config: {path} is a directory")
+
+    normalized_set_keys: dict[str, object] = {}
+    remove_items: list[str] = []
+
+    for key, value in (set_keys or {}).items():
+        lower = key.lower()
+        if lower not in _VALID_KEYS:
+            raise ValueError(f"unknown backend config key {key!r}")
+        if value is None:
+            remove_items.append(lower)
+        else:
+            normalized_set_keys[lower] = _coerce(lower, value)
+
+    for key in (remove_keys or ()):
+        lower = key.lower()
+        if lower not in _VALID_KEYS:
+            raise ValueError(f"unknown backend config key {key!r}")
+        remove_items.append(lower)
+
+    if not normalized_set_keys:
+        # If a key was asked to be cleared, treat that as a removal too.
+        normalized_set_keys = {}
+
+    if not normalized_set_keys and not remove_items:
+        return (path, (), ())
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
+        else:
+            lines = []
+    except OSError as exc:
+        raise ValueError(f"cannot read backend config {path!r}: {exc}") from exc
+
+    removed_written: list[str] = []
+    for key in remove_items:
+        if any(_is_backend_config_key(line, key) for line in lines):
+            removed_written.append(key)
+        lines = [line for line in lines if not _is_backend_config_key(line, key)]
+
+    set_written: list[str] = []
+    for key in _VALID_KEYS:
+        if key not in normalized_set_keys:
+            continue
+        value = normalized_set_keys[key]
+        formatted = _format_yaml_scalar(value)
+        replaced = False
+        updated: list[str] = []
+        for line in lines:
+            if _is_backend_config_key(line, key):
+                if not replaced:
+                    updated.append(
+                        f"{_config_indent(line)}{key}: {formatted}"
+                    )
+                    replaced = True
+            else:
+                updated.append(line)
+        if not replaced:
+            if not lines and not set_written:
+                lines.append(DEFAULT_CONFIG_COMMENT)
+            lines.append(f"{key}: {formatted}")
+        lines = updated
+        # The append branch may not have used the just-built `updated`
+        # list if lines was empty before this key; sync it deterministically.
+        lines = updated if replaced else lines
+        set_written.append(key)
+
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+
+    temp_path = f"{path}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(temp_path, path)
+    except Exception as exc:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        raise ValueError(f"cannot write backend config {path!r}: {exc}") from exc
+
+    return (
+        path,
+        tuple(set_written),
+        tuple(dict.fromkeys(removed_written)),
+    )
+
