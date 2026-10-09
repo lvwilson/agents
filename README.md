@@ -298,6 +298,56 @@ To connect to a remote LLM server, use the `-H` or `--host` flag, or set the `LO
 
 The `-H` flag takes precedence over `LOCAL_LLM_HOST`, and `--port` takes precedence over `LOCAL_LLM_PORT`, when both are specified.
 
+### Saving a default model
+
+Ask the agent to change your default model; it can use the persistent tool:
+
+```text
+Command: set_default_model qwen-3.8-27b
+Command: set_default_model my-local-model --project --local --port 11434
+Command: set_default_model custom-model --provider openai --base-url https://proxy.example/v1
+```
+
+This is an **agent tool**, not a standalone shell command. Its syntax is:
+
+```text
+set_default_model MODEL [--global | --project | --scope global|project]
+    [--local | --online] [--provider NAME]
+    [--base-url URL | --host HOST --port PORT]
+```
+
+- **Global** (default): writes `~/.agents/agent_config.yaml`.
+- **Project**: updates the nearest existing `.agent` searched upward from the
+  working directory, or creates `.agent` in that directory if none exists.
+- A known hosted model selects its hosting provider. An unknown name defaults
+  to a local OpenAI-compatible server; use `--online --provider NAME` for an
+  uncatalogued hosted model. `--local` also allows local deployments to reuse
+  hosted model names. Local protocols are `openai` (default) or `anthropic`.
+- Local destinations use `--host`/`--port`, then `LOCAL_LLM_HOST`/
+  `LOCAL_LLM_PORT`, then `localhost:8000`, with `/v1` appended.
+  `--base-url` supplies the exact endpoint instead (including its API path).
+  **Existing URLs are not implicitly retained:** pass a proxy URL explicitly.
+  A direct hosted selection writes `base_url: ""` to suppress stale lower-level
+  endpoints, rather than deleting the key and accidentally inheriting one.
+- The tool validates that the saved target will resolve identically at startup.
+  The current resolver prefers the catalogue over a file-based provider pin
+  at non-loopback endpoints. Consequently, a conflicting provider for a
+  catalogued name (including a LAN OpenAI-compatible deployment of another
+  provider's model) is rejected without writing. Use a distinct server model
+  alias or an explicit CLI `--provider` for that case.
+- Applies to **future sessions only**. The running session and its sub-agents
+  keep their current backend. Project settings still override global settings;
+  CLI flags and `LOCAL_MODEL` can also override the saved selection. If
+  `LOCAL_MODEL` is set, unset it or use `agent --online` (`-o`).
+- Comments, unrelated keys, temperature, and effort are preserved. Writes are
+  atomic; existing permissions are retained and new files are private.
+  Malformed or ambiguous YAML, unsupported advanced YAML constructs
+  (such as anchors, root flow mappings, and multiline values being edited),
+  and symlinked paths are refused without replacing the original file.
+  No API keys are stored and no inference request is made.
+- Use only for a user-requested persistent change. The tool is blocked in
+  planning mode. `set_default_model --help` lists its options.
+
 ### Reasoning context and local replay
 
 Reasoning is kept separate from visible assistant text and command parsing.

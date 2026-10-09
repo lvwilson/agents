@@ -173,6 +173,15 @@ def run_console_command(command: str, backtick_content: str = None) -> str:
         return f"An error occurred: {str(e)}"
 
 
+# ── Backend defaults ────────────────────────────────────────────────
+
+def set_default_model(*args):
+    """Save a global/project model default for future sessions."""
+    from .default_model import set_default_model as _set_default_model
+
+    return _set_default_model(*args)
+
+
 # ── File I/O tools ─────────────────────────────────────────────────
 
 def _read_file_safe(file_path):

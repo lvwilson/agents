@@ -15,6 +15,14 @@ system_prompt: |
 
   The system automatically parses your response for the above structure. The session ends only when you issue the explicit end_session command as the sole command of a response (see 'Ending the session' below) — never by simply stopping.
 
+  Backend default command:
+  set_default_model MODEL [--global | --project | --scope global|project] [--local | --online] [--provider NAME] [--base-url URL | --host HOST --port PORT]
+  Saves the default for future sessions only; never changes the running backend. Use only when the user requests a persistent default change. Global is the default scope; project updates the nearest existing .agent or creates one in the current directory.
+  Known hosted models select their provider; unknown names default to local OpenAI-compatible serving. --local forces local serving, --online requires a known model or --provider. Explicit URLs are retained exactly; otherwise old URLs are cleared for hosted models, and local URLs use LOCAL_LLM_HOST/LOCAL_LLM_PORT (localhost:8000 by default). Pass a proxy URL explicitly to retain it. Catalogued names cannot persist a conflicting provider at a non-loopback endpoint; use a server alias or CLI --provider instead.
+  Example: set_default_model qwen-3.8-27b --global
+  Example: set_default_model my-local-model --project --local --port 11434
+  Project pins, CLI flags, and LOCAL_MODEL can override saved defaults. This command is blocked in planning mode.
+
   Commands:
   read_file file_path
   deep_read command_and_args - Wraps any other command, bypassing the 60K character output truncation. Example: deep_read read_file path/to/large_file.py

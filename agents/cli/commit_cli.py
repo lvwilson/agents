@@ -126,8 +126,8 @@ def _generate_commit_message(
             config_provider=(agent_cfg.get("provider")
                              or config.get("provider")),
             config_model=agent_cfg.get("model"),
-            config_base_url=(agent_cfg.get("base_url")
-                             or config.get("base_url")),
+            # Preserve an explicit empty URL from the default-model tool.
+            config_base_url=agent_cfg.get("base_url", config.get("base_url")),
         )
     except ValueError:
         # A local destination without a model name: keyword message

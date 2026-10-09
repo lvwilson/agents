@@ -63,6 +63,8 @@ from __future__ import annotations
 
 import os
 import re
+import stat
+import tempfile
 
 import yaml
 
@@ -261,6 +263,8 @@ def agent_config_path(start: str | None = None) -> str | None:
     --show-config`` style tooling).
     """
     return _find_project_agent(start) or _home_agent()
+
+
 DEFAULT_CONFIG_COMMENT = "# Agents backend configuration"
 
 
@@ -274,133 +278,226 @@ def project_config_path(start: str | None = None) -> str | None:
     return _find_project_agent(start)
 
 
-def _config_indent(line: str) -> str:
-    """Return the leading whitespace of *line*."""
-    match = re.match(r"^[ \t]*", line)
-    return match.group(0) if match else ""
-
-
-def _is_backend_config_key(line: str, key: str) -> bool:
-    """True when *line* sets a recognised top-level ``key: value`` pair.
-
-    Commented-out lines (``# model: old``) are ignored so users can leave
-    commented examples in the file without the writer touching them.
-    """
-    stripped = line.strip()
-    if not stripped or stripped.startswith("#"):
-        return False
-    return re.match(rf"^[ \t]*{re.escape(key)}[ \t]*:", line) is not None
-
-
 def _format_yaml_scalar(value) -> str:
-    """Format a scalar for a top-level YAML mapping."""
-    dumped = yaml.safe_dump(value, default_flow_style=False).strip().splitlines()
-    return dumped[0] if dumped else repr(value)
+    """Produce exactly one YAML line, including for strings containing newlines."""
+    if isinstance(value, str):
+        return yaml.safe_dump(
+            value, default_style='"', allow_unicode=False, width=2**31 - 1
+        ).strip()
+    return yaml.safe_dump(value).splitlines()[0]
+
+
+def _config_mapping(text: str) -> dict[str, tuple]:
+    """Validate editable YAML without changing the permissive config loader."""
+    if any(char in text for char in ("\x85", "\u2028", "\u2029", "\ufeff")):
+        raise ValueError("unsupported YAML line separator or byte-order mark")
+    if "\r" in text.replace("\r\n", ""):
+        raise ValueError("bare carriage-return line endings are unsupported")
+    unsupported = (
+        yaml.tokens.AnchorToken, yaml.tokens.AliasToken, yaml.tokens.TagToken,
+        yaml.tokens.DirectiveToken, yaml.tokens.DocumentStartToken,
+        yaml.tokens.DocumentEndToken,
+    )
+    if any(isinstance(token, unsupported) for token in yaml.scan(text)):
+        raise ValueError("anchors, aliases, tags and document markers are unsupported")
+    root = yaml.compose(text, Loader=yaml.SafeLoader)
+    if root is None:
+        return {}
+    if not isinstance(root, yaml.MappingNode) or root.flow_style:
+        raise ValueError("backend config must be a block YAML mapping")
+
+    def check(node):
+        if isinstance(node, yaml.MappingNode):
+            seen = set()
+            for key, value in node.value:
+                if not isinstance(key, yaml.ScalarNode) or key.tag != "tag:yaml.org,2002:str":
+                    raise ValueError("YAML mapping keys must be strings")
+                if key.value in seen:
+                    raise ValueError(f"duplicate YAML key {key.value!r}")
+                seen.add(key.value)
+                check(value)
+        elif isinstance(node, yaml.SequenceNode):
+            for value in node.value:
+                check(value)
+
+    check(root)
+    yaml.safe_load(text)  # Reject unsupported values/tags before touching the file.
+    result = {}
+    for key, value in root.value:
+        if key.start_mark.column != 0 or key.start_mark.line != key.end_mark.line:
+            raise ValueError("top-level keys must be single-line, unindented keys")
+        # Refuse explicit-key syntax and unusual separators, even for other keys.
+        separator = text[key.end_mark.index:value.start_mark.index]
+        if not separator.startswith(":") and not re.match(r"^[ \t]+:", separator):
+            raise ValueError("explicit YAML mapping keys are unsupported")
+        result[key.value] = (key, value)
+    return result
+
+
+def _check_config_path(path: str) -> os.stat_result | None:
+    """Refuse symlinks (including parent directories) and nonregular targets."""
+    parent = os.path.dirname(path)
+    while True:
+        try:
+            info = os.lstat(parent)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError(f"config parent is not a real directory: {parent}")
+        ancestor = os.path.dirname(parent)
+        if ancestor == parent:
+            break
+        parent = ancestor
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"config target is not a regular file: {path}")
+    return info
 
 
 def write_agent_config_keys(
     path: str,
     *,
     set_keys: dict[str, object] | None = None,
-    remove_keys: tuple[str, str, ...] | list[str] | None = None,
+    remove_keys: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-    """Persist recognised backend keys while preserving surrounding file text.
+    """Atomically update recognised top-level scalar keys, preserving other text.
 
-    Returns ``(path, written_keys, removed_keys)``.
-    Raises ``ValueError`` when the target path cannot be written or an
-    unknown backend key is supplied.
+    Key names in requests are case-insensitive. None removes a key; an explicit
+    non-None assignment wins over remove_keys. Inline comments on removed keys
+    become standalone comments. Returns (path, written_keys, removed_keys).
+
+    This conservative editor refuses duplicate/non-string mapping keys, root
+    flow mappings, anchors/aliases, explicit tags/document markers, indented or
+    explicit root keys, BOMs/unusual line endings, and multiline/collection values
+    being changed. LF and CRLF are supported. Unrelated
+    nested mappings and multiline values are preserved verbatim. Existing
+    permissions are retained; new files are private (0600). Symlinks, including
+    symlinked parents, are refused. Failures raise ValueError without replacing
+    the original file. This is not a locking API for concurrent writers.
     """
-    if os.path.isdir(path):
-        raise ValueError(f"cannot write backend config: {path} is a directory")
+    def normalize(key):
+        if not isinstance(key, str) or key.lower() not in _VALID_KEYS:
+            raise ValueError(f"unknown backend config key {key!r}")
+        return key.lower()
 
-    normalized_set_keys: dict[str, object] = {}
-    remove_items: list[str] = []
+    if set_keys is not None and not isinstance(set_keys, dict):
+        raise ValueError("set_keys must be a mapping")
+    if remove_keys is not None and not isinstance(remove_keys, (tuple, list)):
+        raise ValueError("remove_keys must be a tuple or list")
 
+    def fingerprint(info):
+        if info is None:
+            return None
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    assignments = {}
+    removals = []
+    seen = set()
     for key, value in (set_keys or {}).items():
-        lower = key.lower()
-        if lower not in _VALID_KEYS:
-            raise ValueError(f"unknown backend config key {key!r}")
+        key = normalize(key)
+        if key in seen:
+            raise ValueError(f"duplicate backend config key {key!r}")
+        seen.add(key)
         if value is None:
-            remove_items.append(lower)
+            removals.append(key)
         else:
-            normalized_set_keys[lower] = _coerce(lower, value)
+            if type(value) not in (str, bool, int, float):
+                raise ValueError(f"backend config value for {key!r} must be scalar")
+            assignments[key] = _coerce(key, value)
+    for key in remove_keys or ():
+        key = normalize(key)
+        if key not in removals:
+            removals.append(key)
 
-    for key in (remove_keys or ()):
-        lower = key.lower()
-        if lower not in _VALID_KEYS:
-            raise ValueError(f"unknown backend config key {key!r}")
-        remove_items.append(lower)
-
-    if not normalized_set_keys:
-        # If a key was asked to be cleared, treat that as a removal too.
-        normalized_set_keys = {}
-
-    if not normalized_set_keys and not remove_items:
-        return (path, (), ())
-
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    target = os.path.abspath(path)
+    temp_path = None
     try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines()
-        else:
-            lines = []
-    except OSError as exc:
-        raise ValueError(f"cannot read backend config {path!r}: {exc}") from exc
+        original = _check_config_path(target)
+        if not assignments and not removals:
+            return path, (), ()
+        text = ""
+        if original is not None:
+            # Do not follow a target swapped for a symlink after lstat.
+            fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "r", encoding="utf-8", newline="") as stream:
+                opened = os.fstat(stream.fileno())
+                if not stat.S_ISREG(opened.st_mode) or fingerprint(opened) != fingerprint(original):
+                    raise ValueError("backend config changed while opening")
+                text = stream.read()
 
-    removed_written: list[str] = []
-    for key in remove_items:
-        if any(_is_backend_config_key(line, key) for line in lines):
-            removed_written.append(key)
-        lines = [line for line in lines if not _is_backend_config_key(line, key)]
-
-    set_written: list[str] = []
-    for key in _VALID_KEYS:
-        if key not in normalized_set_keys:
-            continue
-        value = normalized_set_keys[key]
-        formatted = _format_yaml_scalar(value)
-        replaced = False
-        updated: list[str] = []
-        for line in lines:
-            if _is_backend_config_key(line, key):
-                if not replaced:
-                    updated.append(
-                        f"{_config_indent(line)}{key}: {formatted}"
-                    )
-                    replaced = True
+        nodes = _config_mapping(text)
+        edits = []
+        newline = "\r\n" if "\r\n" in text else "\n"
+        for name in assignments.keys() | set(removals):
+            if name not in nodes:
+                continue
+            key, value = nodes[name]
+            if (not isinstance(value, yaml.ScalarNode)
+                    or value.style in ("|", ">")
+                    or key.start_mark.line != value.start_mark.line
+                    or value.start_mark.line != value.end_mark.line):
+                raise ValueError(f"cannot edit multiline or collection value for {name!r}")
+            start, end = value.start_mark.index, value.end_mark.index
+            if name in assignments:
+                replacement = _format_yaml_scalar(assignments[name])
+                if text[start - 1:start] == ":":
+                    replacement = " " + replacement
+                edits.append((start, end, replacement))
             else:
-                updated.append(line)
-        if not replaced:
-            if not lines and not set_written:
-                lines.append(DEFAULT_CONFIG_COMMENT)
-            lines.append(f"{key}: {formatted}")
-        lines = updated
-        # The append branch may not have used the just-built `updated`
-        # list if lines was empty before this key; sync it deterministically.
-        lines = updated if replaced else lines
-        set_written.append(key)
+                line_end = text.find("\n", end)
+                line_end = len(text) if line_end < 0 else line_end + 1
+                suffix = text[end:line_end].lstrip(" \t")
+                comment = suffix if suffix.startswith("#") else ""
+                edits.append((key.start_mark.index, line_end, comment))
 
-    content = "\n".join(lines)
-    if content:
-        content += "\n"
+        content = text
+        for start, end, replacement in sorted(edits, reverse=True):
+            content = content[:start] + replacement + content[end:]
+        additions = [
+            f"{name}: {_format_yaml_scalar(assignments[name])}"
+            for name in _VALID_KEYS if name in assignments and name not in nodes
+        ]
+        if additions:
+            if not content:
+                content = DEFAULT_CONFIG_COMMENT + newline
+            elif not content.endswith("\n"):
+                content += newline
+            content += newline.join(additions) + newline
 
-    temp_path = f"{path}.tmp"
-    try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(temp_path, path)
-    except Exception as exc:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
+        written = tuple(name for name in _VALID_KEYS if name in assignments)
+        removed = tuple(name for name in removals if name in nodes)
+        if content == text:
+            return path, written, removed
+        # Verify that editing did not produce unexpected YAML before any write.
+        _config_mapping(content)
+        parent = os.path.dirname(target)
+        os.makedirs(parent, exist_ok=True)
+        _check_config_path(target)
+        fd, temp_path = tempfile.mkstemp(prefix=f".{os.path.basename(target)}.",
+                                         suffix=".tmp", dir=parent)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            stream.write(content)
+            stream.flush()
+            if original is not None:
+                os.fchmod(stream.fileno(), stat.S_IMODE(original.st_mode))
+            os.fsync(stream.fileno())
+        # Catch ordinary concurrent modification and target/symlink swaps.
+        current = _check_config_path(target)
+        if fingerprint(current) != fingerprint(original):
+            raise ValueError("backend config changed while writing")
+        os.replace(temp_path, target)
+        temp_path = None
+        return path, written, removed
+    except (OSError, UnicodeError, yaml.YAMLError, ValueError) as exc:
         raise ValueError(f"cannot write backend config {path!r}: {exc}") from exc
-
-    return (
-        path,
-        tuple(set_written),
-        tuple(dict.fromkeys(removed_written)),
-    )
-
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass

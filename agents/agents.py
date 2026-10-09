@@ -751,6 +751,8 @@ PLANNING_REQUEST_RE = re.compile(
 #: shell to read-only inspection, since a hard block would also kill
 #: the exploration this mode exists for.
 PLANNING_MODE_BLOCKED_COMMANDS = frozenset({
+    # Persistent backend selection
+    "set_default_model",
     # File mutation
     "write_file",
     "append_to_file",
@@ -800,7 +802,7 @@ PLANNING_MODE_DIRECTIVE = (
     "2. State-changing commands are BLOCKED in this mode and will "
     "return a BLOCKED notice if attempted: write_file, append_to_file, "
     "find_and_replace, the code-manipulation commands, create_image, "
-    "note, run_agent, browse_click/browse_type/browse_js, mcp_call.\n"
+    "note, set_default_model, run_agent, browse_click/browse_type/browse_js, mcp_call.\n"
     "3. Write your full plan as visible text in your 'Detailed thoughts "
     "and Plans' section: the exact files to change and what changes in "
     "each, the order of steps, how to verify the result, and any risks "
@@ -1104,9 +1106,9 @@ class Agent:
                 agent_cfg.get("model")
                 or configuration.get("model")
             ),
-            config_base_url=(
-                agent_cfg.get("base_url")
-                or configuration.get("base_url")
+            # An empty URL deliberately clears lower-priority endpoint pins.
+            config_base_url=agent_cfg.get(
+                "base_url", configuration.get("base_url")
             ),
         )
         self.model_name = model
