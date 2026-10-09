@@ -1005,7 +1005,8 @@ class Agent:
     def __init__(self, configuration_name, task, compute_budget=2.0, context=None,
                  local_model=None, local_port=8000, local_host="localhost",
                  session_id=None, model=None, provider=None,
-                 planning_mode=False, effort=None, cli_local=False, base_url=None):
+                 planning_mode=False, effort=None, cli_local=False, base_url=None,
+              preserve_reasoning=None):
         """Initialize the Agent.
 
         Args:
@@ -1036,6 +1037,9 @@ class Agent:
                    may only explore (read-only commands) and write a
                    plan; state-changing commands are blocked until the
                    user approves continuation at the terminal.
+            preserve_reasoning: Opt-in generic/local reasoning replay. None
+                   defaults off for new sessions and restores the saved setting
+                   on resume; explicit True/False overrides saved state.
             effort: Optional reasoning/thinking effort (``none``,
                    ``low``, ``medium``, ``high``, ``xhigh``, ``max`` plus
                    ``parse_effort`` aliases).  ``None`` keeps whatever the
@@ -1133,6 +1137,12 @@ class Agent:
         self.reasoning_effort = effort
         if effort is not None:
             backend_kwargs["reasoning_effort"] = effort
+
+        # Local replay is opt-in. None permits a saved session to restore it;
+        # an explicit CLI True/False overrides the saved value.
+        self._preserve_reasoning_override = preserve_reasoning
+        self.preserve_reasoning = bool(preserve_reasoning)
+        backend_kwargs["preserve_reasoning"] = self.preserve_reasoning
 
         # Loop detection: a shared detector wrapped around the stream
         # handler sees every visible token of every generation and can
@@ -1260,6 +1270,7 @@ class Agent:
         self._agent_pool = AgentPool()
         self._agent_pool.model = self.model_name
         self._agent_pool.effort = self.reasoning_effort
+        self._agent_pool.preserve_reasoning = self.preserve_reasoning
         # Propagate the resolved target, not a hostname-based guess about
         # whether it is local. LAN servers and proxies need the exact URL.
         self._agent_pool.provider = self.provider
@@ -1384,6 +1395,7 @@ class Agent:
         # simply failed to emit content, usually because it wrote its
         # commands into a reasoning block.  Feed the failure back so it
         # can retry; only give up after several consecutive blanks.
+        self.client.last_reasoning_context = {}
         try:
             response = self.client.generate_response(self.system_prompt, self.context)
         except EmptyResponseError:
@@ -1430,6 +1442,8 @@ class Agent:
                 ) from e
             self.context.append(_form_message("user", LOOP_BREAK_FEEDBACK))
             return True
+        reasoning_context = getattr(self.client, "last_reasoning_context", {})
+        self.client.last_reasoning_context = {}
         self._empty_response_count = 0
         # A generation that completed (not aborted mid-stream) re-arms the
         # loop-termination budget.
@@ -1497,7 +1511,10 @@ class Agent:
         # clean end_session ending is extractable from the context, and
         # free-form turns (budget wrap-up, summaries) are stored as the
         # model wrote them.
-        self.context.append(_form_message("assistant", context_response))
+        assistant_message = _form_message("assistant", context_response)
+        if isinstance(reasoning_context, dict) and reasoning_context:
+            assistant_message["reasoning_context"] = reasoning_context
+        self.context.append(assistant_message)
         self._last_assistant_response = response
         self._loop_count = 0
 
@@ -1957,6 +1974,7 @@ class Agent:
             # "Steps:" panel show the whole task across multiple
             # (resumed) legs, not just the last one.
             'iterations': self.iterations,
+            'preserve_reasoning': getattr(self, 'preserve_reasoning', False),
         }
         save_session(self.session_id, self.working_dir, state)
 
@@ -1969,6 +1987,12 @@ class Agent:
         sid = session_id or self.session_id
         data = load_session(sid)
 
+        if getattr(self, "_preserve_reasoning_override", None) is None:
+            self.preserve_reasoning = data.get("preserve_reasoning", False) is True
+        self.client.preserve_reasoning = getattr(self, "preserve_reasoning", False)
+        if getattr(self, "_agent_pool", None) is not None:
+            self._agent_pool.preserve_reasoning = self.client.preserve_reasoning
+        self.client.last_reasoning_context = {}
         self.context = data['context']
         # Restore the original system prompt so the prompt cache
         # remains valid across resumed sessions.
@@ -2045,7 +2069,8 @@ class SessionNotFoundError(Exception):
 def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
               local_host="localhost", nogit=False, model=None, provider=None,
-              planning_mode=False, effort=None, cli_local=False, base_url=None):
+              planning_mode=False, effort=None, cli_local=False, base_url=None,
+              preserve_reasoning=None):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -2104,7 +2129,8 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                   local_host=local_host, session_id=effective_sid,
                   model=model, provider=provider,
                   planning_mode=planning_mode, effort=effort,
-                  cli_local=cli_local, base_url=base_url)
+                  cli_local=cli_local, base_url=base_url,
+                  preserve_reasoning=preserve_reasoning)
 
     if restore and restore_sid:
         agent.load_context(restore_sid)
@@ -2242,6 +2268,12 @@ def main():
              'per-model default.  Can also be set via the effort key in '
              '.agent / agent_config.yaml or AGENT_EFFORT.',
     )
+    parser.add_argument(
+        '--preserve-reasoning', action=argparse.BooleanOptionalAction, default=None,
+        help='Replay reasoning_content in local/OpenAI-compatible assistant history '
+             '(experimental, for Strata; off by default). Saved on resume; '
+             '--no-preserve-reasoning explicitly disables local replay.',
+    )
     parser.add_argument('--base-url', default=None,
                         help='Exact API endpoint; overrides configured base_url '
                              '(include /v1 for OpenAI-compatible servers)')
@@ -2352,7 +2384,8 @@ def main():
             local_host=args.host, nogit=args.nogit,
             model=model_arg, provider=args.provider,
             planning_mode=args.plan, effort=effort_arg,
-            cli_local=args.local, base_url=args.base_url)
+            cli_local=args.local, base_url=args.base_url,
+            preserve_reasoning=args.preserve_reasoning)
     except ValueError as e:
         # Resolver model validation (e.g. --local with no model anywhere):
         # a clean CLI error, not a traceback.

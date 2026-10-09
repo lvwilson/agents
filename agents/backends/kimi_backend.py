@@ -26,6 +26,8 @@ from .openai_compat_backend import OpenAICompatBackend
 class KimiBackend(OpenAICompatBackend):
     """Kimi K3 chat-completions backend (OpenAI-compatible)."""
 
+    REASONING_FIELD = "reasoning_content"
+
     MODEL_PRICING: dict[str, dict[str, float]] = {
         "kimi-k3": {
             "input_token_cost": 3.00,

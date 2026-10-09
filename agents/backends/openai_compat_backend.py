@@ -20,8 +20,8 @@ iterable of chunks with ``choices[0].delta`` (``content`` / ``reasoning`` /
 shared by the OpenAI and Cerebras SDKs (both Stainless-generated).
 
 Reasoning (thinking) tokens are streamed to the UI via the reasoning
-hooks and are never collected into the response text or conversation
-context.  Both ``delta.reasoning`` (Cerebras) and ``delta.reasoning_content``
+hooks and kept separate from response text. Hosted subclasses replay them
+using provider-specific fields; generic/local replay is explicitly opt-in.  Both ``delta.reasoning`` (Cerebras) and ``delta.reasoning_content``
 (vLLM / DeepSeek-style servers) are recognised.
 """
 
@@ -59,6 +59,9 @@ class OpenAICompatBackend(LLMBackend):
     #: that reject it).  Default True — both OpenAI and Cerebras accept it.
     SEND_TEMPERATURE: bool = True
 
+    # Hosted providers override this; generic local replay is opt-in.
+    REASONING_FIELD: str | None = None
+
     def __init__(
         self,
         model: str,
@@ -67,6 +70,7 @@ class OpenAICompatBackend(LLMBackend):
         stream_handler: StreamHandler | None = None,
         temperature: float = 1.0,
         reasoning_effort: str | None = None,
+        preserve_reasoning: bool = False,
         **_kwargs,
     ):
         # super().__init__ sets self.base_url / self.is_local from the
@@ -80,6 +84,7 @@ class OpenAICompatBackend(LLMBackend):
             temperature=temperature,
             reasoning_effort=reasoning_effort,
         )
+        self.preserve_reasoning = preserve_reasoning
         self._rate_limit_exceptions = (self._rate_limit_error_class(),)
         api_key, resolved_base_url = self._resolve_credentials(base_url)
         self._client = self._build_client(api_key, resolved_base_url)
@@ -127,7 +132,9 @@ class OpenAICompatBackend(LLMBackend):
     # ── Message format translation ───────────────────────────────────
 
     @staticmethod
-    def _format_messages(system_prompt: str, context: list[dict]) -> list[dict]:
+    def _format_messages(system_prompt: str, context: list[dict],
+                         reasoning_field: str | None = None,
+                         model: str | None = None) -> list[dict]:
         """Convert internal message format to OpenAI chat-completions input.
 
         Consecutive same-role messages (produced by harness feedback
@@ -173,7 +180,16 @@ class OpenAICompatBackend(LLMBackend):
             if role in ("user", "assistant", "system"):
                 content = _to_content(parts)
                 if content or role == "system":
-                    messages.append({"role": role, "content": content})
+                    message = {"role": role, "content": content}
+                    native = msg.get("reasoning_context") or {}
+                    if (role == "assistant" and reasoning_field
+                            and native.get("format") == "chat_completions"
+                            and native.get("model") == model
+                            and native.get("field") == reasoning_field
+                            and isinstance(native.get("data"), str)
+                            and native["data"]):
+                        message[reasoning_field] = native["data"]
+                    messages.append(message)
             elif role == "tool":
                 text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
                 content = "\n".join(t for t in text_parts if t)
@@ -225,7 +241,10 @@ class OpenAICompatBackend(LLMBackend):
         """
         self.call_count += 1
         sh = self.stream_handler
-        messages = self._format_messages(system_prompt, context)
+        field = self.REASONING_FIELD or (
+            "reasoning_content" if getattr(self, "preserve_reasoning", False) else None
+        )
+        messages = self._format_messages(system_prompt, context, field, self.model)
 
         create_kwargs: dict = {
             "model": self.model,
@@ -243,6 +262,8 @@ class OpenAICompatBackend(LLMBackend):
             stream = self._client.chat.completions.create(**create_kwargs)
 
             collected_text = ""
+            collected_reasoning = []
+            finished = False
             usage = None
             reasoning_started = False
             tool_calls: dict[int, dict] = {}
@@ -257,6 +278,8 @@ class OpenAICompatBackend(LLMBackend):
                 choices = getattr(event, "choices", None)
                 if not choices:
                     continue
+                if getattr(choices[0], "finish_reason", None) is not None:
+                    finished = True
                 delta = getattr(choices[0], "delta", None)
                 if delta is None:
                     continue
@@ -285,6 +308,7 @@ class OpenAICompatBackend(LLMBackend):
                     or getattr(delta, "reasoning_content", None)
                 )
                 if reasoning:
+                    collected_reasoning.append(reasoning)
                     if not reasoning_started:
                         sh.on_stream_reasoning_start()
                         reasoning_started = True
@@ -307,6 +331,11 @@ class OpenAICompatBackend(LLMBackend):
                     "".join(slot["arguments"]),
                 ))
 
+            if finished and collected_text and collected_reasoning and field:
+                self.last_reasoning_context = {
+                    "format": "chat_completions", "model": self.model,
+                    "field": field, "data": "".join(collected_reasoning),
+                }
             return collected_text, usage
 
         return self._run_with_retries(attempt)
@@ -314,6 +343,7 @@ class OpenAICompatBackend(LLMBackend):
     # ── Public interface ─────────────────────────────────────────────
 
     def generate_response(self, system_prompt: str, context: list[dict]) -> str:
+        self.last_reasoning_context = {}
         text, usage = self._get_response(system_prompt, context)
 
         if usage is not None:

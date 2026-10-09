@@ -297,3 +297,40 @@ To connect to a remote LLM server, use the `-H` or `--host` flag, or set the `LO
     LOCAL_MODEL=qwen3.8-27b agent --local "Explain quantum mechanics"
 
 The `-H` flag takes precedence over `LOCAL_LLM_HOST`, and `--port` takes precedence over `LOCAL_LLM_PORT`, when both are specified.
+
+### Reasoning context and local replay
+
+Reasoning is kept separate from visible assistant text and command parsing.
+Completed turns retain provider-native replay data in saved sessions:
+Claude signed/redacted thinking blocks, DeepSeek/MiniMax native thinking blocks,
+Cerebras `reasoning`, Kimi `reasoning_content`, OpenAI Responses reasoning items
+(including encrypted content), and Gemini ordered thought/signature parts.
+Replay is restricted to the matching model and wire format. Failed, interrupted,
+and unfinished streams do not publish replay data. Native function calls remain
+logging-only; this harness executes textual `Command:` lines.
+
+For **Strata or another local OpenAI-compatible server**, explicitly opt in:
+
+```bash
+agent -l -m qwen3.8-flash-next-iq3_s --preserve-reasoning "Your task"
+```
+
+This sends previous assistant reasoning in `reasoning_content`; it does not
+insert `<think>` text into visible messages or enable thinking on the server.
+Local replay is **off by default**, leaving existing llama.cpp behavior unchanged.
+The setting is saved with the session and inherited by sub-agents. On resume,
+`--preserve-reasoning` / `--no-preserve-reasoning` explicitly overrides the saved
+setting. The disabling flag controls generic/local replay, not hosted providers'
+native reasoning policies. Old sessions without reasoning cannot reconstruct it.
+
+Preservation increases session-file size and can increase input-token costs and
+context pressure. Treat session files as sensitive: they can now contain reasoning
+and opaque provider state. Provider-reported output totals already include reasoning
+for Anthropic and OpenAI-compatible APIs; Gemini's separate `thoughts_token_count`
+is added once for cost, throughput, and context accounting. The context meter is
+the last reported prompt-plus-generation usage, not an exact prediction of the
+next prompt: providers may strip prior reasoning or cache it differently.
+
+Verification: mocked SDK regressions cover all backend families. A live Strata
+two-turn comparison confirmed that opt-in replay reached the server (122 prompt
+tokens versus 96 without replay). Hosted reasoning replay was not live-tested.

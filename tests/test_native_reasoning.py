@@ -85,10 +85,11 @@ def test_anthropic_signed_and_redacted_roundtrip(cls, model):
     backend._get_response = mock.Mock(return_value=anthropic_response(blocks))
     assert backend.generate_response("sys", []) == "answer"
     native = json.loads(json.dumps(backend.last_reasoning_context))
+    expected_blocks = blocks[:2] if cls is AnthropicBackend else blocks[:1]
     assert native == {
-        "format": "anthropic",
+        "format": backend.REASONING_FORMAT,
         "model": model,
-        "data": [b.model_dump(mode="json", exclude_none=True) for b in blocks[:2]],
+        "data": [b.model_dump(mode="json", exclude_none=True) for b in expected_blocks],
     }
     context = [assistant(native)]
     before = copy.deepcopy(context)
@@ -443,3 +444,22 @@ def test_gemini_cache_fallback_does_not_publish_failed_stream_signatures():
     assert replay[0].parts[1].thought_signature == b"uncached"
     assert backend._cache_name is None
 
+
+
+@pytest.mark.parametrize("cls,model", [
+    (DeepSeekBackend, "deepseek-v4-pro"), (MinimaxBackend, "MiniMax-M2.5"),
+])
+def test_compatible_anthropic_preserves_unsigned_native_thinking(cls, model):
+    backend = bare(cls, model)
+    block = ThinkingBlock(type="thinking", thinking="native unsigned", signature="")
+    backend._get_response = mock.Mock(return_value=anthropic_response([
+        block, TextBlock(type="text", text="answer"),
+    ]))
+    backend.generate_response("sys", [])
+    native = json.loads(json.dumps(backend.last_reasoning_context))
+    assert native["data"] == [block.model_dump(mode="json", exclude_none=True)]
+    assert backend._format_messages([assistant(native)], model)[0]["content"][0] == native["data"][0]
+    # A Claude client must never accept these unsigned native blocks.
+    assert AnthropicBackend._format_messages([assistant(native)], model)[0]["content"] == [
+        {"type": "text", "text": "answer"}
+    ]

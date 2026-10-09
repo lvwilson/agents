@@ -41,6 +41,15 @@ class MinimaxBackend(AnthropicBackend):
     DEFAULT_MODEL = "MiniMax-M2.5"
 
     # $/1M tokens — per MiniMax API pricing
+    REASONING_FORMAT = "minimax_anthropic"
+
+    @staticmethod
+    def _is_native_thinking(block: dict) -> bool:
+        # This provider accepts native thinking without Claude signatures.
+        # Return supplied fields verbatim; redacted Claude blocks are unsupported.
+        return (isinstance(block, dict) and block.get("type") == "thinking"
+                and isinstance(block.get("thinking"), str))
+
     MODEL_PRICING: dict[str, dict[str, float]] = {
         "MiniMax-M2.5": {
             "input_token_cost": 0.30,

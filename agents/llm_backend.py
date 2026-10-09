@@ -204,22 +204,26 @@ def merge_consecutive_messages(context: list[dict]) -> list[dict]:
     concatenating their content part lists, preserving order.  Image
     and text parts are kept as separate content blocks, which every
     supported backend accepts.  The input is not mutated; a new list
-    of (shallow-copied) messages is returned.
+    of (shallow-copied) messages is returned. Native reasoning metadata
+    stays on its original turn: merging signed/opaque assistant turns can
+    invalidate provider replay ordering, so those boundaries are preserved.
 
     Args:
         context: Conversation in the internal message format.
 
     Returns:
-        A new list of messages with no consecutive same-role pairs.
+        A new list with same-role runs merged, except native reasoning turns.
     """
     merged: list[dict] = []
     for msg in context:
         role = msg.get("role")
         parts = list(msg.get("content", []) or [])
-        if merged and merged[-1].get("role") == role:
+        if (merged and merged[-1].get("role") == role
+                and not msg.get("reasoning_context")
+                and not merged[-1].get("reasoning_context")):
             merged[-1]["content"] = merged[-1]["content"] + parts
         else:
-            merged.append({"role": role, "content": parts})
+            merged.append({**msg, "content": parts})
     return merged
 
 
@@ -312,6 +316,10 @@ class LLMBackend(ABC):
         self.cost_per_hour: float | None = None
         self.step_rate_tokens_per_sec: float | None = None
 
+        # Completed, JSON-safe provider-native reasoning, consumed by Agent.
+        # Never included in visible text or command parsing.
+        self.last_reasoning_context: dict = {}
+
         # Per-call token bookkeeping
         self.last_input_tokens: int = 0
         self.last_output_tokens: int = 0
@@ -359,6 +367,7 @@ class LLMBackend(ABC):
         while True:
             try:
                 fresh_start_time = time.monotonic()
+                self.last_reasoning_context = {}
                 sh.on_stream_start()
                 result = attempt_fn()
                 sh.on_stream_end()

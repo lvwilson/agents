@@ -59,6 +59,7 @@ class AgentPool:
         # Reasoning effort to propagate (canonical rank from parse_effort,
         # or None when the parent keeps the backends' defaults).
         self.effort: int | None = None
+        self.preserve_reasoning: bool = False
         # Exact resolved target, set by the parent Agent.
         self.provider: str | None = None
         self.base_url: str | None = None
@@ -169,6 +170,9 @@ class AgentPool:
                     "--base-url", self.base_url or ""]
         elif self.base_url:
             cmd += ["--base-url", self.base_url]
+
+        if self.preserve_reasoning:
+            cmd += ["--preserve-reasoning"]
 
         # Propagate the parent's reasoning effort, so a deliberate
         # ``-e low`` (say, to keep sub-agent reasoning cheap) is not

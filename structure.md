@@ -374,3 +374,19 @@ Optional (install everything with `pip install -e '.[all]'`, or per extra):
 - **`requests`** — HTTP requests, used by image generation (extra: `images`)
 - **`ddgs`** — Web search tool (extra: `search`)
 - **`mcp`** — MCP client tools (extra: `mcp`)
+
+### Reasoning context lifecycle
+
+`LLMBackend.last_reasoning_context` holds only completed native reasoning metadata
+and is reset before each retry. `Agent._iterate()` consumes it immediately and
+stores it as assistant `reasoning_context`, outside text processed by the command
+parser. JSON session persistence retains this metadata; normalization preserves
+it and does not merge turns carrying native reasoning. Backends translate only
+matching model/format metadata into their native wire fields.
+
+`--preserve-reasoning` enables generic OpenAI-compatible `reasoning_content`
+replay (default off); its tri-state CLI override permits saved-session restoration
+or explicit enabling/disabling, and the effective setting propagates to sub-agents.
+Hosted providers use provider-specific replay policies independently of this flag.
+Gemini retains thought-signature part ordering and validates cached prefix identity
+with a digest, preventing same-length context replacement from reusing stale caches.

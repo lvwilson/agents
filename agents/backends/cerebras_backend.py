@@ -52,6 +52,8 @@ class CerebrasBackend(OpenAICompatBackend):
     # Cerebras' prompt caching is a *latency* feature, not a discount:
     # "Cached tokens are priced the same whether or not the key is set."
     # So cache_read_cost equals the input cost (no hit discount).
+    REASONING_FIELD = "reasoning"
+
     MODEL_PRICING: dict[str, dict[str, float]] = {
         "qwen-3.8-27b": {
             "input_token_cost": 0.99,

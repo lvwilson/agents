@@ -20,6 +20,8 @@ from ..llm_backend import (
 class AnthropicBackend(LLMBackend):
     """Claude backend with streaming, prompt caching, and retry logic."""
 
+    REASONING_FORMAT = "anthropic"
+
     MODEL_PRICING = {
         "claude-sonnet-4-6":           {"input_token_cost": 3.00, "output_token_cost": 15.00, "cache_read_cost": 0.30},
         "claude-opus-4-6":             {"input_token_cost": 5.00, "output_token_cost": 25.00, "cache_read_cost": 0.50},
@@ -221,8 +223,8 @@ class AnthropicBackend(LLMBackend):
 
     # ── Message format translation ───────────────────────────────────
 
-    @staticmethod
-    def _format_messages(context: list[dict], model: str | None = None) -> list[dict]:
+    @classmethod
+    def _format_messages(cls, context: list[dict], model: str | None = None) -> list[dict]:
         """Convert internal flat image format to Anthropic's nested format.
 
         The internal format stores images as::
@@ -246,11 +248,11 @@ class AnthropicBackend(LLMBackend):
             translated = []
             native = msg.get("reasoning_context") or {}
             if (msg["role"] == "assistant" and model is not None
-                    and native.get("format") == "anthropic"
+                    and native.get("format") == cls.REASONING_FORMAT
                     and native.get("model") == model):
                 translated.extend(
                     dict(block) for block in native.get("data", [])
-                    if AnthropicBackend._is_native_thinking(block)
+                    if cls._is_native_thinking(block)
                 )
             for part in parts:
                 if part.get("type") == "image" and "source" not in part:
@@ -271,8 +273,8 @@ class AnthropicBackend(LLMBackend):
     def _is_native_thinking(block: dict) -> bool:
         """Only replay provider-native blocks, never unsigned reasoning text.
 
-        DeepSeek/MiniMax use this same wire format; retain their supplied
-        signatures verbatim rather than synthesizing Claude signatures.
+        Compatible providers override this policy where signatures are not
+        required. Never synthesize a Claude signature.
         """
         return isinstance(block, dict) and (
             (block.get("type") == "thinking"
@@ -388,42 +390,39 @@ class AnthropicBackend(LLMBackend):
 
         def attempt():
             with self._client.messages.stream(**stream_kwargs) as stream:
-                if self._use_thinking_stream:
-                    # Event-based streaming to handle interleaved thinking
-                    # + text blocks correctly.  The SDK's MessageStream
-                    # yields RawMessageStreamEvent objects when iterated.
-                    # This path is used whenever the user opts in to
-                    # thinking (CLAUDE_THINKING_ENABLED=true), even for
-                    # local models whose names aren't in THINKING_MODELS,
-                    # so that any thinking blocks the server emits are
-                    # surfaced in the UI.
-                    current_block_type = None
-                    for event in stream:
-                        if event.type == "content_block_start":
-                            new_type = getattr(event.content_block, "type", None)
-                            # Handle transitions to/from thinking blocks
-                            if new_type == "thinking" and current_block_type != "thinking":
-                                sh.on_stream_reasoning_start()
-                            elif new_type != "thinking" and current_block_type == "thinking":
-                                sh.on_stream_reasoning_end()
-                            current_block_type = new_type
-                        elif event.type == "content_block_delta":
-                            delta = event.delta
-                            if current_block_type == "thinking":
-                                chunk = getattr(delta, "thinking", "")
-                                if chunk:
-                                    sh.on_stream_reasoning_token(chunk)
-                            elif current_block_type == "text":
-                                chunk = getattr(delta, "text", "")
-                                if chunk:
-                                    sh.on_stream_token(chunk)
-                    # Clean up if response ended during a thinking block
-                    if current_block_type == "thinking":
-                        sh.on_stream_reasoning_end()
-                else:
-                    # Simple text-only streaming for non-thinking models
-                    for text in stream.text_stream:
-                        sh.on_stream_token(text)
+                # Iterate events even without thinking enabled: SDK text_stream
+                # hides message_stop, and get_final_message accepts early EOF.
+                self._reasoning_stream_complete = False
+                # Event-based streaming to handle interleaved thinking
+                # + text blocks correctly.  The SDK's MessageStream
+                # yields RawMessageStreamEvent objects when iterated.
+                # Always observe completion and surface any thinking
+                # blocks, including those from unknown local models.
+                current_block_type = None
+                for event in stream:
+                    if event.type == "message_stop":
+                        self._reasoning_stream_complete = True
+                    if event.type == "content_block_start":
+                        new_type = getattr(event.content_block, "type", None)
+                        # Handle transitions to/from thinking blocks
+                        if new_type == "thinking" and current_block_type != "thinking":
+                            sh.on_stream_reasoning_start()
+                        elif new_type != "thinking" and current_block_type == "thinking":
+                            sh.on_stream_reasoning_end()
+                        current_block_type = new_type
+                    elif event.type == "content_block_delta":
+                        delta = event.delta
+                        if current_block_type == "thinking":
+                            chunk = getattr(delta, "thinking", "")
+                            if chunk:
+                                sh.on_stream_reasoning_token(chunk)
+                        elif current_block_type == "text":
+                            chunk = getattr(delta, "text", "")
+                            if chunk:
+                                sh.on_stream_token(chunk)
+                # Clean up if response ended during a thinking block
+                if current_block_type == "thinking":
+                    sh.on_stream_reasoning_end()
                 response = stream.get_final_message()
             if response:
                 return response
@@ -501,8 +500,8 @@ class AnthropicBackend(LLMBackend):
                     data = block.model_dump(mode="json", exclude_none=True)
                     if self._is_native_thinking(data):
                         native_blocks.append(data)
-        if native_blocks:
+        if native_blocks and getattr(self, "_reasoning_stream_complete", True):
             self.last_reasoning_context = {
-                "format": "anthropic", "model": self.model, "data": native_blocks,
+                "format": self.REASONING_FORMAT, "model": self.model, "data": native_blocks,
             }
         return text_content

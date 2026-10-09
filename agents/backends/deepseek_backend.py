@@ -62,6 +62,15 @@ class DeepSeekBackend(AnthropicBackend):
     DEFAULT_EFFORT = "max"
 
     # $/1M tokens — https://api-docs.deepseek.com/quick_start/pricing/
+    REASONING_FORMAT = "deepseek_anthropic"
+
+    @staticmethod
+    def _is_native_thinking(block: dict) -> bool:
+        # This provider accepts native thinking without Claude signatures.
+        # Return supplied fields verbatim; redacted Claude blocks are unsupported.
+        return (isinstance(block, dict) and block.get("type") == "thinking"
+                and isinstance(block.get("thinking"), str))
+
     MODEL_PRICING: dict[str, dict[str, float]] = {
         "deepseek-v4-pro": {
             "input_token_cost": 0.435,
