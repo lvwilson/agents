@@ -243,9 +243,9 @@ def resolve_backend_target(
        demoted, never pointed at localhost.
     2. **An explicit ``-m`` model selects:** a name in the hosted
        catalog → its hosting provider unless ``--provider`` is explicit
-       (a conflicting config provider loses quietly — the demotion is
-       logged, not announced; the banner names the model that runs;
-       a pinned *remote* base_url stays
+       (a conflicting config provider loses; the run reports which
+       provider hosts the model, without dwelling on the pin it
+       overrode; a pinned *remote* base_url stays
        the destination — a proxy); a pinned *local* base_url →
        that server (local deployments may reuse a hosted model's name);
        unknown name → the pinned endpoint/provider, or the local server
@@ -332,17 +332,17 @@ def resolve_backend_target(
             pinned = cli_provider or cfg_prov
             if pinned and pinned != hosting:
                 # A concrete model is more specific than a provider
-                # pin: the model selects its provider.  The override
-                # is the useful part; announcing it is not — the
-                # resolved model is already in the startup banner, and
-                # the demotion of a stale ``provider:`` pin is the
-                # expected outcome, not an exceptional one.  Keep the
-                # decision in the log (silent unless the user raises
-                # the logging level) so routing is still diagnosable.
-                logging.debug(
-                    "Model %r is hosted by %r, overriding the pinned "
-                    "provider %r.",
-                    model_name, hosting, pinned,
+                # pin: the model selects its provider.  Saying *which*
+                # provider serves the model is the useful half — the
+                # user learns where their request is really going.
+                # Naming the pin that lost is noise: a stale
+                # ``provider:`` entry being outranked by a model choice
+                # is the expected outcome, not something to warn about,
+                # and the loser has no bearing on the run.
+                safe_console_print(
+                    f"Model {model_name!r} is hosted by {hosting!r} — "
+                    f"using {hosting!r}.",
+                    style="info",
                 )
             return hosting, model_name, (
                 cfg_base
@@ -361,12 +361,11 @@ def resolve_backend_target(
         if hosting:
             pinned = cli_provider or cfg_prov
             if pinned and pinned != hosting:
-                # Same silent-but-logged override as the ``-m`` path:
-                # the banner reports what is actually running.
-                logging.debug(
-                    "Model %r is hosted by %r, overriding the pinned "
-                    "provider %r.",
-                    cfg_model, hosting, pinned,
+                # Same info-only report as the ``-m`` path.
+                safe_console_print(
+                    f"Model {cfg_model!r} is hosted by {hosting!r} — "
+                    f"using {hosting!r}.",
+                    style="info",
                 )
             return hosting, cfg_model, cfg_base
         # Unknown name: a provider pin (e.g. a proxy) is honoured as
@@ -1035,9 +1034,9 @@ class Agent:
             provider: Explicit provider name (e.g. ``"cerebras"``,
                    ``"openai"``).  Highest-priority provider choice; a
                    ``-m`` model hosted elsewhere selects its own
-                   provider instead (silently — the banner names the
-                   model that runs).  Falls back to the ``.agent``
-                   file, then env, then the YAML
+                   provider instead (the run reports its hosting
+                   provider).  Falls back to the ``.agent`` file, then
+                   env, then the YAML
                    config, then ``"anthropic"``.
             cli_local: True when the run was started with an explicit
                    ``--local`` flag: the local destination is forced

@@ -55,30 +55,31 @@ class TestResolution(unittest.TestCase):
             ("cerebras", "new-cloud-model", None),
         )
 
-    def test_hosted_catalog_overrides_inherited_provider_silently(self):
-        # The override is the useful half of this rule: a concrete
-        # hosted model beats a stale ``provider:`` pin.  The printout
-        # is not — the banner already names the model that runs, so
-        # the resolution must stay correct while the terminal says
-        # nothing at all (the decision survives at debug level).
+    def test_hosted_report_omits_the_overridden_provider(self):
+        # A concrete hosted model beats a stale ``provider:`` pin, and
+        # the report must stay useful *without* naming the loser: the
+        # user wants to know where the model is actually served, not to
+        # be reminded of a config entry that has no bearing on the run.
         cases = (
-            {"config_provider": "anthropic", "config_model": "qwen-3.8-27b"},
-            {"config_provider": "cerebras", "model_name": "claude-opus-4-6"},
+            ({"config_provider": "anthropic", "config_model": "qwen-3.8-27b"},
+             "cerebras", "anthropic"),
+            ({"config_provider": "cerebras", "model_name": "claude-opus-4-6"},
+             "anthropic", "cerebras"),
         )
-        for kwargs in cases:
-            expected_provider = app._online_models()[
-                kwargs.get("config_model") or kwargs["model_name"]
-            ]
+        for kwargs, hosting, overridden in cases:
+            model = kwargs.get("config_model") or kwargs["model_name"]
             with self.subTest(**kwargs), \
-                    mock.patch.object(app, "safe_console_print") as console, \
-                    mock.patch("logging.debug") as debug_log:
+                    mock.patch.object(app, "safe_console_print") as console:
                 resolved = app.resolve_backend_target(**kwargs)
             self.assertEqual(
-                resolved[0], expected_provider,
+                resolved[0], hosting,
                 "the hosted model must still select its provider",
             )
-            console.assert_not_called()
-            debug_log.assert_called_once()
+            console.assert_called_once()
+            message = console.call_args.args[0]
+            self.assertIn(model, message)
+            self.assertIn(hosting, message)
+            self.assertNotIn(overridden, message)
 
     def test_proxy_retained_for_explicit_and_configured_models(self):
         url = "https://proxy.example/custom/v1"
