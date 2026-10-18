@@ -23,6 +23,120 @@ class TestResolution(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_online_typo_disables_local_fallback(self):
+        for provider in (None, "cerebras", "openai"):
+            for endpoint in (None, LOCAL, "http://[::1]:8000/v1"):
+                with self.subTest(provider=provider, endpoint=endpoint):
+                    with self.assertRaisesRegex(
+                        ValueError, "gpy-6-astra.*local fallback is disabled"
+                    ):
+                        app.resolve_backend_target(
+                            cli_online=True, model_name="gpy-6-astra",
+                            config_provider=provider, config_base_url=endpoint,
+                            local_model="env-local", local_host="192.168.1.50",
+                        )
+
+    def test_online_config_model_cannot_fall_back_locally(self):
+        with self.assertRaisesRegex(ValueError, "local fallback is disabled"):
+            app.resolve_backend_target(
+                cli_online=True, config_model="gpy-6-astra",
+            )
+
+    def test_online_ignores_inherited_local_settings(self):
+        for key in ("model_name", "config_model"):
+            with self.subTest(key=key):
+                self.assertEqual(
+                    app.resolve_backend_target(
+                        cli_online=True, local_model="env-local",
+                        config_base_url=LOCAL, **{key: "qwen-3.8-27b"},
+                    ),
+                    ("cerebras", "qwen-3.8-27b", None),
+                )
+        self.assertEqual(
+            app.resolve_backend_target(
+                cli_online=True, local_model="env-local",
+                config_base_url=LOCAL, config_provider="cerebras",
+            ),
+            ("cerebras", app.PROVIDER_DEFAULT_MODELS["cerebras"], None),
+        )
+
+    def test_online_rejects_explicit_local_conflicts(self):
+        for selection in (
+            {"cli_local": True},
+            {"cli_base_url": LOCAL},
+            {"cli_base_url": "http://[::1]:8000/v1"},
+        ):
+            with self.subTest(selection=selection):
+                with self.assertRaisesRegex(ValueError, "--online cannot"):
+                    app.resolve_backend_target(
+                        cli_online=True, model_name="qwen-3.8-27b", **selection,
+                    )
+
+    def test_online_keeps_explicit_provider_and_remote_endpoints(self):
+        for key in ("model_name", "config_model"):
+            for selection, expected in (
+                ({"cli_provider": "cerebras"}, ("cerebras", "new-model", None)),
+                ({"config_base_url": "https://proxy.example/v1"},
+                 ("openai", "new-model", "https://proxy.example/v1")),
+                ({"cli_base_url": "https://proxy.example/v1",
+                  "config_base_url": LOCAL},
+                 ("openai", "new-model", "https://proxy.example/v1")),
+            ):
+                with self.subTest(key=key, selection=selection):
+                    self.assertEqual(
+                        app.resolve_backend_target(
+                            cli_online=True, **{key: "new-model"}, **selection,
+                        ),
+                        expected,
+                    )
+
+    def test_online_keeps_unlisted_config_model_provider(self):
+        self.assertEqual(
+            app.resolve_backend_target(
+                cli_online=True, config_model="new-model",
+                config_provider="cerebras",
+            ),
+            ("cerebras", "new-model", None),
+        )
+
+    def test_typo_without_online_still_uses_local_fallback(self):
+        self.assertEqual(
+            app.resolve_backend_target(model_name="gpy-6-astra"),
+            ("openai", "gpy-6-astra", LOCAL),
+        )
+
+    def test_online_cli_typo_errors_before_creating_backend(self):
+        config = {"system_prompt": "system", "overbudget": "stop",
+                  "provider": "cerebras", "base_url": LOCAL}
+        with mock.patch("sys.argv", ["agent", "--nogit", "-o", "-m", "gpy-6-astra", "task"]), \
+             mock.patch.object(app, "read_configuration", return_value=config), \
+             mock.patch.object(app, "load_agent_config", return_value=config), \
+             mock.patch.object(app, "create_backend") as backend, \
+             mock.patch.object(app, "report_home_config"), \
+             mock.patch.object(app.signal, "signal"), \
+             mock.patch.object(app.sys.stdin, "isatty", return_value=True), \
+             mock.patch("sys.stderr") as stderr:
+            with self.assertRaises(SystemExit) as error:
+                app.main()
+        self.assertEqual(error.exception.code, 2)
+        backend.assert_not_called()
+        message = "".join(call.args[0] for call in stderr.write.call_args_list)
+        self.assertIn("gpy-6-astra", message)
+        self.assertIn("local fallback is disabled", message)
+
+    def test_commit_online_typo_does_not_create_backend(self):
+        from agents.cli import commit_cli
+
+        with mock.patch.object(commit_cli, "read_configuration", return_value={}), \
+             mock.patch.object(commit_cli, "load_agent_config", return_value={}), \
+             mock.patch.object(commit_cli, "create_backend") as backend, \
+             mock.patch.object(commit_cli, "_auto_message", return_value="fallback"):
+            result = commit_cli._generate_commit_message(
+                "diff", ["file.py"], online=True, model="gpy-6-astra",
+            )
+        self.assertEqual(result, "fallback")
+        backend.assert_not_called()
+
     def test_cloud_pins_demoted_for_local_requests(self):
         for provider in ("cerebras", "gemini", "kimi", "deepseek", "minimax"):
             for selection in (

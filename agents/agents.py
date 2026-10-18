@@ -216,6 +216,7 @@ def resolve_backend_target(
     local_port: int = 8000,
     cli_provider: str | None = None,
     cli_local: bool = False,
+    cli_online: bool = False,
     cli_base_url: str | None = None,
     config_provider: str | None = None,
     config_model: str | None = None,
@@ -228,7 +229,13 @@ def resolve_backend_target(
     drift.  Returns ``(provider, model, base_url)`` — the exact
     arguments to pass to ``create_backend``.
 
-    Rules (in resolution order):
+    With ``cli_online`` (``-o``), automatic local fallback is disabled:
+    unknown names requiring that fallback raise ValueError. LOCAL_MODEL and
+    inherited loopback endpoints are ignored; an explicit local endpoint or
+    ``cli_local`` conflicts with online mode. Explicit providers and remote
+    endpoints can still serve names absent from the hosted catalog.
+
+    Rules (in resolution order, after applying online mode):
 
     1. **Forced local** — the ``--local`` flag, a pinned ``base_url``
        that points at this machine, or the ``LOCAL_MODEL`` env var
@@ -265,7 +272,8 @@ def resolve_backend_target(
 
     Raises:
         ValueError: a local destination is forced (``--local`` or a
-            local ``base_url`` pin) but no model name is available.
+            local ``base_url`` pin) but no model name is available, or online
+            mode conflicts with local settings / requires local fallback.
     """
     cfg_prov = (config_provider or "").strip().lower() or None
     base_url = cli_base_url if cli_base_url is not None else config_base_url
@@ -276,6 +284,19 @@ def resolve_backend_target(
         if isinstance(config_model, str) and config_model.strip()
         else None
     )
+
+    if cli_online:
+        if cli_local:
+            raise ValueError("--online cannot be combined with --local.")
+        local_model = None
+        if cfg_base and _looks_local_base_url(cfg_base):
+            if cli_base_url is not None:
+                raise ValueError(
+                    "--online cannot use a local --base-url. "
+                    "Use a remote endpoint or omit --online."
+                )
+            # An explicit online request outranks an inherited local endpoint.
+            cfg_base = None
 
     def _local_provider() -> str:
         # Local wire format: an explicit --provider CLI pin is always
@@ -290,6 +311,12 @@ def resolve_backend_target(
         return cfg_prov if cfg_prov in ("openai", "anthropic") else "openai"
 
     def _local_dest(model: str, prefer_pin: bool) -> tuple[str, str, str]:
+        if cli_online:
+            raise ValueError(
+                f"Unknown online model {model!r}: local fallback is disabled "
+                "by --online (-o). Check the model name or specify "
+                "--provider NAME / a remote --base-url for an unlisted model."
+            )
         base = (
             cfg_base
             if (prefer_pin and cfg_base)
@@ -1016,7 +1043,7 @@ class Agent:
                  local_model=None, local_port=8000, local_host="localhost",
                  session_id=None, model=None, provider=None,
                  planning_mode=False, effort=None, cli_local=False, base_url=None,
-              preserve_reasoning=None):
+              preserve_reasoning=None, cli_online=False):
         """Initialize the Agent.
 
         Args:
@@ -1044,6 +1071,8 @@ class Agent:
                    ``--local`` flag: the local destination is forced
                    even when a config pin names a hosted model (a
                    local deployment may reuse a hosted model's name).
+            cli_online: Disable local fallback and ignore inherited local
+                   endpoints and LOCAL_MODEL (CLI ``--online``).
             planning_mode: If True, start in PLANNING MODE — the agent
                    may only explore (read-only commands) and write a
                    plan; state-changing commands are blocked until the
@@ -1089,13 +1118,14 @@ class Agent:
         #   pinned hosted provider (e.g. ``provider: cerebras``) is
         #   demoted, never pointed at the local machine;
         # * a pinned ``base_url`` is always the destination (a local
-        #   pin forces local mode; a remote one is a proxy).
+        #   pin forces local mode unless --online; a remote one is a proxy).
         provider, model, base_url = resolve_backend_target(
             model_name=model,
             local_model=local_model,
             local_host=local_host,
             local_port=local_port,
             cli_local=cli_local,
+            cli_online=cli_online,
             cli_provider=provider,
             cli_base_url=base_url,
             config_provider=(
@@ -2081,7 +2111,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
               session_id=None, local_model=None, local_port=8000,
               local_host="localhost", nogit=False, model=None, provider=None,
               planning_mode=False, effort=None, cli_local=False, base_url=None,
-              preserve_reasoning=None):
+              preserve_reasoning=None, cli_online=False):
     """Create and run an agent, optionally restoring a previous session.
 
     Args:
@@ -2111,6 +2141,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                sub-agents via :class:`AgentPool`.
         base_url: Explicit endpoint override (CLI ``--base-url``); takes
                   precedence over configuration and is used verbatim.
+        cli_online: Disable local fallback (CLI ``--online``).
         cli_local: True when started with an explicit ``--local`` flag
                (see :class:`Agent`).
 
@@ -2140,7 +2171,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
                   local_host=local_host, session_id=effective_sid,
                   model=model, provider=provider,
                   planning_mode=planning_mode, effort=effort,
-                  cli_local=cli_local, base_url=base_url,
+                  cli_local=cli_local, cli_online=cli_online, base_url=base_url,
                   preserve_reasoning=preserve_reasoning)
 
     if restore and restore_sid:
@@ -2261,11 +2292,11 @@ def main():
     local_group.add_argument('-l', '--local', action='store_true',
                              help='Use a local OpenAI-compatible API server (also enabled automatically when the LOCAL_MODEL env var is set)')
     local_group.add_argument('-o', '--online', action='store_true',
-                             help='Use the online model provider (ignores LOCAL_MODEL env var)')
+                             help='Use an online provider; disable local fallback and ignore LOCAL_MODEL and inherited local endpoints')
     parser.add_argument('-m', '--model', type=str, default=None,
                         help='Model to use. Online models are auto-detected '
                              '(no -o needed). Unknown model names are treated '
-                             'as local.')
+                             'as local unless -o/--online is specified.')
     parser.add_argument('-P', '--provider', type=str, default=None,
                         help='Backend provider to use (e.g. anthropic, openai, '
                              'cerebras, gemini, kimi, deepseek, minimax). '
@@ -2374,7 +2405,7 @@ def main():
     # Resolve model selection (full ruleset in resolve_backend_target):
     # -m/--model takes highest priority — a hosted model auto-selects
     # its provider, a name no provider hosts is treated as local
-    # -o/--online forces online (ignores LOCAL_MODEL)
+    # -o/--online disables local fallback and ignores inherited local settings
     # -l/--local forces the local server — the model may also come
     #   from LOCAL_MODEL or a "model:" config pin (clean error if
     #   nothing names one)
@@ -2395,7 +2426,7 @@ def main():
             local_host=args.host, nogit=args.nogit,
             model=model_arg, provider=args.provider,
             planning_mode=args.plan, effort=effort_arg,
-            cli_local=args.local, base_url=args.base_url,
+            cli_local=args.local, cli_online=args.online, base_url=args.base_url,
             preserve_reasoning=args.preserve_reasoning)
     except ValueError as e:
         # Resolver model validation (e.g. --local with no model anywhere):

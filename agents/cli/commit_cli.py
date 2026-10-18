@@ -90,8 +90,9 @@ def _generate_commit_message(
     ----------
     model : str or None
         If provided, the model name to use.  When the name is recognised
-        as an online model the provider is auto-detected and *online* is
-        ignored.  Otherwise the model is treated as local.
+        as an online model the provider is auto-detected; *online*
+        only prevents local routing. Otherwise the model is treated as local
+        unless *online* is true, in which case local fallback is disabled.
     """
     config = read_configuration(agent_config)
     agent_cfg = load_agent_config()
@@ -119,6 +120,7 @@ def _generate_commit_message(
     try:
         provider, model, base_url = resolve_backend_target(
             model_name=model,
+            cli_online=online,
             local_model=(None if (model is not None or online)
                          else os.environ.get("LOCAL_MODEL")),
             local_host=local_host,
@@ -130,7 +132,7 @@ def _generate_commit_message(
             config_base_url=agent_cfg.get("base_url", config.get("base_url")),
         )
     except ValueError:
-        # A local destination without a model name: keyword message
+        # Invalid routing (including online-only unknown models): keyword message
         # instead of a traceback.
         return _auto_message(files)
 
@@ -201,13 +203,13 @@ def main():
         default=None,
         help="Model to use for the commit message. Online models are "
              "auto-detected (no -o needed). Unknown model names are "
-             "treated as local.",
+             "treated as local unless -o/--online is specified.",
     )
     parser.add_argument(
         "-o", "--online",
         action="store_true",
         help="Use the online model provider for the commit message "
-             "(ignored when -m specifies an online model).",
+             "(disables local fallback and ignores inherited local settings).",
     )
     parser.add_argument(
         "files",

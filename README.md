@@ -94,6 +94,14 @@ Agents are configured via YAML files (e.g., `basic_agent.yaml`). You can overrid
 
     AGENT_MODEL_PROVIDER=openai AGENT_MODEL=gpt-4o agent "Write a python script to calculate fibonacci numbers"
 
+Use `agent -o -m MODEL "task"` to require online routing. With `-o` /
+`--online`, unknown model names (for example, a typo) cannot fall back to a
+local server. It also ignores `LOCAL_MODEL` and inherited loopback endpoints.
+An unlisted hosted model can still be selected with `--provider NAME` or a
+remote `--base-url`; an explicit local `--base-url` conflicts with `-o`.
+Without `-o`, unknown names retain their normal local fallback behavior.
+The same online-routing rule applies to `agent-commit -o`.
+
 ### Backend Configuration (the `.agent` file)
 
 The easiest way to pick a backend is a small **`.agent`** YAML file.  Put one in your
