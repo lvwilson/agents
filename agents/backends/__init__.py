@@ -128,7 +128,26 @@ def list_available_models(provider_filter: str | None = None) -> list[dict]:
                     "context": contexts.get(model_name),
                 }
             )
-    return results
+    from ..model_catalog import model_overrides
+    merged = {(r["provider"], r["model"]): r for r in results}
+    for key, record in model_overrides().items():
+        provider, model = key
+        if provider_filter and provider != provider_filter:
+            continue
+        entry = merged.setdefault(key, {
+            "provider": provider, "model": model, "display": model,
+            "input_cost": None, "output_cost": None,
+            "cache_read_cost": None, "context": None,
+        })
+        for field in ("display", "context"):
+            if field in record:
+                entry[field] = record[field]
+        if "pricing" in record:
+            for dest, source in (("input_cost", "input_token_cost"),
+                                 ("output_cost", "output_token_cost"),
+                                 ("cache_read_cost", "cache_read_cost")):
+                entry[dest] = record["pricing"].get(source)
+    return [merged[key] for key in sorted(merged)]
 
 
 def create_backend(

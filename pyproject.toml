@@ -27,6 +27,7 @@ all = ["requests", "openai", "google-genai", "cerebras_cloud_sdk", "ddgs", "mcp>
 
 [project.scripts]
 agent        = "agents.agents:main"
+agent-models = "agents.cli.models_cli:main"
 agent-docs   = "agents.tools.docs:main"
 agent-memory = "agents.cli.memory_cli:main"
 agent-commit = "agents.cli.commit_cli:main"
@@ -35,4 +36,4 @@ agent-commit = "agents.cli.commit_cli:main"
 include = ["agents*"]
 
 [tool.setuptools.package-data]
-agents = ["*.yaml", "cli/*.yaml"]
+agents = ["*.yaml", "*.json", "cli/*.yaml"]

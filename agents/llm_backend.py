@@ -292,6 +292,8 @@ class LLMBackend(ABC):
         reasoning_effort: str | None = None,
     ):
         self.model: str = model
+        from .model_catalog import apply_backend_metadata
+        apply_backend_metadata(self)
         self.base_url: str | None = base_url
         self.is_local: bool = base_url is not None
         self.stream_handler: StreamHandler = stream_handler or NullStreamHandler()

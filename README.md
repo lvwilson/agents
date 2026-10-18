@@ -259,6 +259,109 @@ To disable both features, pass `--nogit`:
 
 If the directory is **not** a Git repository, the harness behaves normally with no git operations attempted.
 
+### Model discovery and updates
+
+Model updates no longer require editing backend Python dictionaries. The effective
+catalog combines backend defaults, reviewed package metadata in
+`agents/model_catalog.json`, and a user overlay at `~/.agents/model_catalog.json`.
+Normal startup and `agent --list-models` remain offline. Updates do **not** change
+your default model, endpoint configuration, or active backend.
+
+```bash
+# Preview IDs available to your account (no writes or inference calls).
+agent-models discover openai
+agent-models discover openai --model gpt-6.1-sol
+
+# Explicitly register selected IDs. Repeat --model for multiple selections.
+agent-models discover openai --model gpt-6.1-sol --apply
+
+# Preview, then apply reviewed metadata (prices, limits, request options).
+agent-models import reviewed-models.json
+agent-models import reviewed-models.json --apply
+
+# Inspect effective metadata and use the model.
+agent-models list --provider openai
+agent --list-models openai
+agent -o -m gpt-6.1-sol --effort max "Your task"
+```
+
+After updating an editable installation, reinstall with `pip install -e .` to
+register the new `agent-models` executable. Alternatively, use
+`python -m agents.cli.models_cli` with the same arguments without reinstalling.
+
+**Discovery is not a capability or pricing oracle.** Provider model listings
+confirm IDs, but may include embeddings, audio models, or models your account
+cannot run. Therefore `discover --apply` requires exact `--model` selections.
+No prices, context sizes, or reasoning settings are guessed from names.
+ID-only additions show unknown prices/limits; the backend warns that unpriced
+models cannot be constrained by the dollar budget. Import verified pricing
+before budgeted use. Inference compatibility still needs a small live check.
+
+Discovery adapters: OpenAI (`OPENAI_API_KEY`), Anthropic (`CLAUDE_API_KEY`),
+Cerebras (`CEREBRAS_API_KEY`), DeepSeek (`DEEPSEEK_API_KEY`), Gemini
+(`GEMINI_API_KEY`), and Kimi (`MOONSHOT_API_KEY`). Gemini discovery excludes
+models without `generateContent`. MiniMax currently supports metadata imports
+only. Discovery uses fixed official HTTPS endpoints, not configured proxy/local
+URLs, and refuses redirects. Credentials are never saved in the catalog.
+
+A reviewed import is a versioned JSON document, for example:
+
+```json
+{
+  "version": 1,
+  "models": [{
+    "provider": "openai",
+    "model": "gpt-6.1-sol",
+    "display": "GPT-6.1 Sol",
+    "context": 1050000,
+    "max_output": 128000,
+    "effort_levels": ["low", "medium", "high", "xhigh", "max"],
+    "pricing": {
+      "input_token_cost": 2.0,
+      "output_token_cost": 10.0,
+      "cache_read_cost": 0.1,
+      "cache_write_cost": 2.5,
+      "long_context_threshold": 272000,
+      "long_input_multiplier": 2.0,
+      "long_output_multiplier": 1.5
+    },
+    "source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+    "verified_at": "2026-10-18"
+  }]
+}
+```
+
+Prices are USD per million tokens, using standard processing rates. Sol's bundled
+record includes its long-context tier: **over** 272K input tokens, input/cache
+rates double and output rates multiply by 1.5 for the full request. Cache-write
+pricing is applied when the API reports cache-creation usage. Special service-tier,
+regional, Batch, and Flex adjustments are not modeled.
+
+All providers support `display`, `context`, and complete `pricing` overrides.
+Pricing requires input, output, and cache-read rates; Gemini additionally supports
+`cache_storage_cost_per_hour`. Request options `max_output`, `effort_levels`,
+and `send_temperature`, plus tier/cache-write pricing, currently support OpenAI
+only. An empty `effort_levels` list suppresses the reasoning parameter.
+Unspecified request options retain backend defaults, not discovered guarantees.
+
+Imports merge fields per `(provider, model)`; a `pricing` object replaces that
+model's pricing completely. Discovery provenance (`discovery_source`,
+`discovered_at`) is separate from reviewed metadata provenance (`source`,
+`verified_at`). Updates are validated and written atomically; failures preserve
+the previous catalog, and missing IDs are never automatically deleted.
+Cross-provider duplicate IDs are rejected to prevent silent routing changes;
+use an explicit `--provider` without registering a duplicate instead.
+To undo an overlay, remove the relevant record (or the overlay file); package
+defaults then apply. Already-created backend instances keep their metadata.
+`AGENT_MODEL_CATALOG=/path/catalog.json` selects an alternate overlay for testing
+or deployment. No project-local catalog is loaded.
+
+**Sol validation (2026-10-18):** its exact ID was returned by OpenAI's live model
+listing, and the actual streaming backend returned `SOL_OK` with 23 input and
+6 output tokens (standard-rate estimate: $0.000106). Automated tests cover
+routing, metadata overlays, effort mapping including `max`, output limits,
+cache pricing, long-context thresholds, and discovery/update failures.
+
 ### Local and Remote Models
 
 You can run against OpenAI-compatible servers (like Ollama, vLLM, or llama.cpp) by using the `--local` flag and setting the `LOCAL_MODEL` environment variable. By default, it connects to `http://localhost:8000/v1`.

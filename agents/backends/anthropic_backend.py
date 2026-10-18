@@ -209,7 +209,7 @@ class AnthropicBackend(LLMBackend):
         cost = (
             input_tokens * input_cost
             + cache_creation_tokens * input_cost * 1.25
-            + cache_read_tokens * input_cost * 0.10
+            + cache_read_tokens * pricing.get("cache_read_cost", input_cost * 0.10)
             + output_tokens * output_cost
         ) / 1_000_000
         return cost

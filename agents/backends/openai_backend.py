@@ -68,6 +68,7 @@ class OpenAIBackend(LLMBackend):
     #: when the user did not request an effort.
     EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh")
     DEFAULT_EFFORT: str | None = None
+    SEND_TEMPERATURE = True
 
     def __init__(
         self,
@@ -215,19 +216,23 @@ class OpenAIBackend(LLMBackend):
         if pricing is None:
             return 0.0
 
-        uncached_input_tokens = max(0, input_tokens - cache_read_tokens)
-        # Cached input is billed at the model's declared cache_read_cost
-        # (declared rates match half the input price for the GPT-5.x
-        # family; GPT-6 Astra's cache is 90% off, so the table must
-        # win over any flat discount factor).
+        # Responses input_tokens includes cached reads and cache writes.
+        # cache_creation_tokens is therefore a subset, not additional input.
+        uncached_input_tokens = max(
+            0, input_tokens - cache_read_tokens - cache_creation_tokens
+        )
         cache_read_cost = pricing.get(
             "cache_read_cost", pricing["input_token_cost"] * 0.5
         )
-
+        cache_write_cost = pricing.get("cache_write_cost", pricing["input_token_cost"])
+        long_context = input_tokens > pricing.get("long_context_threshold", float("inf"))
+        input_multiplier = pricing.get("long_input_multiplier", 1) if long_context else 1
+        output_multiplier = pricing.get("long_output_multiplier", 1) if long_context else 1
         return (
-            uncached_input_tokens * pricing["input_token_cost"]
-            + cache_read_tokens * cache_read_cost
-            + output_tokens * pricing["output_token_cost"]
+            (uncached_input_tokens * pricing["input_token_cost"]
+             + cache_read_tokens * cache_read_cost
+             + cache_creation_tokens * cache_write_cost) * input_multiplier
+            + output_tokens * pricing["output_token_cost"] * output_multiplier
         ) / 1_000_000
 
     # ── Error classification ─────────────────────────────────────────
@@ -253,11 +258,12 @@ class OpenAIBackend(LLMBackend):
             "model": self.model,
             "input": messages,
             "max_output_tokens": self.MAX_COMPLETION_TOKENS,
-            "temperature": self.temperature,
             "stream": True,
             # Required for native reasoning replay without previous_response_id.
             "include": ["reasoning.encrypted_content"],
         }
+        if self.SEND_TEMPERATURE:
+            create_kwargs["temperature"] = self.temperature
         # Reasoning effort: only sent when the user requested one
         # (``--effort`` / config ``effort``, forwarded by the Agent as a
         # canonical rank).  map_effort() clamps to the levels the GPT
@@ -266,7 +272,7 @@ class OpenAIBackend(LLMBackend):
         # effort is requested: the model's own default applies, and the
         # wire format for existing deployments is unchanged.
         effort = getattr(self, "reasoning_effort", None)
-        if effort is not None:
+        if effort is not None and self.EFFORT_LEVELS:
             create_kwargs["reasoning"] = {
                 "effort": map_effort(
                     effort, self.EFFORT_LEVELS, self.DEFAULT_EFFORT
@@ -354,11 +360,16 @@ class OpenAIBackend(LLMBackend):
 
         if usage is not None:
             cache_read = 0
+            cache_write = 0
             self.last_input_tokens = getattr(usage, "input_tokens", 0) or 0
             self.last_output_tokens = getattr(usage, "output_tokens", 0) or 0
             if hasattr(usage, "input_tokens_details") and usage.input_tokens_details:
                 cache_read = (
                     getattr(usage.input_tokens_details, "cached_tokens", 0) or 0
+                )
+
+                cache_write = (
+                    getattr(usage.input_tokens_details, "cache_creation_tokens", 0) or 0
                 )
 
             self.last_total_context_tokens = self.last_input_tokens + self.last_output_tokens
@@ -370,6 +381,7 @@ class OpenAIBackend(LLMBackend):
                 self.last_input_tokens,
                 self.last_output_tokens,
                 cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_write,
             )
 
             self.cost_without_cache += self.calculate_cost(

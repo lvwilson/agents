@@ -179,10 +179,9 @@ def _build_online_models_catalog() -> dict[str, str]:
 
 
 def _online_models() -> dict[str, str]:
-    """Return the hosted-model → provider catalog (cached, built once)."""
+    """Return the offline hosted catalog, including explicit metadata updates."""
     global _ONLINE_MODELS
-    if not _ONLINE_MODELS:
-        _ONLINE_MODELS = _build_online_models_catalog()
+    _ONLINE_MODELS = _build_online_models_catalog()
     return _ONLINE_MODELS
 
 
@@ -2335,7 +2334,8 @@ def main():
         '--list-models', nargs='?', const='__all__', default=None,
         metavar='PROVIDER',
         help="List available models and exit.  Optionally filter by "
-             "provider (e.g. --list-models anthropic).",
+             "provider (e.g. --list-models anthropic). "
+             "Use agent-models to discover and apply catalog updates.",
     )
 
     args = parser.parse_args()
