@@ -7,7 +7,13 @@
       "display": "GPT-6.1 Sol",
       "context": 1050000,
       "max_output": 128000,
-      "effort_levels": ["low", "medium", "high", "xhigh", "max"],
+      "effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "pricing": {
         "input_token_cost": 2.0,
         "output_token_cost": 10.0,
@@ -26,7 +32,14 @@
       "display": "GPT-6.1 Terra",
       "context": 1050000,
       "max_output": 128000,
-      "effort_levels": ["none", "low", "medium", "high", "xhigh", "max"],
+      "effort_levels": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "pricing": {
         "input_token_cost": 1.0,
         "output_token_cost": 5.0,
@@ -37,6 +50,141 @@
         "long_output_multiplier": 1.5
       },
       "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+      "verified_at": "2026-10-31"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-4-argon",
+      "display": "Gemini 4 Argon",
+      "context": 1048576,
+      "max_output": 65536,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "pricing": {
+        "input_token_cost": 2,
+        "output_token_cost": 10,
+        "cache_read_cost": 0.1
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+      "verified_at": "2026-10-31",
+      "send_temperature": false,
+      "pricing_schedule": [
+        {
+          "effective_from": "2026-12-01",
+          "pricing": {
+            "input_token_cost": 4,
+            "output_token_cost": 20,
+            "cache_read_cost": 0.2
+          }
+        }
+      ]
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.8-flash",
+      "display": "Gemini 3.8 Flash",
+      "context": 1048576,
+      "max_output": 65536,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "pricing": {
+        "input_token_cost": 0.75,
+        "output_token_cost": 3.75,
+        "cache_read_cost": 0.075,
+        "cache_storage_cost_per_hour": 0.5
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash",
+      "verified_at": "2026-10-31",
+      "pricing_schedule": [
+        {
+          "effective_from": "2027-01-01",
+          "pricing": {
+            "input_token_cost": 1.5,
+            "output_token_cost": 7.5,
+            "cache_read_cost": 0.15,
+            "cache_storage_cost_per_hour": 1
+          }
+        }
+      ]
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "display": "Gemini 3.6 Flash",
+      "context": 1048576,
+      "max_output": 65536,
+      "effort_levels": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "pricing": {
+        "input_token_cost": 0.75,
+        "output_token_cost": 3.75,
+        "cache_read_cost": 0.075,
+        "cache_storage_cost_per_hour": 0.5
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
+      "verified_at": "2026-10-31",
+      "pricing_schedule": [
+        {
+          "effective_from": "2027-01-01",
+          "pricing": {
+            "input_token_cost": 1.5,
+            "output_token_cost": 7.5,
+            "cache_read_cost": 0.15,
+            "cache_storage_cost_per_hour": 1
+          }
+        }
+      ]
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "display": "Gemini 3.5 Flash-Lite",
+      "context": 1048576,
+      "max_output": 65536,
+      "effort_levels": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "pricing": {
+        "input_token_cost": 0.3,
+        "output_token_cost": 2.5,
+        "cache_read_cost": 0.03,
+        "cache_storage_cost_per_hour": 1
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite",
+      "verified_at": "2026-10-31"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.1-flash-lite",
+      "display": "Gemini 3.1 Flash-Lite",
+      "context": 1048576,
+      "max_output": 65536,
+      "effort_levels": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "pricing": {
+        "input_token_cost": 0.25,
+        "output_token_cost": 1.5,
+        "cache_read_cost": 0.025,
+        "cache_storage_cost_per_hour": 1
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite",
       "verified_at": "2026-10-31"
     }
   ]

@@ -6,6 +6,7 @@ No network requests, SDK imports, credentials or endpoint overrides live here.
 from __future__ import annotations
 
 import copy
+from datetime import date, datetime, timezone
 import json
 import math
 import os
@@ -17,14 +18,14 @@ SCHEMA_VERSION = 1
 BUNDLED_CATALOG = Path(__file__).with_name("model_catalog.json")
 _FIELDS = {
     "provider", "model", "display", "context", "pricing", "source",
-    "discovered_at", "discovery_source", "verified_at", "max_output", "effort_levels", "send_temperature",
+    "discovered_at", "discovery_source", "verified_at", "max_output", "effort_levels", "send_temperature", "pricing_schedule",
 }
 _PRICE_FIELDS = {
     "input_token_cost", "output_token_cost", "cache_read_cost",
     "cache_write_cost", "cache_storage_cost_per_hour",
     "long_context_threshold", "long_input_multiplier", "long_output_multiplier",
 }
-_OPENAI_FIELDS = {"max_output", "effort_levels", "send_temperature"}
+_REQUEST_FIELDS = {"max_output", "effort_levels", "send_temperature"}
 _OPENAI_PRICES = {
     "cache_write_cost", "long_context_threshold",
     "long_input_multiplier", "long_output_multiplier",
@@ -67,8 +68,8 @@ def validate_catalog(data: object) -> list[dict]:
         for field in ("context", "max_output"):
             if field in record and (type(record[field]) is not int or record[field] <= 0):
                 raise ValueError(f"{field} must be a positive integer")
-        if provider != "openai" and set(record) & _OPENAI_FIELDS:
-            raise ValueError("request-option metadata currently supports openai only")
+        if provider not in {"openai", "gemini"} and set(record) & _REQUEST_FIELDS:
+            raise ValueError("request-option metadata supports openai and gemini only")
         if "send_temperature" in record and type(record["send_temperature"]) is not bool:
             raise ValueError("send_temperature must be boolean")
         if "effort_levels" in record:
@@ -78,6 +79,22 @@ def validate_catalog(data: object) -> list[dict]:
                     any(not isinstance(v, str) or v not in allowed for v in levels)
                     or len(set(levels)) != len(levels)):
                 raise ValueError("effort_levels must be a list of unique canonical efforts")
+        if "pricing_schedule" in record:
+            schedule = record["pricing_schedule"]
+            if not isinstance(schedule, list) or not schedule or "pricing" not in record:
+                raise ValueError("pricing_schedule needs base pricing and a nonempty list")
+            previous = ""
+            for entry in schedule:
+                if not isinstance(entry, dict) or set(entry) != {"effective_from", "pricing"}:
+                    raise ValueError("invalid pricing_schedule entry")
+                start = entry["effective_from"]
+                if (not isinstance(start, str) or len(start) != 10
+                        or date.fromisoformat(start).isoformat() != start or start <= previous):
+                    raise ValueError("pricing_schedule dates must be ordered unique ISO dates")
+                previous = start
+                validate_catalog({"version": SCHEMA_VERSION, "models": [{
+                    "provider": provider, "model": model, "pricing": entry["pricing"],
+                }]})
         if "pricing" in record:
             prices = record["pricing"]
             if (not isinstance(prices, dict) or set(prices) - _PRICE_FIELDS
@@ -120,8 +137,17 @@ def model_overrides() -> dict[tuple[str, str], dict]:
             continue
         for record in read_catalog(path):
             key = (record["provider"], record["model"])
-            result[key] = {**result.get(key, {}), **record}
+            inherited = result.get(key, {})
+            # A manually reviewed overlay price replaces bundled future prices too.
+            if "pricing" in record and "pricing_schedule" not in record:
+                inherited = {k: v for k, v in inherited.items() if k != "pricing_schedule"}
+            result[key] = {**inherited, **record}
     _validate_ownership(list(result.values()))
+    today = datetime.now(timezone.utc).date().isoformat()
+    for record in result.values():
+        for entry in record.get("pricing_schedule", []):
+            if entry["effective_from"] <= today:
+                record["pricing"] = copy.deepcopy(entry["pricing"])
     return result
 
 
@@ -158,7 +184,10 @@ def apply_catalog(records: list[dict], path: Path | None = None) -> Path:
     merged = {(r["provider"], r["model"]): r for r in existing}
     for record in records:
         key = (record["provider"], record["model"])
-        merged[key] = {**merged.get(key, {}), **record}
+        inherited = merged.get(key, {})
+        if "pricing" in record and "pricing_schedule" not in record:
+            inherited = {k: v for k, v in inherited.items() if k != "pricing_schedule"}
+        merged[key] = {**inherited, **record}
     data = {"version": SCHEMA_VERSION, "models": [merged[k] for k in sorted(merged)]}
     validate_catalog(data)
     _validate_ownership(read_catalog(BUNDLED_CATALOG) + data["models"])

@@ -301,6 +301,49 @@ Omitting `--effort` leaves the provider default; `--effort none` clamps to `low`
 for Sol but disables reasoning for Terra. Terra's cache-write rate assumes
 standard 30-minute retention, not the higher-priced 12-hour retention.
 
+**Bundled recent Gemini text models** (official metadata verified 2026-10-31):
+set `GEMINI_API_KEY`; no discovery step is required.
+
+```bash
+agent -o -m gemini-4-argon --effort medium "Your task"
+agent -o -m gemini-3.8-flash --effort high "Your task"
+agent-models list --provider gemini
+```
+
+| Model ID | Input / cached input / output ($ per 1M tokens) | Thinking levels |
+| --- | --- | --- |
+| `gemini-4-argon` | $2 / $0.10 / $10 through 2026-11-30; $4 / $0.20 / $20 thereafter | low, medium, high |
+| `gemini-3.8-flash` | $0.75 / $0.075 / $3.75 through 2026-12-31; $1.50 / $0.15 / $7.50 thereafter | low, medium, high |
+| `gemini-3.6-flash` | Same as 3.8 Flash | minimal, low, medium, high |
+| `gemini-3.5-flash-lite` | $0.30 / $0.03 / $2.50 | minimal, low, medium, high |
+| `gemini-3.1-flash-lite` | $0.25 / $0.025 / $1.50 | minimal, low, medium, high |
+
+All five use a 1,048,576-token context and a 65,536-token streaming output cap
+(including thinking). Argon's context is shared between input, thinking, and
+output; its advertised 1M-token long decode requires continuation/background
+execution and is **not enabled** by this harness. Argon uses implicit caching
+only, omits sampling parameters, and has a 15-minute HTTP timeout. The other
+models retain explicit caching: Flash storage is $0.50/M tokens/hour through
+2026-12-31, then $1; Lite storage is $1/M tokens/hour.
+
+Omitting `--effort` preserves server defaults. `--effort none` clamps to `low`
+for Argon and 3.8 Flash; it means `minimal` (not fully disabled) for the listed
+older Flash/Lite models. `xhigh` and `max` clamp to `high`.
+Announced pricing transitions are selected using the UTC date when metadata is
+loaded (including backend construction). An explicit user-overlay `pricing`
+object replaces bundled pricing and its schedule.
+Your saved model/endpoint defaults are unchanged. Gemini 4 Carbon is not
+registered; audio, Live, image-generation, and managed-agent models are outside
+this text-backend update.
+
+Sources: [Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon),
+[3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
+[3.6 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash),
+[3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite),
+[3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing), and
+[Argon migration](https://ai.google.dev/gemini-api/docs/latest-model).
+
 After updating an editable installation, reinstall with `pip install -e .` to
 register the new `agent-models` executable. Alternatively, use
 `python -m agents.cli.models_cli` with the same arguments without reinstalling.

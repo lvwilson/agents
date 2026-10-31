@@ -168,6 +168,9 @@ agents/                          ← repo root
 ### `agents/backends/gemini_backend.py` — Google Gemini Provider
 
 - **`GeminiBackend(LLMBackend)`** — Uses `google-genai` unified SDK.
+- **Recent models:** Bundled catalog registers `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-flash-lite`, with exact 1,048,576-token windows, synchronous 65,536-token caps, reviewed pricing, and per-model effort levels. No Carbon or non-text endpoints are registered.
+- **Argon:** GenerateContent streaming; implicit caching only (never creates/references explicit caches), no temperature, 900,000 ms HTTP timeout. Input/thinking/output share the context window; background/continuation long decode is not implemented.
+- **Dated pricing:** Catalog `pricing_schedule` contains ordered `{effective_from: "YYYY-MM-DD", pricing: {...}}` entries with complete validated prices. Metadata loading selects the latest effective price using UTC, consistently for model tables and new backend instances. A user overlay specifying `pricing` without a schedule clears inherited future prices. Argon changes on 2026-12-01; 3.8/3.6 Flash change on 2027-01-01.
 - **Server-side context caching:** Creates/manages server-side caches with TTL (300s). Caches all messages except the last user message. Charges storage cost upfront. Auto-invalidates and retries on cache errors.
 - **Message translation:** `_translate_messages()` converts to Gemini `Content`/`Part` objects. Maps `"assistant"` → `"model"` role.
 - **Pricing:** Per-model dicts with explicit `cache_read_cost` and `cache_storage_cost_per_hour`.
@@ -188,7 +191,7 @@ How each backend requests thinking, and the ceiling reasoning can consume (reaso
 | Kimi | `reasoning_effort="max"` (K3 accepts only `max`) | Always | 131,072 (`MAX_COMPLETION_TOKENS`) |
 | MiniMax | Bare `thinking={"type":"enabled"}`; the endpoint ignores the parameter for M2.x and always emits thinking | Always (cannot be disabled) | 128,000 (parent fallback) |
 | OpenAI (hosted) / OpenAI-compatible | No thinking parameter; servers that emit reasoning stream `delta.reasoning` / `delta.reasoning_content` to the UI | Server decides | 16,384 (`MAX_COMPLETION_TOKENS`) |
-| Gemini | No thinking parameter | Server decides | 16,384 |
+| Gemini | Catalogued models: `thinking_config.thinking_level`; omitted without `--effort`. Canonical `none` maps to `minimal` where supported, otherwise clamps to `low` | Server default when omitted | 65,536 for bundled Argon/Flash/Lite; legacy models retain 16,384 |
 
 **`--effort` / `-e` flag and the `effort` config key** — one user-facing knob across providers: canonical scale `none, low, medium, high, xhigh, max` (aliases `off`, `mid`, `extra`, `ultra`, …) normalised by `parse_effort()` and clamped per provider by `map_effort()` to the levels each model accepts, so no request 400s. Precedence: flag → `effort` key in `.agent`/`agent_config.yaml` → per-model backend default. Omitted (no flag/key) preserves each backend's existing per-model emission. Sub-agents inherit the effort via the pool.
 

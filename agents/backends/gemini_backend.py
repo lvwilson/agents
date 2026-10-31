@@ -18,6 +18,7 @@ from ..llm_backend import (
     RATE_LIMIT,
     TRANSIENT,
     merge_consecutive_messages,
+    map_effort,
 )
 
 
@@ -66,9 +67,13 @@ class GeminiBackend(LLMBackend):
         cache_step: int = 2,
         stream_handler: StreamHandler | None = None,
         temperature: float = 1.0,
+        reasoning_effort: str | int | None = None,
         **_kwargs,
     ):
-        super().__init__(model=model, base_url=base_url, stream_handler=stream_handler, temperature=temperature)
+        super().__init__(
+            model=model, base_url=base_url, stream_handler=stream_handler,
+            temperature=temperature, reasoning_effort=reasoning_effort,
+        )
 
         # Lazy import
         from google import genai as _genai
@@ -76,18 +81,23 @@ class GeminiBackend(LLMBackend):
         self._genai = _genai
         self._types = _types
 
+        # Argon hard prompts may take several minutes (official migration guide).
+        http_options = {"timeout": 900_000} if model == "gemini-4-argon" else {}
         api_key = os.getenv("GEMINI_API_KEY")
         if base_url:
             if not api_key:
                 api_key = "local"
             self._client = _genai.Client(
                 api_key=api_key,
-                http_options={"base_url": base_url},
+                http_options={**http_options, "base_url": base_url},
             )
         else:
             if not api_key:
                 raise Exception("GEMINI_API_KEY Environment Variable Unset")
-            self._client = _genai.Client(api_key=api_key)
+            self._client = _genai.Client(
+                api_key=api_key,
+                **({"http_options": http_options} if http_options else {}),
+            )
 
         self.cache_step = cache_step
 
@@ -184,6 +194,10 @@ class GeminiBackend(LLMBackend):
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
 
+    @property
+    def supports_explicit_caching(self) -> bool:
+        return self.model != "gemini-4-argon"
+
     def _create_cache(self, system_prompt: str, context: list[dict]) -> bool:
         """Create a server-side cache with the system prompt and context.
 
@@ -193,7 +207,7 @@ class GeminiBackend(LLMBackend):
 
         Returns True if cache was created successfully, False otherwise.
         """
-        if len(context) < 2:
+        if not self.supports_explicit_caching or len(context) < 2:
             return False
 
         messages_to_cache = context[:-1]
@@ -333,12 +347,14 @@ class GeminiBackend(LLMBackend):
 
         # Determine whether to use or create a cache
         should_create_cache = (
-            not self.is_local
+            self.supports_explicit_caching
+            and not self.is_local
             and self.call_count % self.cache_step == 0
         )
 
         use_cache = False
-        if not self.is_local and self._is_cache_valid(system_prompt, context):
+        if (self.supports_explicit_caching and not self.is_local
+                and self._is_cache_valid(system_prompt, context)):
             use_cache = True
         elif should_create_cache:
             if self._create_cache(system_prompt, context):
@@ -346,21 +362,25 @@ class GeminiBackend(LLMBackend):
 
         def _do_stream(cached):
             """Run one streaming call, optionally using the server cache."""
+            options = {
+                "max_output_tokens": getattr(self, "MODEL_MAX_COMPLETION", {}).get(
+                    self.model, 16384),
+            }
+            if getattr(self, "SEND_TEMPERATURE", True):
+                options["temperature"] = self.temperature
+            levels = getattr(self, "EFFORT_LEVELS", ())
+            if levels and getattr(self, "reasoning_effort", None) is not None:
+                level = map_effort(self.reasoning_effort, levels, levels[0])
+                # Canonical "none" means minimal, not disabled, on Gemini 3.
+                options["thinking_config"] = types.ThinkingConfig(
+                    thinking_level="minimal" if level == "none" else level)
             if cached:
-                uncached_messages = context[self._cached_msg_count:]
-                contents = self._translate_messages(uncached_messages)
-                config = types.GenerateContentConfig(
-                    cached_content=self._cache_name,
-                    temperature=self.temperature,
-                    max_output_tokens=16384,
-                )
+                contents = self._translate_messages(context[self._cached_msg_count:])
+                options["cached_content"] = self._cache_name
             else:
                 contents = self._translate_messages(context)
-                config = types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=self.temperature,
-                    max_output_tokens=16384,
-                )
+                options["system_instruction"] = system_prompt
+            config = types.GenerateContentConfig(**options)
 
             stream = self._client.models.generate_content_stream(
                 model=self.model,
