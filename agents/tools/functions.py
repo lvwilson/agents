@@ -289,15 +289,23 @@ def append_to_file(file_path, log_message):
 # ── Find-and-replace tool ──────────────────────────────────────────
 
 def find_and_replace(file_path, command):
-    """Perform a find-and-replace on *file_path* using the SEARCH/REPLACE block syntax.
+    """Validate all SEARCH/REPLACE blocks, then apply valid edits bottom-up.
 
-    Returns a status message with a unified diff of the changes.
+    Returns per-block failure feedback and a unified diff of saved changes.
     """
     original_content, err = _read_file_safe(file_path)
     if err:
         return err
 
-    modified_content = findreplace.find_replace(original_content, command)
+    result = findreplace.validated_find_replace(original_content, command)
+    modified_content = result.content
+    feedback = (
+        f"Applied {result.applied_blocks} block(s); skipped {len(result.errors)} block(s)."
+    )
+    if result.errors:
+        feedback += "\n" + "\n".join(result.errors)
+    if modified_content == original_content:
+        return f"{file_path} unchanged.\n{feedback}"
 
     diff = "\n".join(difflib.unified_diff(
         original_content.splitlines(), modified_content.splitlines(),
@@ -307,9 +315,10 @@ def find_and_replace(file_path, command):
     try:
         with open(file_path, "w") as f:
             f.write(modified_content)
-        return f"{file_path} successfully written.\n\nDiff:\n{diff}"
+        return f"{file_path} successfully written.\n{feedback}\n\nDiff:\n{diff}"
     except Exception as e:
-        return f"{file_path} write error: {e}"
+        errors = "\n".join(result.errors)
+        return f"{file_path} write error: {e}\nValidation errors:\n{errors or 'none'}"
 
 
 # ── Code-scissors (line-based insert/replace) ──────────────────────

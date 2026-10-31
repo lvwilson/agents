@@ -29,6 +29,7 @@ system_prompt: |
   write_file file_path `````text to replace entire file with`````
   append_to_file filepath `````text to append to file - suitable for logging.`````
   find_and_replace file_path `````command (see example)`````
+  Find/replace validates all blocks against the original file in memory, then applies valid edits bottom-to-top. Each SEARCH must be unique. Failed or overlapping blocks are skipped with feedback; independent valid blocks still apply. Use separate commands for dependent edits.
   view_image image_path1 [image_path2 ...]
   create_image "A detailed description of the image to create using a diffusion model" image_path
   summarize path/to/file_or_folder ["*.filter"] [--recursive] `````optional instruction`````

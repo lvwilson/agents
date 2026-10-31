@@ -284,7 +284,7 @@ class TestProcessContentMultipleCommands(unittest.TestCase):
 class TestFindReplaceMultipleBlocks(unittest.TestCase):
     """findreplace.find_replace() applies every SEARCH/REPLACE block
     in a command string, validates each search text, and applies
-    edits sequentially in command order."""
+    valid edits bottom-to-top against the original snapshot."""
 
     def setUp(self):
         self.source = (
@@ -331,21 +331,19 @@ class TestFindReplaceMultipleBlocks(unittest.TestCase):
         self.assertIn("return 3", result)
 
 
-    def test_multiple_blocks_chained_replacement(self):
-        """Blocks apply sequentially: a later block can match text
-        introduced by an earlier block's replacement."""
-        source = "start"
+    def test_multiple_blocks_cannot_chain_replacements(self):
+        """Dependent edits require separate commands."""
         command = (
             "<<<<<<< SEARCH\nstart\n=======\nmiddle\n>>>>>>> REPLACE\n"
             "<<<<<<< SEARCH\nmiddle\n=======\nfinal\n>>>>>>> REPLACE"
         )
-        result = find_replace(source, command)
-        self.assertEqual(result, "final")
+        with self.assertRaisesRegex(ValueError, "Block 2:.*original content"):
+            find_replace("start", command)
 
 
 
 class TestFindReplaceMultipleBlocksIntegration(unittest.TestCase):
-    """One fenced command must apply every block or leave the file unchanged."""
+    """One fenced command applies valid blocks and reports skipped blocks."""
 
     @staticmethod
     def command(path, edits):
@@ -377,8 +375,8 @@ class TestFindReplaceMultipleBlocksIntegration(unittest.TestCase):
                 "first = 0\n# untouched\nsecond = 20000\nthird = 300\nextra = True\n",
             )
 
-    def test_three_chained_blocks_in_one_command(self):
-        """Later searches can consume text introduced by preceding blocks."""
+    def test_chained_blocks_report_all_missing_searches(self):
+        """All searches use the original file, not earlier replacements."""
         edits = [
             ("start", "intermediate"),
             ("intermediate", "nearly done"),
@@ -391,33 +389,56 @@ class TestFindReplaceMultipleBlocksIntegration(unittest.TestCase):
             result, _ = process_content(self.command(path, edits))
 
             self.assertIn("successfully written", result)
+            self.assertIn("Block 2: SEARCH text not found", result)
+            self.assertIn("Block 3: SEARCH text not found", result)
             self.assertEqual(
-                path.read_text(encoding="utf-8"), "before\nfinished\nafter\n"
+                path.read_text(encoding="utf-8"), "before\nintermediate\nafter\n"
             )
 
-    def test_invalid_second_block_leaves_file_unchanged(self):
-        """No first-block changes may be written when a later block fails."""
-        source = b"first\nrepeat\nrepeat\n"
-        cases = [
-            ("missing", "not found"),
-            ("repeat", "matches 2 locations"),
-            # The first block removes this text, so searches must use the
-            # running result rather than the original file.
-            ("first", "not found"),
-        ]
+    def test_invalid_blocks_do_not_prevent_independent_valid_edits(self):
+        source = b"first\nrepeat\nrepeat\nlast\n"
+        cases = [("missing", "not found"), ("repeat", "matches 2 locations")]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "example.txt"
             for search, error in cases:
                 with self.subTest(search=search):
                     path.write_bytes(source)
-                    edits = [("first", "updated"), (search, "replacement")]
-
+                    edits = [
+                        ("first", "updated"),
+                        (search, "replacement"),
+                        ("last", "done"),
+                    ]
                     result, _ = process_content(self.command(path, edits))
-
                     self.assertIn("Block 2:", result)
                     self.assertIn(error, result)
-                    self.assertNotIn("successfully written", result)
-                    self.assertEqual(path.read_bytes(), source)
+                    self.assertIn("Applied 2 block(s); skipped 1 block(s)", result)
+                    self.assertIn("successfully written", result)
+                    self.assertEqual(path.read_bytes(), b"updated\nrepeat\nrepeat\ndone\n")
+
+    def test_overlapping_blocks_skipped_but_independent_edit_applies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "example.txt"
+            path.write_text("abcdef\nlast\n")
+            edits = [("abcd", "X"), ("cdef", "Y"), ("last", "done")]
+            result, _ = process_content(self.command(path, edits))
+            self.assertIn("Block 1: SEARCH range overlaps", result)
+            self.assertIn("Block 2: SEARCH range overlaps", result)
+            self.assertEqual(path.read_text(), "abcdef\ndone\n")
+
+    def test_all_failed_blocks_leave_file_untouched(self):
+        from unittest.mock import patch
+        from agents.tools import functions
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "example.txt"
+            path.write_bytes(b"original\r\n")
+            command = "<<<<<<< SEARCH\nmissing\n=======\nnew\n>>>>>>> REPLACE"
+            with patch("builtins.open", wraps=open) as opening:
+                result = functions.find_and_replace(path, command)
+            self.assertIn("unchanged", result)
+            self.assertIn("Block 1:", result)
+            self.assertFalse(any(call.args[1] == "w" for call in opening.call_args_list))
+            self.assertEqual(path.read_bytes(), b"original\r\n")
 
 
 class TestFilterContent(unittest.TestCase):
