@@ -102,6 +102,28 @@ remote `--base-url`; an explicit local `--base-url` conflicts with `-o`.
 Without `-o`, unknown names retain their normal local fallback behavior.
 The same online-routing rule applies to `agent-commit -o`.
 
+### LLM-Generated Commits
+
+`agent-commit` asks the selected LLM to summarize the staged diff, then
+commits with that model identifier as the Git author and
+`agent@<hostname>` as its email, just like agent auto-commits:
+
+    agent-commit -m qwen-3.8-27b --tracked
+    agent-commit -m gpt-6-astra --all
+    agent-commit -m my-local-model file1.py file2.py
+
+`-m` / `--model` selects the model, not a literal commit message. Without
+it, normal agent defaults apply (project/global configuration,
+environment, then provider default). This invokes the LLM even when
+`LOCAL_MODEL` is unset, and hosted requests may incur API charges.
+`-o` / `--online` disables local fallback.
+
+There is no filename-based fallback: if routing, backend initialization,
+or message generation fails, no commit is created and changes remain
+staged for inspection or retry. `--tracked`, `--all`, and explicit file
+selection retain their existing behavior and protection against including
+unrelated pre-staged files.
+
 ### Folder Memory and Moving Projects
 
 On the first agent run, the memory system creates a **`.agent` YAML file**

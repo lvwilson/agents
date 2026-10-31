@@ -16,10 +16,10 @@ Usage
 import argparse
 import os
 import platform
-import re
 import sys
 
 from ..agents import (
+    _extract_commit_message,
     read_configuration,
     resolve_backend_target,
 )
@@ -38,38 +38,16 @@ from ..git_utils import (
 _BACKTICK = "`" * 5
 
 
-def _extract_backtick_block(text: str) -> str | None:
-    """Extract the first 5-backtick-wrapped block from *text*."""
-    match = re.search(rf"{_BACKTICK}([\s\S]*?){_BACKTICK}", text)
-    if match:
-        return match.group(1).strip()
-    return None
-
-
-def _get_agent_author(model: str | None = None) -> tuple[str, str]:
-    """Return (author_name, author_email) matching the agent's identity.
-
-    *model* is the resolved model from the ``-m`` flag; when omitted the
-    identity falls back to LOCAL_MODEL/AGENT_MODEL env vars.
-    """
-    model = model or os.environ.get("LOCAL_MODEL", os.environ.get("AGENT_MODEL", "agent"))
-    hostname = platform.node()
-    return model, f"agent@{hostname}"
-
-
-def _auto_message(files: list[str]) -> str:
-    """Generate a simple commit message from file basenames."""
-    names = [os.path.basename(f) for f in files]
-    if len(names) == 1:
-        return f"update {names[0]}"
-    return f"update {', '.join(names)}"
+def _get_agent_author(model: str) -> tuple[str, str]:
+    """Use the resolved model identity, exactly as agent auto-commits do."""
+    return model, f"agent@{platform.node()}"
 
 
 COMMIT_SYSTEM_PROMPT = (
     "You are a git commit message generator. You receive a unified diff "
     "and must produce a single, concise commit message on one line. "
     "Wrap the commit message in five backticks like in the following "
-    f"example.\n{_BACKTICK}Commit message here{_BACKTICK}"
+    f"example.\n{_BACKTICK}\nCommit message here\n{_BACKTICK}"
 )
 
 
@@ -80,70 +58,34 @@ def _generate_commit_message(
     online: bool = False,
     model: str | None = None,
     agent_config: str = "basic_agent.yaml",
-) -> str:
-    """Send the diff to the LLM and extract a commit message.
+) -> tuple[str, str]:
+    """Return the LLM's commit message and the resolved model identifier.
 
-    Falls back to ``_auto_message()`` if the LLM is unavailable or
-    produces no extractable message.
-
-    Parameters
-    ----------
-    model : str or None
-        If provided, the model name to use.  When the name is recognised
-        as an online model the provider is auto-detected; *online*
-        only prevents local routing. Otherwise the model is treated as local
-        unless *online* is true, in which case local fallback is disabled.
+    Use the same configured defaults and routing as the agent CLI. Failures
+    propagate to the caller: never replace an LLM response with a fabricated
+    filename-based message.
     """
     config = read_configuration(agent_config)
     agent_cfg = load_agent_config()
-
-    # Same resolution rules as the agent CLI (resolve_backend_target —
-    # shared, so the two never drift): a hosted model selects its own
-    # provider (model selection is never silently ignored — with a
-    # ``provider: minimax / model: MiniMax-M2.5`` pin the old code
-    # phoned Claude instead, and no-model pins fell back to a default
-    # Claude model), local traffic always uses the OpenAI-compatible
-    # chat-completions client, and a pinned base_url is the destination.
-    #
-    # Without -m / -o a model must come from the LOCAL_MODEL env var —
-    # otherwise no LLM is called at all (a commit message is not worth
-    # a surprise hosted API round trip).
-    if model is None and not online:
-        if not os.environ.get("LOCAL_MODEL"):
-            return _auto_message(files)
 
     local_host = os.environ.get("LOCAL_LLM_HOST", "localhost")
     try:
         local_port = int(os.environ.get("LOCAL_LLM_PORT", "8000"))
     except (TypeError, ValueError):
         local_port = 8000
-    try:
-        provider, model, base_url = resolve_backend_target(
-            model_name=model,
-            cli_online=online,
-            local_model=(None if (model is not None or online)
-                         else os.environ.get("LOCAL_MODEL")),
-            local_host=local_host,
-            local_port=local_port,
-            config_provider=(agent_cfg.get("provider")
-                             or config.get("provider")),
-            config_model=agent_cfg.get("model"),
-            # Preserve an explicit empty URL from the default-model tool.
-            config_base_url=agent_cfg.get("base_url", config.get("base_url")),
-        )
-    except ValueError:
-        # Invalid routing (including online-only unknown models): keyword message
-        # instead of a traceback.
-        return _auto_message(files)
-
-    try:
-        client = create_backend(
-            provider,
-            model=model,
-            base_url=base_url,
-        )
-    except Exception:
-        return _auto_message(files)
+    provider, model, base_url = resolve_backend_target(
+        model_name=model,
+        cli_online=online,
+        local_model=(None if (model is not None or online)
+                     else os.environ.get("LOCAL_MODEL")),
+        local_host=local_host,
+        local_port=local_port,
+        config_provider=agent_cfg.get("provider") or config.get("provider"),
+        config_model=agent_cfg.get("model"),
+        # Preserve an explicit empty URL from the default-model tool.
+        config_base_url=agent_cfg.get("base_url", config.get("base_url")),
+    )
+    client = create_backend(provider, model=model, base_url=base_url)
 
     # Truncate diff to avoid overwhelming the context window
     max_diff = 300_000
@@ -161,29 +103,18 @@ def _generate_commit_message(
         {"role": "user", "content": [{"type": "text", "text": user_message}]}
     ]
 
-    try:
-        response = client.generate_response(COMMIT_SYSTEM_PROMPT, context)
-    except Exception:
-        return _auto_message(files)
-
-    # Extract backtick-wrapped message
-    message = _extract_backtick_block(response)
-    if message:
-        return message.split("\n")[0].strip()
-
-    # Fallback: use the first line of the raw response
-    first_line = response.strip().split("\n")[0].strip()
-    if first_line:
-        return first_line
-
-    return _auto_message(files)
+    response = client.generate_response(COMMIT_SYSTEM_PROMPT, context)
+    message = _extract_commit_message(response)
+    if not message:
+        raise ValueError("The model returned no usable commit message.")
+    return message, model
 
 
 def main():
     """Parse arguments and perform the commit."""
     parser = argparse.ArgumentParser(
         prog="agent-commit",
-        description="Commit files using the agent's git author identity.",
+        description="Generate a commit message with the LLM and commit as that model.",
     )
 
     mode = parser.add_mutually_exclusive_group()
@@ -201,7 +132,7 @@ def main():
         "-m", "--model",
         type=str,
         default=None,
-        help="Model to use for the commit message. Online models are "
+        help="Model used to generate the message and as the Git author. Online models are "
              "auto-detected (no -o needed). Unknown model names are "
              "treated as local unless -o/--online is specified.",
     )
@@ -222,8 +153,6 @@ def main():
     if not is_git_repo("."):
         print("Error: not a git repository.", file=sys.stderr)
         sys.exit(1)
-
-    author_name, author_email = _get_agent_author(args.model)
 
     pre_staged = set(get_staged_files("."))
 
@@ -266,12 +195,27 @@ def main():
 
     # Get the staged diff for the LLM (restricted to the target files
     # so the message isn't polluted by unrelated staged changes)
-    diff, _, _ = _run_git("diff", "--cached", "--", *files, cwd=".")
+    diff, stderr, rc = _run_git("diff", "--cached", "--", *files, cwd=".")
+    if rc != 0:
+        print(f"git diff failed: {stderr}", file=sys.stderr)
+        sys.exit(1)
+    if not diff:
+        print("No staged changes to commit.")
+        return
 
     # Generate commit message from the diff
-    message = _generate_commit_message(
-        diff, files, online=args.online, model=args.model
-    )
+    try:
+        message, resolved_model = _generate_commit_message(
+            diff, files, online=args.online, model=args.model
+        )
+    except Exception as exc:
+        print(
+            f"Commit message generation failed: {exc}\n"
+            "No commit was created; changes remain staged.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    author_name, author_email = _get_agent_author(resolved_model)
 
     # Commit (files are already staged)
     ok, err = git_add_and_commit(

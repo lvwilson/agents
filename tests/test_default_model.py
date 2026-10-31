@@ -251,7 +251,7 @@ def test_commit_startup_respects_cleared_url(workspace, old_url):
         backend.return_value.generate_response.return_value = "Test commit"
         assert commit_cli._generate_commit_message(
             "diff", ["file.py"], online=True
-        ) == "Test commit"
+        ) == ("Test commit", "qwen-3.8-27b")
     backend.assert_called_once_with(
         "cerebras", model="qwen-3.8-27b", base_url=None
     )

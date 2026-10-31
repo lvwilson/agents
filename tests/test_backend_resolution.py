@@ -129,12 +129,11 @@ class TestResolution(unittest.TestCase):
 
         with mock.patch.object(commit_cli, "read_configuration", return_value={}), \
              mock.patch.object(commit_cli, "load_agent_config", return_value={}), \
-             mock.patch.object(commit_cli, "create_backend") as backend, \
-             mock.patch.object(commit_cli, "_auto_message", return_value="fallback"):
-            result = commit_cli._generate_commit_message(
-                "diff", ["file.py"], online=True, model="gpy-6-astra",
-            )
-        self.assertEqual(result, "fallback")
+             mock.patch.object(commit_cli, "create_backend") as backend:
+            with self.assertRaisesRegex(ValueError, "local fallback is disabled"):
+                commit_cli._generate_commit_message(
+                    "diff", ["file.py"], online=True, model="gpy-6-astra",
+                )
         backend.assert_not_called()
 
     def test_cloud_pins_demoted_for_local_requests(self):

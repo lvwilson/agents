@@ -231,11 +231,12 @@ class TestCommitCliAuthor(unittest.TestCase):
         self.assertEqual(name, "claude-fable-5")
         self.assertTrue(email.startswith("agent@"))
 
-    def test_env_fallback_preserved(self):
-        with mock.patch.dict(os.environ, {"AGENT_MODEL": "env-model"}, clear=False):
-            os.environ.pop("LOCAL_MODEL", None)
-            name, _ = commit_cli._get_agent_author()
-        self.assertEqual(name, "env-model")
+    def test_resolved_model_wins_over_environment(self):
+        with mock.patch.dict(os.environ, {
+            "AGENT_MODEL": "env-model", "LOCAL_MODEL": "stale-local-model",
+        }):
+            name, _ = commit_cli._get_agent_author("resolved-model")
+        self.assertEqual(name, "resolved-model")
 
 
 class TestDocsNits(unittest.TestCase):
