@@ -168,7 +168,8 @@ agents/                          ← repo root
 ### `agents/backends/gemini_backend.py` — Google Gemini Provider
 
 - **`GeminiBackend(LLMBackend)`** — Uses `google-genai` unified SDK.
-- **Recent models:** Bundled catalog registers `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.5-flash-lite`, and `gemini-3.1-flash-lite`, with exact 1,048,576-token windows, synchronous 65,536-token caps, reviewed pricing, and per-model effort levels. No Carbon or non-text endpoints are registered.
+- **Recent models:** Bundled catalog registers `gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.6-flash`, and `gemini-3.5-flash-lite`, with exact 1,048,576-token windows, synchronous 65,536-token caps, reviewed pricing, and per-model effort levels. No Carbon or non-text endpoints are registered.
+- **Provider default:** `gemini-4-argon` (also the backend constructor default).
 - **Argon:** GenerateContent streaming; implicit caching only (never creates/references explicit caches), no temperature, 900,000 ms HTTP timeout. Input/thinking/output share the context window; background/continuation long decode is not implemented.
 - **Dated pricing:** Catalog `pricing_schedule` contains ordered `{effective_from: "YYYY-MM-DD", pricing: {...}}` entries with complete validated prices. Metadata loading selects the latest effective price using UTC, consistently for model tables and new backend instances. A user overlay specifying `pricing` without a schedule clears inherited future prices. Argon changes on 2026-12-01; 3.8/3.6 Flash change on 2027-01-01.
 - **Server-side context caching:** Creates/manages server-side caches with TTL (300s). Caches all messages except the last user message. Charges storage cost upfront. Auto-invalidates and retries on cache errors.

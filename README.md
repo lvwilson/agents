@@ -316,9 +316,8 @@ agent-models list --provider gemini
 | `gemini-3.8-flash` | $0.75 / $0.075 / $3.75 through 2026-12-31; $1.50 / $0.15 / $7.50 thereafter | low, medium, high |
 | `gemini-3.6-flash` | Same as 3.8 Flash | minimal, low, medium, high |
 | `gemini-3.5-flash-lite` | $0.30 / $0.03 / $2.50 | minimal, low, medium, high |
-| `gemini-3.1-flash-lite` | $0.25 / $0.025 / $1.50 | minimal, low, medium, high |
 
-All five use a 1,048,576-token context and a 65,536-token streaming output cap
+All four use a 1,048,576-token context and a 65,536-token streaming output cap
 (including thinking). Argon's context is shared between input, thinking, and
 output; its advertised 1M-token long decode requires continuation/background
 execution and is **not enabled** by this harness. Argon uses implicit caching
@@ -332,7 +331,8 @@ older Flash/Lite models. `xhigh` and `max` clamp to `high`.
 Announced pricing transitions are selected using the UTC date when metadata is
 loaded (including backend construction). An explicit user-overlay `pricing`
 object replaces bundled pricing and its schedule.
-Your saved model/endpoint defaults are unchanged. Gemini 4 Carbon is not
+The built-in Gemini provider default is `gemini-4-argon`; saved model/endpoint
+settings are unchanged. Gemini 4 Carbon is not
 registered; audio, Live, image-generation, and managed-agent models are outside
 this text-backend update.
 
@@ -340,7 +340,6 @@ Sources: [Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon),
 [3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
 [3.6 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash),
 [3.5 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite),
-[3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite),
 [pricing](https://ai.google.dev/gemini-api/docs/pricing), and
 [Argon migration](https://ai.google.dev/gemini-api/docs/latest-model).
 

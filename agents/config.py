@@ -97,7 +97,7 @@ _VALID_KEYS: tuple[str, ...] = ("provider", "model", "base_url",
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "claude-opus-4-6",
     "openai": "gpt-5.3-codex",
-    "gemini": "gemini-3.1-pro-preview",
+    "gemini": "gemini-4-argon",
     "kimi": "kimi-k3",
     "deepseek": "deepseek-v4-pro",
     "cerebras": "qwen-3.8-27b",

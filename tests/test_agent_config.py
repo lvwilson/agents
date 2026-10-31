@@ -146,10 +146,10 @@ class TestLoadAgentConfig(unittest.TestCase):
         with _CleanEnv(), _FakeHome():
             with tempfile.TemporaryDirectory() as d:
                 os.environ["AGENT_MODEL_PROVIDER"] = "gemini"
-                os.environ["AGENT_MODEL"] = "gemini-3.1-pro-preview"
+                os.environ["AGENT_MODEL"] = "gemini-4-argon"
                 cfg = load_agent_config(d)
                 self.assertEqual(cfg["provider"], "gemini")
-                self.assertEqual(cfg["model"], "gemini-3.1-pro-preview")
+                self.assertEqual(cfg["model"], "gemini-4-argon")
 
     def test_home_file_overrides_env(self):
         """The global config at ``~/.agents/agent_config.yaml`` wins over env."""

@@ -60,7 +60,7 @@ def print_model_table(provider_filter: str | None = None) -> None:
     table = Table(title="Available Models", border_style="bright_blue")
     table.add_column("Provider", style="dim")
     # overflow="fold" wraps long raw model keys instead of truncating
-    # them with an ellipsis (e.g. gemini-3.1-pro-preview-customtools).
+    # them with an ellipsis.
     table.add_column("Model", style="bold", overflow="fold")
     table.add_column("Context", justify="right")
     table.add_column("Input $/M", justify="right")

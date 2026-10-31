@@ -15,7 +15,6 @@ MODELS = {
     "gemini-3.8-flash": ("Gemini 3.8 Flash", .75, 3.75, .075, .5),
     "gemini-3.6-flash": ("Gemini 3.6 Flash", .75, 3.75, .075, .5),
     "gemini-3.5-flash-lite": ("Gemini 3.5 Flash-Lite", .3, 2.5, .03, 1),
-    "gemini-3.1-flash-lite": ("Gemini 3.1 Flash-Lite", .25, 1.5, .025, 1),
 }
 CONTEXT = [
     {"role": "user", "content": [{"type": "text", "text": "hello"}]},
@@ -240,3 +239,44 @@ def test_schedule_requires_base_pricing():
             "pricing_schedule": [dict(effective_from="2027-01-01", pricing={
                 "input_token_cost": 1, "output_token_cost": 2, "cache_read_cost": .1})],
         }]})
+
+
+REMOVED_MODELS = (
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools",
+    "gemini-3.1-flash-lite",
+)
+
+
+def test_gemini_31_models_not_registered():
+    from agents.agents import _build_online_models_catalog
+
+    listed = {r["model"] for r in list_available_models("gemini")}
+    hosted = _build_online_models_catalog()
+    for model in REMOVED_MODELS:
+        assert model not in listed
+        assert model not in hosted
+        assert model not in GeminiBackend.MODEL_PRICING
+        assert model not in GeminiBackend.MODEL_DISPLAY_NAMES
+        assert model not in GeminiBackend.MODEL_CONTEXT_WINDOWS
+
+
+def test_gemini_31_models_not_in_fallback_catalog():
+    from agents.agents import _build_online_models_catalog
+
+    with mock.patch("agents.backends.list_available_models", return_value=[]):
+        hosted = _build_online_models_catalog()
+    assert hosted["gemini-4-argon"] == "gemini"
+    assert not set(REMOVED_MODELS) & hosted.keys()
+
+
+def test_gemini_default_is_argon():
+    from agents.config import PROVIDER_DEFAULT_MODELS
+
+    assert PROVIDER_DEFAULT_MODELS["gemini"] == "gemini-4-argon"
+    with mock.patch("google.genai.Client"):
+        backend = GeminiBackend()
+    assert backend.model == "gemini-4-argon"
+    assert backend.context_window_size == 1048576
+    assert backend.MODEL_MAX_COMPLETION[backend.model] == 65536
+    assert not backend.supports_explicit_caching

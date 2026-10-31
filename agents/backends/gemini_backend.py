@@ -26,19 +26,7 @@ class GeminiBackend(LLMBackend):
     """Gemini backend with streaming, context caching, and retry logic."""
 
     MODEL_PRICING: dict[str, dict[str, float]] = {
-        # Pricing per 1M tokens (as of mid-2025, prompts <= 200k tokens)
-        "gemini-3.1-pro-preview": {
-            "input_token_cost": 2.00,
-            "output_token_cost": 12.00,
-            "cache_read_cost": 0.20,
-            "cache_storage_cost_per_hour": 4.50,  # $/1M tokens/hour
-        },
-        "gemini-3.1-pro-preview-customtools": {
-            "input_token_cost": 2.00,
-            "output_token_cost": 12.00,
-            "cache_read_cost": 0.20,
-            "cache_storage_cost_per_hour": 4.50,  # $/1M tokens/hour
-        },
+        # Pricing per 1M tokens; newer models are loaded from the catalog.
         "gemini-3-flash-preview": {
             "input_token_cost": 0.50,
             "output_token_cost": 3.00,
@@ -48,13 +36,10 @@ class GeminiBackend(LLMBackend):
     }
 
     MODEL_DISPLAY_NAMES: dict[str, str] = {
-        "gemini-3.1-pro-preview":  "Gemini 3.1 Pro Preview",
         "gemini-3-flash-preview":  "Gemini 3 Flash Preview",
     }
 
     MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-        "gemini-3.1-pro-preview":             2_000_000,
-        "gemini-3.1-pro-preview-customtools": 2_000_000,
         "gemini-3-flash-preview":             1_000_000,
     }
 
@@ -62,7 +47,7 @@ class GeminiBackend(LLMBackend):
 
     def __init__(
         self,
-        model: str = "gemini-3.1-pro-preview",
+        model: str = "gemini-4-argon",
         base_url: str | None = None,
         cache_step: int = 2,
         stream_handler: StreamHandler | None = None,
