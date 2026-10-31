@@ -19,6 +19,12 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 def _parser():
     parser = _ArgumentParser(prog="set_default_model", add_help=False, allow_abbrev=False)
+    add_default_model_arguments(parser)
+    return parser
+
+
+def add_default_model_arguments(parser):
+    """Add shared default-selection options to a tool or shell parser."""
     parser.add_argument("model")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--scope", choices=("global", "project"), default="global")
@@ -60,12 +66,13 @@ def set_default_model(*args):
         return parser.format_help()
     try:
         options = parser.parse_args(args)
-        return _save(options)
+        return save_default_model(options)
     except (ValueError, OSError, argparse.ArgumentError) as exc:
         return f"Error: {exc}\nUsage: {parser.format_usage().strip()}"
 
 
-def _save(options):
+def save_default_model(options):
+    """Validate and persist parsed selection options; raise on failure."""
     # Import lazily: agents.py imports the tool dispatcher during startup.
     from ..agents import (
         _local_base_url,

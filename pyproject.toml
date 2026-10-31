@@ -27,6 +27,7 @@ all = ["requests", "openai", "google-genai", "cerebras_cloud_sdk", "ddgs", "mcp>
 
 [project.scripts]
 agent        = "agents.agents:main"
+agent-model  = "agents.cli.models_cli:main"
 agent-models = "agents.cli.models_cli:main"
 agent-docs   = "agents.tools.docs:main"
 agent-memory = "agents.cli.memory_cli:main"

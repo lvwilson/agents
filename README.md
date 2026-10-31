@@ -55,7 +55,8 @@ Install the package with all dependencies:
     pip install -e .
 
 This installs the main command `agent`, plus the helper CLIs
-`agent-docs`, `agent-memory`, and `agent-commit`.
+`agent-model` (`agent-models` is a compatibility alias), `agent-docs`,
+`agent-memory`, and `agent-commit`.
 
 The base install includes the stealth web browser (Playwright).  A
 browser binary is also required — either install Google Chrome (it is
@@ -395,7 +396,7 @@ Sources: [Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon),
 [Argon migration](https://ai.google.dev/gemini-api/docs/latest-model).
 
 After updating an editable installation, reinstall with `pip install -e .` to
-register the new `agent-models` executable. Alternatively, use
+register the `agent-model` and `agent-models` executables. Alternatively, use
 `python -m agents.cli.models_cli` with the same arguments without reinstalling.
 
 **Discovery is not a capability or pricing oracle.** Provider model listings
@@ -520,7 +521,27 @@ The `-H` flag takes precedence over `LOCAL_LLM_HOST`, and `--port` takes precede
 
 ### Saving a default model
 
-Ask the agent to change your default model; it can use the persistent tool:
+List supported models and save a default directly from your shell, without
+starting an agent or making an inference request:
+
+```bash
+agent-model list
+agent-model list --provider openai --table
+agent-model set-default gpt-6.1-sol
+agent-model set-default my-local-model --project --local --port 11434
+agent-model set custom-model --online --provider openai
+```
+
+`list` prints effective offline catalog metadata as JSON; `--table` shows
+a readable table of models, context limits, and prices. Listing does not
+verify account access or discover models on a local server. `set` is an alias
+for `set-default`. Global defaults are saved unless `--project` is specified.
+`agent-models` remains available with the same subcommands, including catalog
+`discover` and `import`. Run `pip install -e .` after updating to register
+`agent-model`, or use `python -m agents.cli.models_cli` with the same arguments.
+
+Both the shell command and agent tool accept the selection options below.
+You can also ask the agent to change your default using the persistent tool:
 
 ```text
 Command: set_default_model qwen-3.8-27b
@@ -528,7 +549,8 @@ Command: set_default_model my-local-model --project --local --port 11434
 Command: set_default_model custom-model --provider openai --base-url https://proxy.example/v1
 ```
 
-This is an **agent tool**, not a standalone shell command. Its syntax is:
+`set_default_model` is the **agent tool**; the shell equivalent is
+`agent-model set-default`. The tool syntax is:
 
 ```text
 set_default_model MODEL [--global | --project | --scope global|project]

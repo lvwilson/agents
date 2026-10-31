@@ -1,4 +1,4 @@
-"""Model management without starting an agent: python -m agents.cli.models_cli."""
+"""List models, save defaults, and manage catalogs without starting an agent."""
 from __future__ import annotations
 
 import argparse
@@ -8,15 +8,24 @@ import sys
 
 from ..model_catalog import apply_catalog, read_catalog
 from ..model_discovery import discover_models
+from ..tools.default_model import add_default_model_arguments, save_default_model
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Preview and explicitly apply model catalog updates (no default-model changes)."
+        description="List supported models, set defaults, and explicitly update the model catalog.",
+        allow_abbrev=False,
     )
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="List effective offline metadata")
     listing.add_argument("--provider")
+    listing.add_argument("--table", action="store_true",
+                         help="Show a readable table instead of JSON")
+    selection = commands.add_parser(
+        "set-default", aliases=["set"], allow_abbrev=False,
+        help="Save a default model for future sessions (global unless --project)",
+    )
+    add_default_model_arguments(selection)
     discover = commands.add_parser("discover", help="Query a hosted provider's model listing")
     discover.add_argument("provider")
     discover.add_argument("--model", action="append", default=[],
@@ -28,7 +37,14 @@ def main(argv=None):
     importing.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.command in ("set-default", "set"):
+            print(save_default_model(args))
+            return 0
         if args.command == "list":
+            if args.table:
+                from .model_table import print_model_table
+                print_model_table(args.provider)
+                return 0
             from ..backends import list_available_models
             print(json.dumps(list_available_models(args.provider), indent=2))
             return 0
@@ -58,7 +74,8 @@ def main(argv=None):
         )
         return 0
     except (ValueError, OSError) as exc:
-        print(f"Model catalog error: {exc}", file=sys.stderr)
+        label = "Default model" if args.command in ("set-default", "set") else "Model catalog"
+        print(f"{label} error: {exc}", file=sys.stderr)
         return 1
 
 
