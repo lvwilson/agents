@@ -311,6 +311,25 @@ To disable both features, pass `--nogit`:
 
 If the directory is **not** a Git repository, the harness behaves normally with no git operations attempted.
 
+### Unresolved model confirmation
+
+If a model name is not in the effective catalog and would implicitly fall back
+to a local server (for example, a typo such as `gpt-6.1-astra`), `agent` and
+`agent-commit` now warn and ask **Continue with local fallback? [y/N]** before
+creating a backend. Only `y` or `yes` continues; an empty answer, refusal,
+interruption, or lack of an interactive terminal cancels the run. Piped task text
+cannot serve as confirmation.
+
+The warning shows the requested name and fallback endpoint. A local server may
+ignore the name, so continuing does **not** verify which model the server runs.
+Unknown names saved as defaults with a loopback endpoint also prompt, so a
+misspelled default cannot silently become a local run. Explicit local selections
+for the current run (`--local` or `LOCAL_MODEL`), explicit CLI provider/endpoint
+selections, and configured remote proxy endpoints retain their existing behavior
+without this fallback prompt. Use `--local -m NAME`
+for deliberate local runs, including unattended runs; use `--online` to reject
+implicit local fallback entirely.
+
 ### Model discovery and updates
 
 Model updates no longer require editing backend Python dictionaries. The effective

@@ -380,6 +380,39 @@ def print_interrupt_feedback():
     ))
 
 
+def confirm_unresolved_model(model: str, base_url: str) -> bool:
+    """Warn before implicit local fallback; only an interactive yes consents.
+
+    Use the controlling terminal so piped task text cannot answer the prompt.
+    If no terminal is available, fail closed without consuming redirected stdin.
+    """
+    out = _get_tty()
+    print(
+        f"Warning: model {model!r} was not found in the model catalog; "
+        f"automatic resolution was unsuccessful.\n"
+        f"The fallback would send this name to the local server at {base_url!r}.\n"
+        "The server may ignore the requested name; the harness cannot verify "
+        "that it is actually running this model.",
+        file=out, flush=True,
+    )
+    try:
+        tty_in = open("/dev/tty", "r")
+    except OSError:
+        if not sys.stdin.isatty():
+            print("No interactive terminal available; local fallback cancelled.",
+                  file=out, flush=True)
+            return False
+        tty_in = sys.stdin
+    try:
+        print("Continue with local fallback? [y/N] ", end="", file=out, flush=True)
+        return tty_in.readline().strip().lower() in ("y", "yes")
+    except (KeyboardInterrupt, EOFError, OSError):
+        return False
+    finally:
+        if tty_in is not sys.stdin:
+            tty_in.close()
+
+
 def get_user_feedback() -> str | None:
     """Prompt the user for feedback input.
 

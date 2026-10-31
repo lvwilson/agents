@@ -25,6 +25,7 @@ from ..agents import (
 )
 from ..backends import create_backend
 from ..config import load_agent_config
+from ..ui import confirm_unresolved_model
 from ..git_utils import (
     is_git_repo,
     get_all_changed_files,
@@ -74,6 +75,7 @@ def _generate_commit_message(
     except (TypeError, ValueError):
         local_port = 8000
     provider, model, base_url = resolve_backend_target(
+        confirm_local_fallback=confirm_unresolved_model,
         model_name=model,
         cli_online=online,
         local_model=(None if (model is not None or online)
@@ -133,8 +135,8 @@ def main():
         type=str,
         default=None,
         help="Model used to generate the message and as the Git author. Online models are "
-             "auto-detected (no -o needed). Unknown model names are "
-             "treated as local unless -o/--online is specified.",
+             "auto-detected (no -o needed). Unknown model names "
+             "require confirmation before local fallback; -o/--online disables fallback.",
     )
     parser.add_argument(
         "-o", "--online",

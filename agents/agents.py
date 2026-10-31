@@ -13,7 +13,7 @@ import signal
 import sys
 import time
 import traceback
-from typing import Optional
+from typing import Callable, Optional
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
@@ -73,6 +73,7 @@ from .loop_detector import (
     LoopGuardedStreamHandler,
 )
 from .ui import (
+    confirm_unresolved_model,
     RichStreamHandler,
     print_banner,
     print_iteration_header,
@@ -219,6 +220,7 @@ def resolve_backend_target(
     config_provider: str | None = None,
     config_model: str | None = None,
     config_base_url: str | None = None,
+    confirm_local_fallback: Callable[[str, str], bool] | None = None,
 ) -> tuple[str, str, str | None]:
     """Resolve which backend must serve this run.
 
@@ -232,6 +234,14 @@ def resolve_backend_target(
     inherited loopback endpoints are ignored; an explicit local endpoint or
     ``cli_local`` conflicts with online mode. Explicit providers and remote
     endpoints can still serve names absent from the hosted catalog.
+
+    Runtime callers supply ``confirm_local_fallback(model, base_url)`` to warn
+    and obtain consent before an unresolved name implicitly falls back locally.
+    A declined confirmation raises ValueError before backend creation. Pure
+    configuration/inspection callers omit the hook and do not prompt.
+    Explicit runtime local, provider, and endpoint selections do not need
+    confirmation. Unknown names on inherited loopback endpoints still prompt,
+    including defaults persisted by the model-selection tools.
 
     Rules (in resolution order, after applying online mode):
 
@@ -322,6 +332,19 @@ def resolve_backend_target(
         )
         return _local_provider(), model, base
 
+    def _unresolved_local_dest(
+        model: str, prefer_pin: bool = False,
+    ) -> tuple[str, str, str]:
+        target = _local_dest(model, prefer_pin=prefer_pin)
+        if confirm_local_fallback is not None:
+            if not confirm_local_fallback(model, target[2]):
+                raise ValueError(
+                    f"Unresolved model {model!r}: local fallback cancelled. "
+                    "Check the model name, use --local for intentional local "
+                    "use, or select a provider/endpoint for an unlisted model."
+                )
+        return target
+
     # ── 1. Forced local ──────────────────────────────────
     if cli_local:
         model = model_name or local_model or cfg_model
@@ -344,6 +367,11 @@ def resolve_backend_target(
                 "'model:' key to your .agent / agent_config.yaml, or "
                 "pass -m NAME."
             )
+        explicit_local_intent = (
+            cli_provider or cli_base_url or (local_model and not model_name)
+        )
+        if not explicit_local_intent and model not in _online_models():
+            return _unresolved_local_dest(model, prefer_pin=True)
         return _local_dest(model, prefer_pin=True)
     if local_model and not model_name:
         # LOCAL_MODEL env auto-enables local mode (an explicit -m is
@@ -378,7 +406,7 @@ def resolve_backend_target(
         if cfg_base:
             return cfg_prov or "openai", model_name, cfg_base
         # Unknown model without an endpoint: generic local server.
-        return _local_dest(model_name, prefer_pin=False)
+        return _unresolved_local_dest(model_name)
 
     # ── 3. Pinned model (config / env) ─────────────────────
     if cfg_model:
@@ -405,7 +433,7 @@ def resolve_backend_target(
             )
         if cfg_base:
             return "openai", cfg_model, cfg_base
-        return _local_dest(cfg_model, prefer_pin=False)
+        return _unresolved_local_dest(cfg_model)
 
     # ── 4. No model anywhere: provider chain + default model ────
     provider = cli_provider or cfg_prov or "anthropic"
@@ -1118,6 +1146,7 @@ class Agent:
         # * a pinned ``base_url`` is always the destination (a local
         #   pin forces local mode unless --online; a remote one is a proxy).
         provider, model, base_url = resolve_backend_target(
+            confirm_local_fallback=confirm_unresolved_model,
             model_name=model,
             local_model=local_model,
             local_host=local_host,
@@ -2126,7 +2155,7 @@ def run_agent(agent_definition, command, budget, save=True, restore=False,
         local_host: Hostname for local API server (default "localhost")
         nogit: If True, skip git status check and auto-commit
         model: Explicit model name.  Online models are auto-detected
-               (no -o needed).  Unknown names are treated as local.
+               (no -o needed).  Unknown names require confirmation before local fallback.
         provider: Explicit provider name (e.g. ``"cerebras"``).  Highest
                priority; falls back to the ``.agent`` file, then env,
                then the YAML config.
@@ -2293,8 +2322,8 @@ def main():
                              help='Use an online provider; disable local fallback and ignore LOCAL_MODEL and inherited local endpoints')
     parser.add_argument('-m', '--model', type=str, default=None,
                         help='Model to use. Online models are auto-detected '
-                             '(no -o needed). Unknown model names are treated '
-                             'as local unless -o/--online is specified.')
+                             '(no -o needed). Unknown model names require confirmation '
+                             'before local fallback; -o/--online disables fallback.')
     parser.add_argument('-P', '--provider', type=str, default=None,
                         help='Backend provider to use (e.g. anthropic, openai, '
                              'cerebras, gemini, kimi, deepseek, minimax). '
@@ -2403,7 +2432,7 @@ def main():
 
     # Resolve model selection (full ruleset in resolve_backend_target):
     # -m/--model takes highest priority — a hosted model auto-selects
-    # its provider, a name no provider hosts is treated as local
+    # its provider; implicit local fallback requires user confirmation
     # -o/--online disables local fallback and ignores inherited local settings
     # -l/--local forces the local server — the model may also come
     #   from LOCAL_MODEL or a "model:" config pin (clean error if
