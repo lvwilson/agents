@@ -2,3 +2,4 @@
 # ~/.agents/agent_config.yaml and the AGENT_* environment variables.
 provider: cerebras
 model: qwen-3.8-27b
+folder_hash: "593d0d83ee41ba26b21b6629cdaae3ef9301b3b798ddb8c26b43cdca8b07925b"
