@@ -11,6 +11,7 @@ Key areas tested:
 - filter_content: read-command stacking behavior
 """
 import os
+from pathlib import Path
 import tempfile
 import unittest
 
@@ -283,7 +284,7 @@ class TestProcessContentMultipleCommands(unittest.TestCase):
 class TestFindReplaceMultipleBlocks(unittest.TestCase):
     """findreplace.find_replace() applies every SEARCH/REPLACE block
     in a command string, validates each search text, and applies
-    edits right-to-left."""
+    edits sequentially in command order."""
 
     def setUp(self):
         self.source = (
@@ -340,6 +341,83 @@ class TestFindReplaceMultipleBlocks(unittest.TestCase):
         )
         result = find_replace(source, command)
         self.assertEqual(result, "final")
+
+
+
+class TestFindReplaceMultipleBlocksIntegration(unittest.TestCase):
+    """One fenced command must apply every block or leave the file unchanged."""
+
+    @staticmethod
+    def command(path, edits):
+        blocks = "\n".join(
+            f"<<<<<<< SEARCH\n{search}\n=======\n{replacement}\n>>>>>>> REPLACE"
+            for search, replacement in edits
+        )
+        fence = "`" * 5
+        return f"Command: find_and_replace {path}\n{fence}text\n{blocks}\n{fence}"
+
+    def test_three_blocks_in_reverse_file_order(self):
+        """Length-changing edits must not invalidate later edit locations."""
+        source = "first = 1\n# untouched\nsecond = 2\nthird = 3\n"
+        edits = [
+            ("third = 3", "third = 300\nextra = True"),
+            ("second = 2", "second = 20000"),
+            ("first = 1", "first = 0"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "example.py"
+            path.write_text(source, encoding="utf-8")
+
+            result, images = process_content(self.command(path, edits))
+
+            self.assertIn("successfully written", result)
+            self.assertEqual(images, [])
+            self.assertEqual(
+                path.read_text(encoding="utf-8"),
+                "first = 0\n# untouched\nsecond = 20000\nthird = 300\nextra = True\n",
+            )
+
+    def test_three_chained_blocks_in_one_command(self):
+        """Later searches can consume text introduced by preceding blocks."""
+        edits = [
+            ("start", "intermediate"),
+            ("intermediate", "nearly done"),
+            ("nearly done", "finished"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "example.txt"
+            path.write_text("before\nstart\nafter\n", encoding="utf-8")
+
+            result, _ = process_content(self.command(path, edits))
+
+            self.assertIn("successfully written", result)
+            self.assertEqual(
+                path.read_text(encoding="utf-8"), "before\nfinished\nafter\n"
+            )
+
+    def test_invalid_second_block_leaves_file_unchanged(self):
+        """No first-block changes may be written when a later block fails."""
+        source = b"first\nrepeat\nrepeat\n"
+        cases = [
+            ("missing", "not found"),
+            ("repeat", "matches 2 locations"),
+            # The first block removes this text, so searches must use the
+            # running result rather than the original file.
+            ("first", "not found"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "example.txt"
+            for search, error in cases:
+                with self.subTest(search=search):
+                    path.write_bytes(source)
+                    edits = [("first", "updated"), (search, "replacement")]
+
+                    result, _ = process_content(self.command(path, edits))
+
+                    self.assertIn("Block 2:", result)
+                    self.assertIn(error, result)
+                    self.assertNotIn("successfully written", result)
+                    self.assertEqual(path.read_bytes(), source)
 
 
 class TestFilterContent(unittest.TestCase):
