@@ -31,7 +31,7 @@ The tooling layer knows nothing about Claude, conversation history, or budgets.
 - **Model Agnostic** — Supports multiple LLM providers (Anthropic, OpenAI, Cerebras, Gemini, DeepSeek, Kimi, MiniMax) and local models out of the box. Providers are lazy-loaded, so you only need the SDKs for the models you actually use.
 - **Configuration Over Code** — Agent behavior is defined in YAML files, not Python. Each config specifies a provider, model, system prompt, and an over-budget warning. New agent archetypes are created by writing prose, not code.
 - **The LLM as the Only Moving Part** — No hardcoded task decomposition, no retry logic, no verification beyond what the LLM chooses to do. The infrastructure faithfully executes commands and stays out of the way.
-- **Context as Conversation** — All state lives in the message history. No external database, no structured memory. Sessions are persisted as JSON files and can be resumed across invocations.
+- **Context as Conversation** — Session conversations are persisted as JSON files and can be resumed across invocations. Folder-specific notes and episode summaries live in a local SQLite database and are included in the context guard for new sessions.
 - **Cost Awareness** — Token usage and dollar cost are tracked in real time, including prompt caching discounts. Each step's info line shows the completed step's output rate (tokens/second) as soon as it is measured, and the session closes with a metrics panel reporting the whole task's salient numbers — cost, steps, duration, peak context, total output tokens, overall output rate — plus an estimated cost per hour at the observed generation pace. The agent is warned at 80% of its budget, and when 100% is hit it is given one final turn that processes no commands — a wrap-up in which it records the work done so far and emits its completion block — before the session ends, keeping autonomous operation safe and bounded. The same care applies to the model's context window: once the conversation reaches 50% of it, the agent receives an informational reminder to keep command outputs small, and at 80% a wrap-up warning prompting it to record outstanding work before the window fills — both thresholds and messages are configurable in the agent YAML (`context_guard` block), and each fires at most once per session.
 
 ### Available Tools
@@ -101,6 +101,35 @@ An unlisted hosted model can still be selected with `--provider NAME` or a
 remote `--base-url`; an explicit local `--base-url` conflicts with `-o`.
 Without `-o`, unknown names retain their normal local fallback behavior.
 The same online-routing rule applies to `agent-commit -o`.
+
+### Folder Memory and Moving Projects
+
+On the first agent run, the memory system creates a **`.agent` YAML file**
+in the Git repository root, or the current working directory outside Git.
+If the file already contains backend settings, those settings and comments
+are preserved. A `folder_hash` field stores the same SHA-256 hash of the
+resolved absolute folder path used by earlier versions, so existing notes
+and episode history remain accessible without a database migration.
+`agent-memory` also initializes this identity when accessing folder memory.
+
+Subsequent runs use the saved hash instead of recalculating identity from
+the current location. **Keep `.agent` with the folder when moving or renaming
+it.** Run the updated agent at the original location at least once before
+moving an older project. Git subdirectories share the root identity;
+outside Git, each working directory still has its own memory.
+
+The file stores identity, not the memory itself: notes and episodes remain
+in `~/.agents/memory/memory.db`. Moving to another machine/account also
+requires transferring that database. Copying a folder with its `.agent`
+copies its identity too; remove only `folder_hash` from the copy before its
+first run if it should have independent memory. Consider keeping `.agent`
+untracked if clones should not share an identity.
+
+`folder_hash` is local metadata, not a backend setting. An identity-only
+`.agent` does not hide inherited backend configuration. If the file is
+invalid, unsafe to edit, or unwritable, the agent warns and uses the legacy
+path-based hash without overwriting the file; move persistence is then
+unavailable until the issue is fixed.
 
 ### Backend Configuration (the `.agent` file)
 

@@ -34,9 +34,10 @@ CLI flags (``--provider`` / ``--model``) sit above all of these and are
 handled in :mod:`agents.agents`.
 
 Only the recognised keys are kept: ``provider``, ``model``, ``base_url``,
-``temperature``, ``effort``.  API keys are deliberately *not* read from
-these files — they stay in the environment (see each backend's
-``*_API_KEY``).
+``temperature``, ``effort``.  The project-local ``folder_hash`` metadata
+is managed separately by the memory system and is not a backend option.
+API keys are deliberately *not* read from these files — they stay in the
+environment (see each backend's ``*_API_KEY``).
 
 Example project ``.agent``::
 
@@ -89,6 +90,9 @@ _ENV_MAP: dict[str, str] = {
 _VALID_KEYS: tuple[str, ...] = ("provider", "model", "base_url",
                                 "temperature", "effort")
 
+#: Editable metadata is not inherited or passed to backend configuration.
+_WRITABLE_KEYS = _VALID_KEYS + ("folder_hash",)
+
 #: Fallback model per provider, used when no model is pinned anywhere
 #: (``-m`` flag, ``AGENT_MODEL`` env var, or config file).  One
 #: shared constant so the CLI, ``agent-commit`` and the backend
@@ -105,18 +109,26 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
 }
 
 
-def _find_project_agent(start: str | None = None) -> str | None:
+def _find_project_agent(
+    start: str | None = None, *, backend_only: bool = False,
+) -> str | None:
     """Search upward from *start* (default: cwd) for a ``.agent`` file.
 
     Returns the path of the nearest ``.agent`` found, or ``None``.
     Directories named ``.agent`` are skipped (e.g. ``openclaw`` keeps a
-    tracked ``.agent/`` directory of workflow files in-tree).
+    tracked ``.agent/`` directory of workflow files in-tree). Backend lookups
+    skip memory-only files so initializing identity does not hide an inherited pin.
     """
     d = os.path.abspath(start or os.getcwd())
     while True:
         candidate = os.path.join(d, AGENT_FILENAME)
         if os.path.isfile(candidate):
-            return candidate
+            data = _read_yaml(candidate) if backend_only else {}
+            memory_only = "folder_hash" in data and not any(
+                key in data for key in _VALID_KEYS
+            )
+            if not memory_only:
+                return candidate
         parent = os.path.dirname(d)
         if parent == d:  # reached filesystem root
             return None
@@ -228,7 +240,7 @@ def load_agent_config(start: str | None = None) -> dict:
 
     1. Environment variables
     2. Global config: ``~/.agents/agent_config.yaml``
-    3. Project ``.agent`` (nearest ancestor of *start* that has one)
+    3. Project ``.agent`` (nearest ancestor, skipping memory-only files)
 
     Returns a dict containing any of ``provider``, ``model``,
     ``base_url``, ``temperature``, ``effort``.  Missing keys are simply
@@ -248,7 +260,7 @@ def load_agent_config(start: str | None = None) -> dict:
         _merge(config, _read_yaml(home))
 
     # Project config (highest file precedence) overrides global.
-    project = _find_project_agent(start)
+    project = _find_project_agent(start, backend_only=True)
     if project:
         _merge(config, _read_yaml(project))
 
@@ -258,11 +270,11 @@ def load_agent_config(start: str | None = None) -> dict:
 def agent_config_path(start: str | None = None) -> str | None:
     """Return the path of the config file that would be used, or ``None``.
 
-    The nearest project ``.agent`` file if one exists, otherwise the
+    The nearest non-memory-only project ``.agent`` if one exists, otherwise the
     canonical global config path.  Useful for diagnostics (``agents
     --show-config`` style tooling).
     """
-    return _find_project_agent(start) or _home_agent()
+    return _find_project_agent(start, backend_only=True) or _home_agent()
 
 
 DEFAULT_CONFIG_COMMENT = "# Agents backend configuration"
@@ -364,7 +376,7 @@ def write_agent_config_keys(
     set_keys: dict[str, object] | None = None,
     remove_keys: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-    """Atomically update recognised top-level scalar keys, preserving other text.
+    """Atomically update backend keys or folder_hash, preserving other text.
 
     Key names in requests are case-insensitive. None removes a key; an explicit
     non-None assignment wins over remove_keys. Inline comments on removed keys
@@ -380,7 +392,7 @@ def write_agent_config_keys(
     the original file. This is not a locking API for concurrent writers.
     """
     def normalize(key):
-        if not isinstance(key, str) or key.lower() not in _VALID_KEYS:
+        if not isinstance(key, str) or key.lower() not in _WRITABLE_KEYS:
             raise ValueError(f"unknown backend config key {key!r}")
         return key.lower()
 
@@ -460,7 +472,7 @@ def write_agent_config_keys(
             content = content[:start] + replacement + content[end:]
         additions = [
             f"{name}: {_format_yaml_scalar(assignments[name])}"
-            for name in _VALID_KEYS if name in assignments and name not in nodes
+            for name in _WRITABLE_KEYS if name in assignments and name not in nodes
         ]
         if additions:
             if not content:
@@ -469,7 +481,7 @@ def write_agent_config_keys(
                 content += newline
             content += newline.join(additions) + newline
 
-        written = tuple(name for name in _VALID_KEYS if name in assignments)
+        written = tuple(name for name in _WRITABLE_KEYS if name in assignments)
         removed = tuple(name for name in removals if name in nodes)
         if content == text:
             return path, written, removed

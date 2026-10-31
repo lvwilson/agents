@@ -404,3 +404,23 @@ or explicit enabling/disabling, and the effective setting propagates to sub-agen
 Hosted providers use provider-specific replay policies independently of this flag.
 Gemini retains thought-signature part ordering and validates cached prefix identity
 with a digest, preventing same-length context replacement from reusing stale caches.
+
+### `agents/memory.py` — Persistent Folder Memory
+
+- Stores notes, compressed episodes, and raw episode history in
+  `~/.agents/memory/memory.db`, keyed by `folder_hash`.
+- Resolves identity at the Git root, or cwd outside Git. The first memory
+  access during startup saves the legacy `sha256(folder.encode()).hexdigest()`
+  in the root `.agent` YAML file. Existing database keys remain unchanged.
+- Reads the saved hash on later runs, allowing directory moves/renames to
+  retain memory when `.agent` moves with the folder. Parent/global hashes
+  are never inherited; Git subdirectories use the repository root.
+- Uses the atomic, text-preserving config writer to add identity alongside
+  backend settings. Unsafe/invalid/unwritable files are left intact, with
+  a warning and legacy path-hash fallback.
+- `config.py` distinguishes editable `folder_hash` metadata from backend
+  keys. Backend resolution skips identity-only files, while project-setting
+  tools still find them as writable project configs.
+- `tests/test_memory_identity.py` covers first startup, old database reuse,
+  moves with/without Git, subdirectories, config preservation/inheritance,
+  and failure fallbacks.

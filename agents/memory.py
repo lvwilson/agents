@@ -1,9 +1,11 @@
 """
 Hierarchical memory system backed by SQLite.
 
-Memory is indexed per folder (hashed cwd).  If the current directory is
-inside a git repository, memory is pinned to the repository root so that
-all sub-directories share the same memory context.
+Memory is indexed by a folder identity saved as ``folder_hash`` in ``.agent``.
+On first use it is the legacy SHA-256 of the folder path, preserving existing
+memory. Moving the folder with its ``.agent`` keeps that identity. Inside a
+git repository, the identity belongs to the repository root, so all
+sub-directories share the same memory context.
 
 Two kinds of memory are supported:
 
@@ -23,11 +25,17 @@ as the LLM will see it.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
 from typing import Optional
+
+import yaml
+
+from .config import AGENT_FILENAME, _check_config_path, write_agent_config_keys
 
 
 # ── Configuration ────────────────────────────────────────────────────
@@ -139,10 +147,59 @@ def _resolve_folder_uncached(cwd: str) -> str:
     return cwd
 
 
+# Avoid repeating a persistence warning on every memory read in one process.
+_identity_warnings: set[str] = set()
+
+
+def _read_folder_hash(path: Path) -> str | None:
+    """Read local identity only; never inherit one from a parent/global config."""
+    if _check_config_path(str(path)) is None:
+        return None
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        raise ValueError(".agent must be a YAML mapping")
+    if "folder_hash" not in data:
+        return None
+    value = data["folder_hash"]
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("folder_hash must be a lowercase 64-character SHA-256 hash")
+    return value
+
+
 def folder_hash() -> str:
-    """Return a stable hash for the current folder (git root or cwd)."""
+    """Return the persisted folder identity, initializing it with the legacy hash.
+
+    The identity lives in the Git root's .agent (cwd outside Git), alongside
+    backend settings. If it cannot safely be read or saved, warn and retain
+    path-based indexing without damaging the file.
+    """
     folder = _resolve_folder()
-    return hashlib.sha256(folder.encode()).hexdigest()
+    legacy_hash = hashlib.sha256(folder.encode()).hexdigest()
+    path = Path(folder) / AGENT_FILENAME
+    try:
+        stored = _read_folder_hash(path)
+        if stored is not None:
+            return stored
+        write_agent_config_keys(str(path), set_keys={"folder_hash": legacy_hash})
+        return legacy_hash
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # Another agent may have initialized identity during our write attempt.
+        try:
+            stored = _read_folder_hash(path)
+            if stored is not None:
+                return stored
+        except (OSError, ValueError, yaml.YAMLError):
+            pass
+        if folder not in _identity_warnings:
+            logging.warning(
+                "Cannot persist folder memory identity in %s: %s. "
+                "Using the path-based hash; memory may not survive a move.",
+                path, exc,
+            )
+            _identity_warnings.add(folder)
+        return legacy_hash
 
 
 def folder_path() -> str:
