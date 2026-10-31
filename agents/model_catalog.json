@@ -18,7 +18,26 @@
         "long_output_multiplier": 1.5
       },
       "source": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
-      "verified_at": "2026-10-18"
+      "verified_at": "2026-10-31"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-6.1-terra",
+      "display": "GPT-6.1 Terra",
+      "context": 1050000,
+      "max_output": 128000,
+      "effort_levels": ["none", "low", "medium", "high", "xhigh", "max"],
+      "pricing": {
+        "input_token_cost": 1.0,
+        "output_token_cost": 5.0,
+        "cache_read_cost": 0.05,
+        "cache_write_cost": 1.25,
+        "long_context_threshold": 272000,
+        "long_input_multiplier": 2.0,
+        "long_output_multiplier": 1.5
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra",
+      "verified_at": "2026-10-31"
     }
   ]
 }

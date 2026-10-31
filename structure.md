@@ -120,11 +120,11 @@ agents/                          ← repo root
 ### Model discovery and catalog overlays
 
 - **`agents/model_catalog.py`** — Strict version-1 JSON schema, offline bundled/user metadata merging, cross-provider ownership validation, atomic explicit updates, and per-instance metadata application before backend initialization. User overlay: `~/.agents/model_catalog.json`, overridable with `AGENT_MODEL_CATALOG`. Backend class dictionaries remain unchanged; generic local OpenAI-compatible clients do not inherit hosted metadata.
-- **`agents/model_catalog.json`** — Reviewed, packaged additions; initially GPT-6.1 Sol with documented pricing, long-context tier, context/output limits, and reasoning efforts.
+- **`agents/model_catalog.json`** — Reviewed, packaged additions; GPT-6.1 Sol and Terra with documented pricing, long-context tier, context/output limits, and reasoning efforts.
 - **`agents/model_discovery.py`** — Explicit model-list adapters for OpenAI, Anthropic, Cerebras, DeepSeek, Gemini, and Kimi. Fixed HTTPS destinations, no redirects, bounded responses/timeouts/pagination, no guessed pricing/capabilities. MiniMax remains import-only.
 - **`agents/cli/models_cli.py`** — `agent-models list`, `discover PROVIDER [--model ID] [--apply]`, and `import FILE [--apply]`; JSON stdout, diagnostics stderr, preview by default. Applying discovery requires exact selections. No agent startup or default-config writes.
 - **Integration** — `list_available_models()` overlays the same metadata consumed by backend instances. `_online_models()` refreshes from the offline catalog so explicit updates are visible without stale routing caches. OpenAI reads per-model output/effort/temperature options and tier/cache-write pricing; Anthropic-compatible billing honors declared cache-read rates.
-- **Tests** — `tests/test_model_discovery.py` covers malformed catalogs, ownership collisions, atomic failures, adapter authentication/pagination, CLI preview/apply, metadata isolation, and Sol request/billing integration.
+- **Tests** — `tests/test_model_discovery.py` covers malformed catalogs, ownership collisions, atomic failures, adapter authentication/pagination, CLI preview/apply, metadata isolation, and Sol/Terra request/billing integration.
 
 ### `agents/backends/anthropic_backend.py` — Claude Provider
 

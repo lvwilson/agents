@@ -283,7 +283,23 @@ agent-models import reviewed-models.json --apply
 agent-models list --provider openai
 agent --list-models openai
 agent -o -m gpt-6.1-sol --effort max "Your task"
+agent -o -m gpt-6.1-terra --effort medium "Your task"
 ```
+
+**Bundled GPT-6.1 models** (official metadata verified 2026-10-31; no discovery
+step required): both use the OpenAI Responses API with a 1,050,000-token context
+window and a 128,000-token output limit. Set `OPENAI_API_KEY` to use them.
+
+| Model ID | Input / cached input / cache write / output ($ per 1M tokens) | Reasoning efforts |
+| --- | --- | --- |
+| `gpt-6.1-sol` | $2 / $0.10 / $2.50 / $10 | low, medium, high, xhigh, max |
+| `gpt-6.1-terra` | $1 / $0.05 / $1.25 / $5 | none, low, medium, high, xhigh, max |
+
+Sources: [Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol) and
+[Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra).
+Omitting `--effort` leaves the provider default; `--effort none` clamps to `low`
+for Sol but disables reasoning for Terra. Terra's cache-write rate assumes
+standard 30-minute retention, not the higher-priced 12-hour retention.
 
 After updating an editable installation, reinstall with `pip install -e .` to
 register the new `agent-models` executable. Alternatively, use
@@ -331,8 +347,8 @@ A reviewed import is a versioned JSON document, for example:
 }
 ```
 
-Prices are USD per million tokens, using standard processing rates. Sol's bundled
-record includes its long-context tier: **over** 272K input tokens, input/cache
+Prices are USD per million tokens, using standard processing rates. Sol and Terra's bundled
+records include their long-context tier: **over** 272K input tokens, input/cache
 rates double and output rates multiply by 1.5 for the full request. Cache-write
 pricing is applied when the API reports cache-creation usage. Special service-tier,
 regional, Batch, and Flex adjustments are not modeled.

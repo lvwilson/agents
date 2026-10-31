@@ -1,4 +1,4 @@
-"""Offline discovery, safe catalog updates, and gpt-6.1-sol integration."""
+"""Offline discovery, safe catalog updates, and GPT-6.1 integration."""
 import io
 import json
 import os
@@ -36,47 +36,67 @@ def make_backend(model="gpt-6.1-sol", **kwargs):
         return OpenAIBackend(model=model, **kwargs)
 
 
-def test_sol_offline_metadata_and_routing():
+@pytest.fixture(params=[
+    ("gpt-6.1-sol", "GPT-6.1 Sol", 2, 10, .1, 2.5),
+    ("gpt-6.1-terra", "GPT-6.1 Terra", 1, 5, .05, 1.25),
+], ids=["sol", "terra"])
+def gpt61(request):
+    return request.param
+
+
+def test_gpt61_offline_metadata_and_routing(gpt61):
     from agents.agents import resolve_backend_target
-    entry = next(r for r in list_available_models("openai") if r["model"] == "gpt-6.1-sol")
+    model, display, input_price, output_price, cache_read, _ = gpt61
+    entry = next(r for r in list_available_models("openai") if r["model"] == model)
+    assert entry["display"] == display
     assert (entry["context"], entry["input_cost"], entry["cache_read_cost"],
-            entry["output_cost"]) == (1050000, 2, .1, 10)
-    assert resolve_backend_target(model_name="gpt-6.1-sol", cli_online=True) == (
-        "openai", "gpt-6.1-sol", None)
-    assert resolve_backend_target(config_model="gpt-6.1-sol", config_provider="cerebras") == (
-        "openai", "gpt-6.1-sol", None)
-    b = make_backend()
-    assert b.display_name == "GPT-6.1 Sol"
+            entry["output_cost"]) == (1050000, input_price, cache_read, output_price)
+    assert resolve_backend_target(model_name=model) == ("openai", model, None)
+    assert resolve_backend_target(model_name=model, cli_online=True) == (
+        "openai", model, None)
+    assert resolve_backend_target(config_model=model, config_provider="cerebras") == (
+        "openai", model, None)
+    b = make_backend(model)
+    assert b.display_name == display
     assert b.context_window_size == 1050000
     assert b.MAX_COMPLETION_TOKENS == 128000
 
 
-@pytest.mark.parametrize("rank,expected", [(0, "low"), (1, "low"), (5, "max")])
-def test_sol_request_and_completed_usage(rank, expected):
-    b = make_backend(reasoning_effort=rank)
+@pytest.mark.parametrize("rank", [None, 0, 1, 2, 3, 4, 5])
+def test_gpt61_request_and_completed_usage(gpt61, rank):
+    model, _, input_price, output_price, cache_read, cache_write = gpt61
+    b = make_backend(model, reasoning_effort=rank)
     b._client.responses.create.return_value = iter([
-        SimpleNamespace(type="response.output_text.delta", delta="SOL_OK"),
+        SimpleNamespace(type="response.output_text.delta", delta="OK"),
         SimpleNamespace(type="response.completed", response=SimpleNamespace(
             usage=SimpleNamespace(input_tokens=1000, output_tokens=100,
                                   input_tokens_details=SimpleNamespace(
                                       cached_tokens=500, cache_creation_tokens=100)))),
     ])
-    assert b.generate_response("sys", []) == "SOL_OK"
+    assert b.generate_response("sys", []) == "OK"
     kwargs = b._client.responses.create.call_args.kwargs
-    assert kwargs["model"] == "gpt-6.1-sol"
+    assert kwargs["model"] == model
     assert kwargs["max_output_tokens"] == 128000
-    assert kwargs["reasoning"] == {"effort": expected}
+    if rank is None:
+        assert "reasoning" not in kwargs
+    else:
+        expected = ("none", "low", "medium", "high", "xhigh", "max")[rank]
+        if model == "gpt-6.1-sol" and rank == 0:
+            expected = "low"
+        assert kwargs["reasoning"] == {"effort": expected}
     assert kwargs["stream"] is True
-    assert b.cost == pytest.approx((400*2 + 500*.1 + 100*2.5 + 100*10)/1e6)
+    assert b.cost == pytest.approx(
+        (400*input_price + 500*cache_read + 100*cache_write + 100*output_price)/1e6)
 
 
 @pytest.mark.parametrize("tokens,mult_in,mult_out", [(272000, 1, 1), (272001, 2, 1.5)])
-def test_sol_long_context_threshold(tokens, mult_in, mult_out):
-    b = make_backend()
+def test_gpt61_long_context_threshold(gpt61, tokens, mult_in, mult_out):
+    model, _, input_price, output_price, cache_read, cache_write = gpt61
+    b = make_backend(model)
     assert b.calculate_cost(tokens, 100, cache_read_tokens=1000,
                             cache_creation_tokens=500) == pytest.approx(
-        ((tokens-1500)*2*mult_in + 1000*.1*mult_in + 500*2.5*mult_in
-         + 100*10*mult_out)/1e6)
+        (((tokens-1500)*input_price + 1000*cache_read + 500*cache_write)*mult_in
+         + 100*output_price*mult_out)/1e6)
 
 
 def test_overlay_refresh_routing_and_no_shared_mutation(isolated_catalog):
@@ -97,14 +117,14 @@ def test_overlay_refresh_routing_and_no_shared_mutation(isolated_catalog):
     assert make_backend().SEND_TEMPERATURE is True
 
 
-def test_discovery_unknown_metadata_and_local_isolation():
+def test_discovery_unknown_metadata_and_local_isolation(gpt61):
     catalog.apply_catalog([record()])
     with pytest.warns(RuntimeWarning, match="dollar budget cannot limit spending"):
         b = make_backend("future-chat")
     assert b.context_window_size == 0
     assert b.calculate_cost(1000, 1000) == 0
     with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "test"}), mock.patch("openai.OpenAI"):
-        local = create_backend("openai", model="gpt-6.1-sol", base_url="http://localhost:8000/v1")
+        local = create_backend("openai", model=gpt61[0], base_url="http://localhost:8000/v1")
     assert local.context_window_size != 1050000
     assert local.MAX_COMPLETION_TOKENS == 16384
 
